@@ -6,3 +6,45 @@
 __pycache__/
 *.py[cod]
 *$py.class
+
+# 字节码和缓存文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE 和编辑器配置文件
+.idea/
+.vscode/
+
+# 波形和仿真输出文件
+# 根据您的项目，添加了 .vcd 和 .fst 规则
+*.vcd
+*.fst
+
+# 日志文件
+*.log
+
+# 虚拟环境目录
+# 通常命名为 venv, env, .venv 或 .env
+/venv/
+/env/
+/.venv/
+/.env/
+
+# Jupyter Notebook 检查点
+.ipynb_checkpoints/
+
+# 构建和分发产物
+/build/
+/dist/
+/*.egg-info/
+
+# 测试产物
+.pytest_cache/
+htmlcov/
+.tox/
+
+# 操作系统生成的文件
+.DS_Store
+Thumbs.db

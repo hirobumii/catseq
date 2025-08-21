@@ -1,6 +1,6 @@
 # Cat-SEQ: 基于幺半范畴的时序控制框架开发文档
 
-**版本**: 1.0
+**版本**: 2.0 (设计演进版)
 **日期**: 2025-08-21
 
 ## 一、 核心抽象：幺半范畴 (Monoidal Category)
@@ -20,7 +20,7 @@ Cat-SEQ 框架的理论基石是**范畴论**，具体而言是**幺半范畴**�
 * `dom`: 过程开始前的系统状态 (一个**对象**)。
 * `cod`: 过程结束时的系统状态 (一个**对象**)。
 * `duration`: 过程的持续时间（秒）。
-* `dynamics`: 描述过程如何演化的参数（例如 `WaveformParams`）。
+* `dynamics`: **(设计演进)** 描述过程如何演化的参数。例如，对于DDS通道，它持有 `WaveformParams` 或 `StaticWaveform` 对象。这是将“过程”从“状态”中分离的关键。
 
 ### 3. 复合 (Composition)
 **复合 (Composition)** 对应**时序的顺序执行**。给定两个态射 `f: A -> B` 和 `g: B -> C`，它们的复合 `f @ g` 形成了一个新的态射 `h: A -> C`。复合的先决条件是前一个态射的 `codomain` 必须与后一个态射的 `domain` 完全匹配。其 `duration` 是两者之和。
@@ -64,67 +64,56 @@ Cat-SEQ 框架的理论基石是**范畴论**，具体而言是**幺半范畴**�
     * `voltage: float`: 输出的电压值（伏特）。
 
 ### 4. DDS/RWG 状态 (`states/dds.py`)
-这是最复杂的状态系统，我们将其分解为“过程描述”和“状态快照”两部分。
 
-#### 过程描述对象
-* `WaveformParams`: **由 `Morphism` 持有**，完整描述一个动态波形过程。
-    * `sbg_id: int`
-    * `freq_coeffs: Tuple[Optional[float], ...]` (泰勒系数 F0-F3)
-    * `amp_coeffs: Tuple[Optional[float], ...]` (泰勒系数 A0-A3)
-    * `initial_phase: Optional[float]`
-    * `phase_reset: Optional[bool]`
-    * `required_ramping_order: int` (计算属性)
-    * `is_dynamical: bool` (计算属性)
+#### 4.1 设计演进：从“状态持有过程”到“状态与过程分离”
+我们最初的设计试图让 `State` 对象（如 `DDSActive`）持有完整的波形过程描述（`WaveformParams`，包含斜坡系数）。经过深入讨论，我们发现这破坏了 `State` 作为“静态快照”的纯粹性，并使 `Morphism` 的组合在概念上变得模糊。
 
-#### 状态快照对象
-* `StaticWaveform`: **由 `DDSActive` 状态持有**，描述一个 SBG 的瞬时参数。
-    * `sbg_id: int`
-    * `freq: float`
-    * `amp: float`
-    * `phase: float`
+> **最终原则**：`State` 只描述某一瞬时的**静态快照**。`Morphism` 的 `dynamics` 字段负责携带完整的**动态过程描述**。
 
-#### 状态机
-* `DDSState(State)`: DDS 状态的基类。
-* `DDSReady(DDSState)`: 通道已初始化，载波已设定，等待配置。
-* `DDSStaged(DDSState)`: 波形参数已写入暂存寄存器，但未生效。
-* `DDSArmed(DDSState)`: 参数已生效（`PAR_UPD`已触发），SBG 内部开始运行，但 RF 输出关闭。
-* `DDSActive(DDSState)`: RF 信号正在有效输出。
+#### 4.2 最终数据结构定义
+
+* **过程描述对象 (Process Descriptions)**: **由 `Morphism` 的 `dynamics` 字段持有**。
+    * `WaveformParams`: 描述一个**动态**波形过程（如斜坡）。包含泰勒系数和 `is_dynamical` 等属性。
+    * `StaticWaveform`: 描述一个**静态**波形过程（如保持恒定频率）。只包含瞬时值。
+
+* **状态机 (State Machine)**:
+    * `DDSState(State)`: DDS 状态的基类。
+    * `DDSReady(DDSState)`: 通道已初始化，载波已设定。持有 `carrier_freq`。
+    * `DDSStaged(DDSState)`: **(无数据标记)** 表示参数已写入暂存器。只持有 `carrier_freq`。
+    * `DDSArmed(DDSState)`: **(仅限静态)** 表示一个**静态**波形的参数已生效，但 RF 输出关闭。持有 `Tuple[StaticWaveform, ...]`。
+    * `DDSActive(DDSState)`: RF 信号正在有效输出。持有 `Tuple[StaticWaveform, ...]` 作为物理快照。
 
 ---
 
-## 四、 状态机定义 (State Machine Definitions)
+## 四、 验证模型与状态机
 
-状态转换的合法性由 `hardware` 层中具体硬件类的 `validate_transition` 方法来保证。
+#### 4.1 设计演进：从“组合时验证”到“分层验证”
+我们最初的思路是将所有验证逻辑都放在 `Morphism` 组合 (`@`) 时调用的 `validate_transition` 方法中。但经过讨论，我们确立了一个更健壮、职责更清晰的**分层验证模型**。
 
-### 1. TTL 状态机
-TTL 的状态转换非常灵活，在类型正确的前提下，几乎所有转换都被允许。
+> **最终原则**：验证发生在**创建时**、**组合时**和**编译时**三个阶段。
 
-| 起始状态 (From)             | 目标状态 (To)               | 条件/约束                               |
-| --------------------------- | --------------------------- | --------------------------------------- |
-| `Uninitialized`             | `TTLInput` / `On` / `Off`   | 初始化。                                |
-| `TTLInput` / `On` / `Off`   | `TTLInput` / `On` / `Off`   | 允许在任何已配置状态之间自由转换。      |
+1.  **创建时 (DSL 层)**: `Morphism` 的“智能工厂”。负责物理计算（`dom`+`dynamics`+`duration`->`cod`），并调用 `hardware.validate_dynamics` 验证过程参数自身的合法性。**保证每个被创建的 `Morphism` 都是自洽且合法的**。
+2.  **组合时 (`@` 操作符)**: `Morphism` 的组合。只进行最纯粹的数学检查，即 `f.cod == g.dom`。所有复杂的验证逻辑已从此移除。
+3.  **编译时 (Compiler 层)**: 唯一的全局上下文持有者。负责执行需要跨 `Morphism` 边界的复杂验证（例如 `enforce_continuity` 策略下的相位重置检查）。
 
-### 2. DAC 状态机
+#### 4.2 最终状态机定义
+现在，状态转换的合法性由 `DSL` 层在创建 `Morphism` 时，通过查询 `hardware` 层的规则来保证。以下是 `DSL` 层需要遵守的合法转换路径。
 
-| 起始状态 (From)             | 目标状态 (To)               | 条件/约束                               |
-| --------------------------- | --------------------------- | --------------------------------------- |
-| `Uninitialized`             | `DACOff` / `DACStatic`      | 初始化。                                |
-| `DACOff`                    | `DACStatic`                 | 打开输出。                              |
-| `DACStatic`                 | `DACOff`                    | 关闭输出。                              |
-| `DACStatic`                 | `DACStatic`                 | 改变电压。                              |
+* **TTL 与 DAC 状态机**: (与旧版定义相同，保持不变)
 
-### 3. DDS/RWG 状态机
-这是最严格的状态机，它强制执行了硬件的操作流程。
+* **DDS/RWG 状态机 (最终版)**:
+    该状态机区分了静态和动态两种工作流。
 
-| 起始状态 (From)             | 目标状态 (To)               | 条件/约束                                                                |
-| --------------------------- | --------------------------- | ------------------------------------------------------------------------ |
-| `Uninitialized`             | `DDSReady`                  | **唯一**的初始化路径。                                                   |
-| `Ready`/`Staged`/`Armed`/`Active` | `DDSStaged`                 | 允许在任何已配置状态下，为下个操作准备/暂存新的波形参数。                  |
-| `DDSStaged`                 | `DDSArmed`                  | **让参数生效**。`waveforms` 必须与 `from_state` 一致。 **不允许**包含动态波形。 |
-| `DDSActive`                 | `DDSArmed`                  | **关闭 RF 输出**（Disarm）。`waveforms` 必须与 `from_state` 一致。           |
-| `DDSArmed`                  | `DDSActive`                 | **打开 RF 输出**。`waveforms` 必须与 `from_state` 一致。                     |
-| `DDSStaged`                 | `DDSActive`                 | **一步到位**。允许直接从暂存状态激活 RF 输出。 `waveforms` 必须与 `from_state` 一致。 |
-| `DDSActive`                 | `DDSActive`                 | **实时更新**。`waveforms` 可以改变。需要进行连续性检查。                     |
+| 流程类型 | 起始状态 (From) | 目标状态 (To) | `Morphism.dynamics` 类型 | 备注/约束                                                                   |
+| :--- | :--- | :--- | :--- |:--------------------------------------------------------------------------|
+| 初始化 | `Uninitialized` | `DDSReady` | `None` | 唯一的初始化路径。                                                          |
+| **静态** | `DDSReady` | `DDSStaged` | `Tuple[StaticWaveform, ...]` | 暂存一个静态波形。                                                          |
+| **静态** | `DDSStaged` | `DDSArmed` | `None` | 让暂存的静态波形生效。                                                      |
+| **静态** | `DDSArmed` | `DDSActive` | `None` | 打开 RF 输出。                                                              |
+| **动态** | `DDSReady` | `DDSStaged` | `Tuple[WaveformParams, ...]` | 暂存一个动态波形。                                                          |
+| **动态** | `DDSStaged` | `DDSActive` | `None` | **一步到位**。动态波形不允许进入 `Armed` 状态，必须直接激活。                  |
+| 通用 | `DDSActive` | `DDSActive` | `StaticWaveform` / `WaveformParams` | **实时更新**。                                                              |
+| 通用 | `DDSActive` | `DDSReady` | `None` | 关闭通道 (如果 `allow_disable` 策略允许)。                                     |
 
 ---
 
@@ -155,21 +144,25 @@ catseq_project/
 │   ├── compiler.py          # 【未实现】编译器/调度器
 │   │
 │   └── backends/            # 【未实现】后端代码生成器包
-│       ├── __init__.py
-│       └── rtmq_generator.py
+│       ├── ...
 │
 └── examples/                # 【未实现】使用示例目录
-    └── simple_sequence.py
+    └── ...
 ```
 
-### 组件职责详解
+### 组件职责详解 (最终版)
 
-* `model.py`: **理论基石**。定义了整个系统的抽象代数结构和通用规则。完全独立，零依赖。
-* `states/` (包): **状态词汇表**。定义所有具体的 `State` 子类。
-* `hardware/` (包): **物理规则书**。
-    * `base.py`: 定义所有硬件类的抽象基类 `BaseHardware`。
-    * `ttl.py`, `dac.py`, `rwg.py`: 定义具体硬件类，实现 `validate_transition` 等验证方法。
-    * `__init__.py`: 定义全局 `Channel` 枚举，实例化并注册系统中所有的硬件资源。
-* `dsl.py`: **(未实现)** **用户 API / Morphism 工厂**。提供 `Play()`, `RampDAC()` 等简单函数，负责进行物理计算（`dom`+`dynamics`+`duration` -> `cod`），调用 `hardware` 层的 `validate_dynamics`，并最终创建出自洽的、合法的 `Morphism` 对象。
-* `compiler.py`: **(未实现)** **编译器与调度器**。接收 `DSL` 构建的 `Morphism` 树，执行复杂的跨 `Morphism` 验证（如相位重置检查），然后将其“扁平化”为按板卡和时间戳排序的中间事件列表。
-* `backends/` (包): **(未实现)** **代码生成器**。将编译器生成的中间事件列表，翻译成最终的目标平台汇编代码（如 RTMQv2）。
+* `model.py`: **理论基石**。定义抽象代数结构。其 `@` 组合操作现在是一个纯粹的、只检查端点匹配的数学运算。
+* `states/` (包): **状态词汇表**。定义所有具体的 `State` 子类，它们现在是纯粹的静态快照或标记。
+* `hardware/` (包): **物理规则库**。
+    * 定义具体硬件类，并提供验证方法，如 `validate_dynamics` (验证过程参数) 和 `is_valid_fsm_path` (供 DSL 查询状态机路径合法性)。
+    * `__init__.py`: 定义全局 `Channel` 枚举，通过**配置参数**实例化不同“能力”和“策略”的硬件对象。
+* `dsl.py`: **(未实现)** **用户 API / 智能工厂**。
+    * **核心职责**：将用户的简单意图（如 `RampFreq(...)`）转化为一个**自洽且合法**的 `Morphism` 对象。
+    * **内部工作**:
+        1.  进行物理计算 (`dom`+`dynamics`+`duration` -> `cod`)。
+        2.  调用 `hardware` 层的 `validate_dynamics` 和 `is_valid_fsm_path` 等方法进行**创建时验证**。
+* `compiler.py`: **(未实现)** **编译器与调度器**。
+    * **核心职责**：接收 `Morphism` 树，将其翻译为中间表示。
+    * **新增职责**：作为**最终验证层**，执行需要完整上下文的检查（如 `enforce_continuity` 策略下的相位重置检查）。
+* `backends/` (包): **(未实现)** **代码生成器**。将中间表示翻译成目标平台的汇编代码。

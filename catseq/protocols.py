@@ -17,13 +17,14 @@ class Dynamics(Protocol):
 
 class HardwareInterface(Protocol):
     """A protocol that concrete hardware classes must implement for validation."""
+    def __init__(self, name: str) -> None: ...
     def validate_transition(self, from_state: State, to_state: State) -> None: ...
 
 class ResourceIdentifier(Protocol):
     """A protocol that all Channel classes must conform to."""
     @property
     def name(self) -> str: ...
-
+    
     @property
     def instance(self) -> HardwareInterface: ...
 
@@ -38,7 +39,7 @@ class Channel(ResourceIdentifier):
         # Implements a singleton pattern based on the channel name.
         if name in cls._instances:
             return cls._instances[name]
-
+        
         instance = super().__new__(cls)
         cls._instances[name] = instance
         return instance

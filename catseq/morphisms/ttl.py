@@ -54,11 +54,15 @@ def pulse(channel: Channel, from_state: TTLState, duration: float) -> LaneMorphi
         raise ValueError("Pulse hold duration must be a positive number.")
 
     m_on = turn_on(channel, from_state)
-
+    
     on_state = m_on.cod[0][1]
+    if not isinstance(on_state, TTLState):
+        raise TypeError(f"Internal logic error: state after turn_on is not a TTLState, but {type(on_state).__name__}")
     m_hold = Hold(channel, on_state, duration)
 
     off_from_state = m_hold.cod[0][1]
+    if not isinstance(off_from_state, TTLState):
+        raise TypeError(f"Internal logic error: state before turn_off is not a TTLState, but {type(off_from_state).__name__}")
     m_off = turn_off(channel, off_from_state)
 
     return m_on @ m_hold @ m_off

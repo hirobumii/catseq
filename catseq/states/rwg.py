@@ -1,7 +1,7 @@
 import dataclasses
 from typing import Optional, Tuple, ClassVar
 import numpy as np
-from catseq.model import State, Dynamics
+from catseq.protocols import State, Dynamics
 
 
 @dataclasses.dataclass(frozen=True)

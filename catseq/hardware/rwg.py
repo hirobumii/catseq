@@ -1,6 +1,6 @@
 from typing import Set, Union, Tuple
 import numpy as np
-from catseq.model import State
+from catseq.protocols import State
 from catseq.hardware.base import BaseHardware
 from catseq.states.common import Uninitialized
 from catseq.states.rwg import (
@@ -11,13 +11,6 @@ from catseq.states.rwg import (
 class RWGDevice(BaseHardware):
     """
     Represents a Real-time Waveform Generator (RWG) device.
-
-    This class models a physical RWG channel. It acts as a "rulebook" for the
-    DSL layer, providing methods to validate:
-    1.  Process Dynamics (`validate_dynamics`): Are the waveform parameters valid?
-    2.  FSM Path (`is_valid_fsm_path`): Is a state transition allowed?
-    3.  Continuity (`check_continuity`): Does the connection between two
-        active segments meet the channel's policy?
     """
     
     def __init__(
@@ -49,7 +42,6 @@ class RWGDevice(BaseHardware):
     def validate_dynamics(self, dynamics: Tuple[WaveformParams, ...]) -> None:
         """
         Validates the process parameters against the hardware's capabilities and policies.
-        This is called by the DSL *before* creating a Morphism.
         """
         if not dynamics:
             return
@@ -73,11 +65,6 @@ class RWGDevice(BaseHardware):
     def validate_transition(self, from_state: State, to_state: State) -> None:
         """
         Validates the "seam" between two composed Morphisms.
-
-        This method is called by the `@` composition operator. Its primary
-        role is to ensure state continuity at the composition point, according
-        to the channel's policies. It does NOT validate the FSM flow itself,
-        as that responsibility lies with the DSL layer.
         """
         if isinstance(from_state, RWGActive) and isinstance(to_state, RWGActive):
             if self.enforce_continuity:

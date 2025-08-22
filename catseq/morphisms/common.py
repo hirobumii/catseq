@@ -1,57 +1,35 @@
-from catseq.model import State, Morphism, ChannelT
+from catseq.model import State, IdentityMorphism, ChannelT
 
 
 def Hold(
         channel: ChannelT,
         current_state: State,
         duration: float
-) -> Morphism[ChannelT]:
+) -> IdentityMorphism[ChannelT]:
     """
     Creates an Identity Morphism that holds the current state for a specified duration.
-
-    This is the most fundamental common Morphism, representing a "wait" or
-    "delay" operation where the state of the channel does not change. It is
-    generic and can be applied to any channel type.
-
-    Args:
-        channel: The hardware channel (conforming to the ResourceIdentifier
-                 protocol) to which this hold applies.
-        current_state: The state that the channel is currently in and will
-                       be held in.
-        duration: The duration of the hold in the system's base time unit
-                  (e.g., microseconds).
-
-    Returns:
-        A Morphism object representing the hold operation.
-        
-    Raises:
-        ValueError: If the duration is not a positive number.
     """
     if duration <= 0:
-        raise ValueError("Hold duration must be a positive numbers.")
+        raise ValueError("Hold duration must be a positive number.")
     
-    domain_obj = ((channel, current_state),)
-    codomain_obj = ((channel, current_state),)
-
-    return Morphism[ChannelT](
-        name=f"Hold({channel.name}, {duration:.2f}us)",
-        dom=domain_obj,
-        cod=codomain_obj,
-        duration=duration,
-        dynamics=None
+    return IdentityMorphism(
+        name=f"Hold({channel.name}, {duration:.2e}s)",
+        dom=((channel, current_state),),
+        cod=((channel, current_state),),
+        duration=duration
     )
 
-def Marker(channel: ChannelT, current_state: State, label: str) -> Morphism[ChannelT]:
-    return Morphism[ChannelT](
+def Marker(channel: ChannelT, current_state: State, label: str) -> IdentityMorphism[ChannelT]:
+    """Creates a zero-duration Identity Morphism to act as a marker."""
+    return IdentityMorphism(
         name=f"Marker({label})",
         dom=((channel, current_state),),
         cod=((channel, current_state),),
-        duration=0.0,
-        dynamics=None
+        duration=0.0
     )
 
-def WaitOnTrigger() -> Morphism:
-    ...
+def WaitOnTrigger():
+    raise NotImplementedError
 
-def Call()-> Morphism:
-    ...
+def Call():
+    raise NotImplementedError

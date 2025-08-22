@@ -1,4 +1,5 @@
-from catseq.model import State, PrimitiveMorphism, LaneMorphism, ChannelT
+from catseq.protocols import State, Channel
+from catseq.model import PrimitiveMorphism, LaneMorphism
 from catseq.states.common import Uninitialized
 from catseq.states.ttl import TTLState, TTLOutputOn, TTLOutputOff
 from catseq.morphisms.common import Hold
@@ -6,7 +7,7 @@ from catseq.morphisms.common import Hold
 # Duration of a single RTMQ clock cycle (1 / 250 MHz).
 SINGLE_CYCLE_DURATION_S = 4e-9
 
-def initialize(channel: ChannelT) -> PrimitiveMorphism[ChannelT]:
+def initialize(channel: Channel) -> PrimitiveMorphism:
     """Creates a PrimitiveMorphism to initialize a TTL channel."""
     from_state = Uninitialized()
     to_state = TTLOutputOff()
@@ -18,7 +19,7 @@ def initialize(channel: ChannelT) -> PrimitiveMorphism[ChannelT]:
         duration=SINGLE_CYCLE_DURATION_S
     )
 
-def turn_on(channel: ChannelT, from_state: TTLState) -> PrimitiveMorphism[ChannelT]:
+def turn_on(channel: Channel, from_state: TTLState) -> PrimitiveMorphism:
     """Creates a PrimitiveMorphism to turn on a TTL channel's output."""
     if not isinstance(from_state, TTLState):
         raise TypeError(f"from_state for turn_on must be a TTLState, not {type(from_state).__name__}")
@@ -31,7 +32,7 @@ def turn_on(channel: ChannelT, from_state: TTLState) -> PrimitiveMorphism[Channe
         duration=SINGLE_CYCLE_DURATION_S
     )
 
-def turn_off(channel: ChannelT, from_state: TTLState) -> PrimitiveMorphism[ChannelT]:
+def turn_off(channel: Channel, from_state: TTLState) -> PrimitiveMorphism:
     """Creates a PrimitiveMorphism to turn off a TTL channel's output."""
     if not isinstance(from_state, TTLState):
         raise TypeError(f"from_state for turn_off must be a TTLState, not {type(from_state).__name__}")
@@ -44,7 +45,7 @@ def turn_off(channel: ChannelT, from_state: TTLState) -> PrimitiveMorphism[Chann
         duration=SINGLE_CYCLE_DURATION_S
     )
 
-def pulse(channel: ChannelT, from_state: TTLState, duration: float) -> LaneMorphism[ChannelT]:
+def pulse(channel: Channel, from_state: TTLState, duration: float) -> LaneMorphism:
     """
     Creates a composite LaneMorphism for a TTL pulse.
     The `duration` parameter specifies the time the signal is held high.
@@ -54,11 +55,9 @@ def pulse(channel: ChannelT, from_state: TTLState, duration: float) -> LaneMorph
 
     m_on = turn_on(channel, from_state)
 
-    # The new state after turning on is the codomain state of m_on
     on_state = m_on.cod[0][1]
     m_hold = Hold(channel, on_state, duration)
 
-    # The new state after holding is the codomain state of m_hold
     off_from_state = m_hold.cod[0][1]
     m_off = turn_off(channel, off_from_state)
 

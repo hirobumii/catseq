@@ -1,5 +1,5 @@
 import dataclasses
-from catseq.model import State
+from catseq.protocols import State
 
 
 class TTLState(State):

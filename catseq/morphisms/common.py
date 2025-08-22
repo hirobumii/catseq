@@ -1,11 +1,12 @@
-from catseq.model import State, IdentityMorphism, ChannelT
+from catseq.protocols import State, Channel
+from catseq.model import IdentityMorphism
 
 
 def Hold(
-        channel: ChannelT,
+        channel: Channel,
         current_state: State,
         duration: float
-) -> IdentityMorphism[ChannelT]:
+) -> IdentityMorphism:
     """
     Creates an Identity Morphism that holds the current state for a specified duration.
     """
@@ -19,7 +20,7 @@ def Hold(
         duration=duration
     )
 
-def Marker(channel: ChannelT, current_state: State, label: str) -> IdentityMorphism[ChannelT]:
+def Marker(channel: Channel, current_state: State, label: str) -> IdentityMorphism:
     """Creates a zero-duration Identity Morphism to act as a marker."""
     return IdentityMorphism(
         name=f"Marker({label})",

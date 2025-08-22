@@ -1,4 +1,4 @@
-from catseq.model import State
+from catseq.protocols import State
 from catseq.hardware.base import BaseHardware
 from catseq.states.common import Uninitialized
 from catseq.states.ttl import TTLState

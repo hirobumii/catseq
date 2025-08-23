@@ -43,6 +43,49 @@ Cat-SEQ 框架的理论基石是**范畴论**，具体而言是**幺半范畴**�
 这个新模型通过在每次并行操作时强制同步，极大地简化了时序的构建，并从根本上解决了长序列的性能问题。
 
 ---
+### 1.4 核心模型 v3: 函数式API与延迟执行 (Core Model v3: Functional API and Deferred Execution)
+
+在v2模型的基础上，为了提升API的表达能力和易用性，我们引入了函数式的“延迟执行”模式。这个设计的核心思想是**将时序的“定义”与“执行”分离**。
+
+#### 1.4.1 `MorphismBuilder` (态射构建器)
+
+这个新模式的核心是 `catseq/builder.py` 中定义的 `MorphismBuilder` 类。它扮演一个“态射配方”或“构建器”的角色。
+
+*   **它是什么**: 当你调用一个新的工厂函数，如 `ttl.pulse(duration=10e-6)` 时，它不再立即返回一个具体的 `LaneMorphism`。相反，它返回一个 `MorphismBuilder` 对象。这个对象内部封装了一个“生成器”函数，这个函数知道如何根据一个给定的 `(channel, from_state)` 来创建最终的态射。
+*   **它不是什么**: 它本身不是一个态射。它没有 `dom`，`cod` 或 `duration`。它仅仅是一个待执行的计划。
+
+#### 1.4.2 新的复合与执行风格
+
+`MorphismBuilder` 类重载了 `@` 运算符，使其可以**在执行前进行复合**。
+
+*   **`@` (复合构建器)**: `builder1 @ builder2` 会将两个构建器的生成器函数链接起来，创建一个新的、更长的 `MorphismBuilder`。
+*   **`()` (执行)**: `MorphismBuilder` 是一个可调用对象 (callable)。当你最终拥有了完整的序列配方后，你可以通过调用它并传入一个 `channel` 对象来执行它，从而生成一个具体的、可执行的 `LaneMorphism`。
+
+**示例:**
+```python
+# 1. 从工厂函数创建构建器 (此时没有创建任何具体的态射)
+from catseq.morphisms import ttl
+from catseq.morphisms.common import hold
+
+pulse_def = ttl.pulse(10e-6)
+hold_def = hold(5e-3)
+
+# 2. 复合构建器来定义序列的“形状”
+sequence_def = pulse_def @ hold_def @ pulse_def
+
+# 3. 在最后一刻，将定义好的“形状”应用到一个具体的通道上
+#    这会触发执行，并返回一个v2模型中的 LaneMorphism
+ttl_channel = Channel("TTL_0", TTLDevice)
+final_sequence = sequence_def(ttl_channel)
+```
+
+#### 1.4.3 设计思路与权衡 (Design Rationale & Trade-offs)
+
+*   **为什么需要一个新类**: 我们曾考虑使用标准的 `functools.partial`，但它不允许我们重载 `@` 运算符。为了实现构建器之间的复合，我们必须拥有自己的类 (`MorphismBuilder`)。
+*   **便利性与安全性**: 在 `ttl.py` 的工厂函数（如 `turn_on`）中，我们为 `from_state` 提供了默认值（例如，`turn_on` 默认来自 `TTLOutputOff`）。这大大提升了编写简单序列时的便利性。但它也带来了一个风险：如果开发者在不恰当的上下文中使用它（例如，在一个已经是 `On` 的状态后调用 `turn_on()`），它会在执行时（而不是定义时）因违反逻辑而失败。这是一个在“便利性”和“绝对的显式安全”之间的权衡，我们选择了前者以优化用户体验。
+*   **通用 `hold`**: 这个新模式使得 `morphisms.common.hold` 变得更加通用。因为它是一个延迟执行的配方，所以一个单独的 `hold(duration)` 可以在任何通道（TTL, RWG等）上使用，在执行时它会自动适应前一个状态。这解决了为不同硬件创建不同 `hold` 函数的命名冲突问题。
+
+---
 
 ## 二、 类型与接口设计
 
@@ -86,6 +129,7 @@ catseq/
 ├── __init__.py
 ├── protocols.py         # 【已实现】定义核心协议 (State, Channel, HardwareInterface)
 ├── model.py             # 【已实现】核心模型 (PrimitiveMorphism, LaneMorphism)
+├── builder.py           # 【已实现】定义 MorphismBuilder，用于延迟执行
 │
 ├── states/              # 【已实现】状态词汇表包
 │   ├── ...
@@ -95,20 +139,21 @@ catseq/
 │   ├── ttl.py
 │   └── rwg.py
 │
-├── morphisms/           # 【部分实现】Morphism 工厂包
+├── morphisms/           # 【已实现】Morphism 工厂包 (返回 MorphismBuilder)
 │   ├── common.py
 │   └── ttl.py
 │
-├── sequence.py          # 【待实现】高级序列构建器 (Sequence Builder)
+├── sequence.py          # 【待实现】高级序列构建器 (如 repeat 函数)
 └── compiler.py          # 【未实现】编译器/调度器
 ```
 
 ### 组件职责详解 (最终版)
 
 * `protocols.py`: **类型基石**。定义了整个项目最核心的抽象基类与接口。
-* `model.py`: **代数核心**。定义了 `PrimitiveMorphism` 和 `LaneMorphism`，并实现了具有“智能同步”能力的 `@` 和 `|` 运算符。
+* `model.py`: **代数核心 (执行层)**。定义了 `PrimitiveMorphism` 和 `LaneMorphism`，并实现了具有“智能同步”能力的 `@` 和 `|` 运算符。这些是具体的、可执行的态射。
+* `builder.py`: **函数式API (定义层)**。定义了 `MorphismBuilder` 类，它使得时序的“定义”与“执行”可以被分离。
 * `states/` (包): **状态词汇表**。
 * `hardware/` (包): **物理规则库**。定义具体硬件类（如 `TTLDevice`）及其物理规则。
-* `morphisms/` (包): **Morphism 工厂**。提供 `Hold()`, `pulse()` 等便捷函数，用于创建 `PrimitiveMorphism` 和 `LaneMorphism`。
-* `sequence.py`: **(待实现)** **高级 API**。未来可以提供一个 `Sequence` 类，进一步简化时序构建。
+* `morphisms/` (包): **Morphism 工厂**。提供 `hold()`, `pulse()` 等便捷函数，用于创建 `MorphismBuilder` 对象。
+* `sequence.py`: **(待实现)** **高级 API**。未来可以提供一个 `Sequence` 类或 `repeat()` 这样的高阶函数，进一步简化时序构建。
 * `compiler.py`: **(未实现)** **编译器**。接收 `LaneMorphism` 对象，并将其翻译成目标平台的指令。

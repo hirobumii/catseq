@@ -72,6 +72,27 @@ def test_pulse_invalid_duration():
     with pytest.raises(ValueError, match="Pulse hold duration must be a positive number."):
         ttl.pulse(duration=-100e-9)
 
+def test_factories_have_correct_defaults(ttl_channel):
+    """
+    Tests that the morphism builders have the correct default from_state,
+    and that calling them without a state works as expected.
+    """
+    # Check the default state property on the builder
+    assert ttl.initialize().default_from_state == Uninitialized()
+    assert ttl.turn_on().default_from_state == TTLOutputOff()
+    assert ttl.turn_off().default_from_state == TTLOutputOn()
+    assert ttl.pulse(1e-6).default_from_state == TTLOutputOff()
+
+    # Check that calling with no from_state works
+    m_on = ttl.turn_on()(ttl_channel)
+    assert m_on.dom == ((ttl_channel, TTLOutputOff()),)
+
+    m_off = ttl.turn_off()(ttl_channel)
+    assert m_off.dom == ((ttl_channel, TTLOutputOn()),)
+
+    m_pulse = ttl.pulse(1e-6)(ttl_channel)
+    assert m_pulse.dom == ((ttl_channel, TTLOutputOff()),)
+
 def test_logical_validation_errors(ttl_channel):
     """
     Tests that logical errors (e.g. turning on an already-on channel)

@@ -22,7 +22,7 @@ def initialize() -> MorphismBuilder:
             duration=SINGLE_CYCLE_DURATION_S
         )
         return LaneMorphism.from_primitive(m)
-    return MorphismBuilder(single_generator=generator)
+    return MorphismBuilder(single_generator=generator, default_from_state=Uninitialized())
 
 def turn_on() -> MorphismBuilder:
     """Creates a deferred morphism to turn on a TTL channel's output."""
@@ -40,7 +40,7 @@ def turn_on() -> MorphismBuilder:
             duration=SINGLE_CYCLE_DURATION_S
         )
         return LaneMorphism.from_primitive(m)
-    return MorphismBuilder(single_generator=generator)
+    return MorphismBuilder(single_generator=generator, default_from_state=TTLOutputOff())
 
 def turn_off() -> MorphismBuilder:
     """Creates a deferred morphism to turn off a TTL channel's output."""
@@ -58,7 +58,7 @@ def turn_off() -> MorphismBuilder:
             duration=SINGLE_CYCLE_DURATION_S
         )
         return LaneMorphism.from_primitive(m)
-    return MorphismBuilder(single_generator=generator)
+    return MorphismBuilder(single_generator=generator, default_from_state=TTLOutputOn())
 
 def pulse(duration: float) -> MorphismBuilder:
     """
@@ -70,6 +70,3 @@ def pulse(duration: float) -> MorphismBuilder:
     # Compose the builder objects. The actual chaining of states happens
     # inside the builder's __matmul__ method at execution time.
     return turn_on() @ common_hold(duration) @ turn_off()
-
-# Convenient alias for the common hold function.
-hold = common_hold

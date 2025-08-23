@@ -8,8 +8,11 @@ class MorphismBuilder:
     This class wraps a list of generator functions that can be composed and
     then executed to produce a final, concrete LaneMorphism.
     """
-    def __init__(self, generators: List[Callable[[Channel, State], LaneMorphism]] | None = None, single_generator: Callable | None = None):
-        """Initializes the builder with a list of generator functions."""
+    def __init__(self,
+                 generators: List[Callable[[Channel, State], LaneMorphism]] | None = None,
+                 single_generator: Callable | None = None,
+                 default_from_state: State | None = None):
+        """Initializes the builder."""
         if generators is not None:
             self._generators = generators
         elif single_generator is not None:
@@ -17,13 +20,19 @@ class MorphismBuilder:
         else:
             self._generators = []
 
+        self.default_from_state = default_from_state
+
     def __matmul__(self, other: Self) -> Self:
         """
         Composes this MorphismBuilder with another in series by concatenating
-        their generator lists.
+        their generator lists. The default state of the new builder will be
+        the default state of the first builder in the sequence.
         """
         new_generators = self._generators + other._generators
-        return MorphismBuilder(generators=new_generators)
+        return MorphismBuilder(
+            generators=new_generators,
+            default_from_state=self.default_from_state
+        )
 
     def __call__(self, channel: Channel, from_state: State | None = None) -> LaneMorphism:
         """
@@ -32,8 +41,9 @@ class MorphismBuilder:
         from catseq.states.common import Uninitialized
         from catseq.model import LaneMorphism
 
+        # Use the provided from_state, or the builder's default, or Uninitialized.
         if from_state is None:
-            from_state = Uninitialized()
+            from_state = self.default_from_state if self.default_from_state is not None else Uninitialized()
 
         if not self._generators:
             return LaneMorphism(lanes={})

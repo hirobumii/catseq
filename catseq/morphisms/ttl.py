@@ -19,10 +19,12 @@ def initialize(channel: Channel) -> PrimitiveMorphism:
         duration=SINGLE_CYCLE_DURATION_S
     )
 
-def turn_on(channel: Channel, from_state: TTLState) -> PrimitiveMorphism:
+def turn_on(channel: Channel, from_state: TTLState = TTLOutputOff()) -> PrimitiveMorphism:
     """Creates a PrimitiveMorphism to turn on a TTL channel's output."""
     if not isinstance(from_state, TTLState):
         raise TypeError(f"from_state for turn_on must be a TTLState, not {type(from_state).__name__}")
+    if isinstance(from_state, TTLOutputOn):
+        raise ValueError("Cannot turn_on a channel that is already On.")
 
     to_state = TTLOutputOn()
     return PrimitiveMorphism(
@@ -32,10 +34,12 @@ def turn_on(channel: Channel, from_state: TTLState) -> PrimitiveMorphism:
         duration=SINGLE_CYCLE_DURATION_S
     )
 
-def turn_off(channel: Channel, from_state: TTLState) -> PrimitiveMorphism:
+def turn_off(channel: Channel, from_state: TTLState = TTLOutputOn()) -> PrimitiveMorphism:
     """Creates a PrimitiveMorphism to turn off a TTL channel's output."""
     if not isinstance(from_state, TTLState):
         raise TypeError(f"from_state for turn_off must be a TTLState, not {type(from_state).__name__}")
+    if isinstance(from_state, TTLOutputOff):
+        raise ValueError("Cannot turn_off a channel that is already Off.")
 
     to_state = TTLOutputOff()
     return PrimitiveMorphism(
@@ -45,13 +49,15 @@ def turn_off(channel: Channel, from_state: TTLState) -> PrimitiveMorphism:
         duration=SINGLE_CYCLE_DURATION_S
     )
 
-def pulse(channel: Channel, from_state: TTLState, duration: float) -> LaneMorphism:
+def pulse(channel: Channel, duration: float, from_state: TTLState = TTLOutputOff()) -> LaneMorphism:
     """
     Creates a composite LaneMorphism for a TTL pulse.
     The `duration` parameter specifies the time the signal is held high.
     """
     if duration <= 0:
         raise ValueError("Pulse hold duration must be a positive number.")
+    if isinstance(from_state, TTLOutputOn):
+        raise ValueError("Cannot pulse a channel that is already On.")
 
     m_on = turn_on(channel, from_state)
     

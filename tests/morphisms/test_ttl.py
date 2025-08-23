@@ -58,7 +58,8 @@ def test_pulse_creates_lanemorphism(ttl_channel):
     """
     start_state = TTLOutputOff()
     hold_duration = 100e-9
-    m = pulse(ttl_channel, start_state, duration=hold_duration)
+    # Note the new argument order
+    m = pulse(ttl_channel, duration=hold_duration, from_state=start_state)
 
     # Check the overall structure
     assert isinstance(m, LaneMorphism)
@@ -78,7 +79,48 @@ def test_pulse_creates_lanemorphism(ttl_channel):
 def test_pulse_invalid_duration(ttl_channel):
     """Tests that pulse raises ValueError for non-positive duration."""
     with pytest.raises(ValueError, match="Pulse hold duration must be a positive number."):
-        pulse(ttl_channel, TTLOutputOff(), duration=0)
+        pulse(ttl_channel, duration=0)
 
     with pytest.raises(ValueError, match="Pulse hold duration must be a positive number."):
-        pulse(ttl_channel, TTLOutputOff(), duration=-100e-9)
+        pulse(ttl_channel, duration=-100e-9)
+
+def test_turn_on_off_with_default_state(ttl_channel):
+    """
+    Tests that turn_on/turn_off use the correct default from_state.
+    """
+    # turn_on should default to a from_state of TTLOutputOff
+    m_on = turn_on(ttl_channel)
+    assert m_on.dom == ((ttl_channel, TTLOutputOff()),)
+    assert m_on.cod == ((ttl_channel, TTLOutputOn()),)
+
+    # turn_off should default to a from_state of TTLOutputOn
+    m_off = turn_off(ttl_channel)
+    assert m_off.dom == ((ttl_channel, TTLOutputOn()),)
+    assert m_off.cod == ((ttl_channel, TTLOutputOff()),)
+
+def test_pulse_with_default_state(ttl_channel):
+    """
+    Tests that pulse() uses the correct default from_state.
+    """
+    m = pulse(ttl_channel, duration=1e-6)
+    # The composite morphism should start from the default, which is TTLOutputOff
+    assert m.dom == ((ttl_channel, TTLOutputOff()),)
+    # And it should end back in the Off state
+    assert m.cod == ((ttl_channel, TTLOutputOff()),)
+
+def test_logical_validation_errors(ttl_channel):
+    """
+    Tests that logical errors (e.g. turning on an already-on channel)
+    are caught and raise ValueErrors.
+    """
+    # Test turning on a channel that is already on
+    with pytest.raises(ValueError, match="Cannot turn_on a channel that is already On"):
+        turn_on(ttl_channel, from_state=TTLOutputOn())
+
+    # Test turning off a channel that is already off
+    with pytest.raises(ValueError, match="Cannot turn_off a channel that is already Off"):
+        turn_off(ttl_channel, from_state=TTLOutputOff())
+
+    # Test pulsing a channel that is already on
+    with pytest.raises(ValueError, match="Cannot pulse a channel that is already On"):
+        pulse(ttl_channel, duration=1e-6, from_state=TTLOutputOn())

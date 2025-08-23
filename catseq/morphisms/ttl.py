@@ -1,10 +1,11 @@
 from __future__ import annotations
+from __future__ import annotations
 from catseq.protocols import State, Channel
 from catseq.model import PrimitiveMorphism, LaneMorphism
 from catseq.states.common import Uninitialized
 from catseq.states.ttl import TTLState, TTLOutputOn, TTLOutputOff
 from catseq.builder import MorphismBuilder
-from catseq.morphisms.common import hold as common_hold
+from catseq.morphisms.common import hold
 
 # Duration of a single RTMQ clock cycle (1 / 250 MHz).
 SINGLE_CYCLE_DURATION_S = 4e-9
@@ -69,4 +70,4 @@ def pulse(duration: float) -> MorphismBuilder:
     
     # Compose the builder objects. The actual chaining of states happens
     # inside the builder's __matmul__ method at execution time.
-    return turn_on() @ common_hold(duration) @ turn_off()
+    return turn_on() @ hold(duration) @ turn_off()

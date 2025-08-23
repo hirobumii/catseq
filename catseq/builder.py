@@ -29,7 +29,7 @@ class MorphismBuilder:
         the default state of the first builder in the sequence.
         """
         new_generators = self._generators + other._generators
-        return MorphismBuilder(
+        return type(self)(
             generators=new_generators,
             default_from_state=self.default_from_state
         )

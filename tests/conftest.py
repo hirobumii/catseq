@@ -19,18 +19,5 @@ def ch_a() -> Channel: return TTL_0
 def ch_b() -> Channel: return TTL_1
 
 @pytest.fixture
-def m_a1(ch_a) -> PrimitiveMorphism:
-    return PrimitiveMorphism(name="A1", dom=((ch_a, StateA()),), cod=((ch_a, StateB()),), duration=1.0)
-@pytest.fixture
-def m_a2(ch_a) -> PrimitiveMorphism:
-    return PrimitiveMorphism(name="A2", dom=((ch_a, StateB()),), cod=((ch_a, StateC()),), duration=1.5)
-@pytest.fixture
-def m_b1(ch_b) -> PrimitiveMorphism:
-    return PrimitiveMorphism(name="B1", dom=((ch_b, StateA()),), cod=((ch_b, StateB()),), duration=2.0)
-@pytest.fixture
-def m_b2(ch_b) -> PrimitiveMorphism:
-    return PrimitiveMorphism(name="B2", dom=((ch_b, StateB()),), cod=((ch_b, StateC()),), duration=2.5)
-
-@pytest.fixture
 def ttl_channel() -> Channel:
     return TTL_0

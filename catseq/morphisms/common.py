@@ -1,36 +1,45 @@
+from __future__ import annotations
 from catseq.protocols import State, Channel
-from catseq.model import IdentityMorphism
+from catseq.model import IdentityMorphism, LaneMorphism
+from catseq.builder import MorphismBuilder
 
 
-def Hold(
-        channel: Channel,
-        current_state: State,
-        duration: float
-) -> IdentityMorphism:
+def hold(duration: float) -> MorphismBuilder:
     """
-    Creates an Identity Morphism that holds the current state for a specified duration.
+    Creates a deferred hold operation.
+    This holds the channel in whatever state it is currently in.
     """
     if duration <= 0:
         raise ValueError("Hold duration must be a positive number.")
-    
-    return IdentityMorphism(
-        name=f"Hold({channel.name}, {duration:.2e}s)",
-        dom=((channel, current_state),),
-        cod=((channel, current_state),),
-        duration=duration
-    )
 
-def Marker(channel: Channel, current_state: State, label: str) -> IdentityMorphism:
-    """Creates a zero-duration Identity Morphism to act as a marker."""
-    return IdentityMorphism(
-        name=f"Marker({label})",
-        dom=((channel, current_state),),
-        cod=((channel, current_state),),
-        duration=0.0
-    )
+    def generator(channel: Channel, from_state: State) -> LaneMorphism:
+        m = IdentityMorphism(
+            name=f"hold({duration:.2e}s)",
+            dom=((channel, from_state),),
+            cod=((channel, from_state),),
+            duration=duration
+        )
+        return LaneMorphism.from_primitive(m)
 
-def WaitOnTrigger():
+    return MorphismBuilder(single_generator=generator)
+
+
+def marker(label: str) -> MorphismBuilder:
+    """Creates a deferred, zero-duration marker."""
+    def generator(channel: Channel, from_state: State) -> LaneMorphism:
+        m = IdentityMorphism(
+            name=f"marker('{label}')",
+            dom=((channel, from_state),),
+            cod=((channel, from_state),),
+            duration=0.0
+        )
+        return LaneMorphism.from_primitive(m)
+
+    return MorphismBuilder(single_generator=generator)
+
+
+def wait_on_trigger():
     raise NotImplementedError
 
-def Call():
+def call():
     raise NotImplementedError

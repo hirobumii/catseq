@@ -1,170 +1,178 @@
 import pytest
 import time
-from dataclasses import dataclass
 
 from catseq.protocols import State, HardwareInterface, Channel
 from catseq.model import PrimitiveMorphism, LaneMorphism, IdentityMorphism
+from catseq.builder import MorphismBuilder
 from .helpers import StateA, StateB, StateC
+
+# --- Builder Test Helpers ---
+
+def simple_builder(name: str, from_state: State, to_state: State, duration: float) -> MorphismBuilder:
+    """Creates a builder for a simple primitive morphism."""
+    def generator(channel: Channel, gen_from_state: State) -> LaneMorphism:
+        # The generator uses the state passed at call time, not definition time.
+        m = PrimitiveMorphism(name, dom=((channel, gen_from_state),), cod=((channel, to_state),), duration=duration)
+        return LaneMorphism.from_primitive(m)
+    return MorphismBuilder(single_generator=generator)
 
 # --- Correctness Tests for New Model ---
 
-def test_primitive_composition(m_a1, m_a2):
-    seq = m_a1 @ m_a2
+def test_builder_serial_composition(ch_a):
+    """Tests serial composition of builders."""
+    b1 = simple_builder("A1", from_state=StateA(), to_state=StateB(), duration=1.0)
+    b2 = simple_builder("A2", from_state=StateB(), to_state=StateC(), duration=1.5)
+
+    seq_builder = b1 @ b2
+    seq = seq_builder(ch_a, from_state=StateA())
+
     assert isinstance(seq, LaneMorphism)
     assert seq.duration == pytest.approx(2.5)
     assert seq.cod[0][1] == StateC()
 
-def test_tensor_synchronization(m_a1, m_b1):
+def test_tensor_synchronization(ch_a, ch_b):
+    """Tests parallel composition of concrete morphisms, which triggers synchronization."""
+    m_a1 = simple_builder("A1", StateA(), StateB(), 1.0)(ch_a, StateA())
+    m_b1 = simple_builder("B1", StateA(), StateB(), 2.0)(ch_b, StateA())
+
     seq = m_a1 | m_b1
     assert isinstance(seq, LaneMorphism)
     assert seq.duration == pytest.approx(2.0)
-    lane_a = seq.lanes[m_a1.channel]
+    lane_a = seq.lanes[ch_a]
     assert len(lane_a) == 2
     assert isinstance(lane_a[1], IdentityMorphism)
+    assert lane_a[1].duration == pytest.approx(1.0)
 
-def test_smart_composition_auto_hold(m_a1, m_b1):
-    # m_a1 is on ch_a (TTL_0), m_b1 is on ch_b (TTL_1)
-    # StateA -> StateB
+def test_smart_composition_auto_hold(ch_a, ch_b):
+    """Tests serial composition after a parallel block, which triggers auto-hold."""
+    m_a1 = simple_builder("A1", StateA(), StateB(), 1.0)(ch_a, StateA())
+    m_b1 = simple_builder("B1", StateA(), StateB(), 2.0)(ch_b, StateA())
     seq1 = m_a1 | m_b1
 
-    # m_a2_long is on ch_a, StateB -> StateC
-    m_a2_long = PrimitiveMorphism("A2_long", dom=((m_a1.channel, StateB()),), cod=((m_a1.channel, StateC()),), duration=1.5)
-
+    m_a2_long = simple_builder("A2_long", StateB(), StateC(), 1.5)(ch_a, StateB())
     final_seq = seq1 @ m_a2_long
 
     assert final_seq.duration == pytest.approx(3.5)
-
     final_cod_map = {res.name: state for res, state in final_seq.cod}
     assert final_cod_map["TTL_0"] == StateC()
     assert final_cod_map["TTL_1"] == StateB()
 
-def test_distributive_like_composition(m_a1, m_a2, m_b1, m_b2):
+def test_distributive_like_composition(ch_a, ch_b):
+    """Tests serial composition of two parallel morphisms."""
+    m_a1 = simple_builder("A1", StateA(), StateB(), 1.0)(ch_a, StateA())
+    m_a2 = simple_builder("A2", StateB(), StateC(), 1.5)(ch_a, StateB())
+    m_b1 = simple_builder("B1", StateA(), StateB(), 2.0)(ch_b, StateA())
+    m_b2 = simple_builder("B2", StateB(), StateC(), 2.5)(ch_b, StateB())
+
     seq1 = m_a1 | m_b1
     seq2 = m_a2 | m_b2
     final_seq = seq1 @ seq2
     assert final_seq.duration == pytest.approx(4.5)
 
-def test_repr_generation(m_a1, m_a2, m_b1):
-    # Test single primitive
+def test_repr_generation(ch_a, ch_b):
+    """Tests the __repr__ for various compositions."""
+    b_a1 = simple_builder("A1", StateA(), StateB(), 1.0)
+    b_a2 = simple_builder("A2", StateB(), StateC(), 1.5)
+    m_a1 = b_a1(ch_a, StateA())
+    m_b1 = simple_builder("B1", StateA(), StateB(), 2.0)(ch_b, StateA())
+
     assert repr(m_a1) == "A1"
-
-    # Test LaneMorphism from single primitive
-    seq_single = LaneMorphism.from_primitive(m_a1)
-    assert repr(seq_single) == "A1"
-
-    # Test serial composition
-    seq_a = m_a1 @ m_a2
+    seq_a = (b_a1 @ b_a2)(ch_a, StateA())
     assert repr(seq_a) == "(A1 @ A2)"
 
-    # Test parallel composition with padding
     seq_b = m_a1 | m_b1
-    # Note: The order in the repr depends on channel name sorting
     assert repr(seq_b) == "((A1 @ Pad(TTL_0)) | B1)"
-
-    # Test empty LaneMorphism
     assert repr(LaneMorphism(lanes={})) == "Identity"
 
 # --- Validation and Error Handling Tests ---
 
 def test_primitive_post_init_validation(ch_a, ch_b):
     """Tests the validation logic in PrimitiveMorphism.__post_init__."""
-    # Should fail if dom/cod have more than one channel
     with pytest.raises(ValueError, match="operate on exactly one channel"):
         PrimitiveMorphism("MultiDom", dom=((ch_a, StateA()), (ch_b, StateA())), cod=((ch_a, StateB()),), duration=1)
 
-    # Should fail if channel is inconsistent
     with pytest.raises(ValueError, match="channel must be consistent"):
         PrimitiveMorphism("Inconsistent", dom=((ch_a, StateA()),), cod=((ch_b, StateB()),), duration=1)
 
-def test_parallel_composition_fails_on_channel_overlap(m_a1, m_a2):
+def test_parallel_composition_fails_on_channel_overlap(ch_a):
     """Tests that parallel composition raises TypeError on channel overlap."""
+    m1 = simple_builder("M1", StateA(), StateB(), 1)(ch_a, StateA())
+    m2 = simple_builder("M2", StateB(), StateC(), 1)(ch_a, StateB())
     with pytest.raises(TypeError, match="Channels overlap"):
-        m_a1 | m_a2
+        m1 | m2
 
-def test_serial_composition_fails_on_missing_channel(m_a1, m_b2):
+def test_serial_composition_fails_on_missing_channel(ch_a, ch_b):
     """Tests that serial composition raises TypeError if a channel is missing."""
-    seq = LaneMorphism.from_primitive(m_a1)
+    m1 = simple_builder("M1", StateA(), StateB(), 1)(ch_a, StateA())
+    m2 = simple_builder("M2", StateB(), StateC(), 1)(ch_b, StateB())
     with pytest.raises(TypeError, match="Channel TTL_1 not present"):
-        seq @ m_b2
+        m1 @ m2
 
-def test_serial_composition_validates_state_seam(ch_a, ch_b):
-    """
-    Tests that serial composition validates the transition between states
-    at the composition seam, but only if the states are not identical.
-    """
+def test_serial_composition_validates_state_seam(ch_a):
+    """Tests that serial composition validates the transition between states."""
     class MockHardwareWithRules(HardwareInterface):
         def __init__(self, name: str): self.name = name
         def validate_transition(self, from_state: State, to_state: State) -> None:
-            # This rule rejects any transition from StateB to StateC
             if isinstance(from_state, StateB) and isinstance(to_state, StateC):
                 raise TypeError("Invalid hardware transition B->C")
 
-    # Replace the default hardware instance with our mock
     ch_a._hardware_instance = MockHardwareWithRules(ch_a.name)
 
-    # m1 ends in StateB
-    m1 = PrimitiveMorphism("M1", dom=((ch_a, StateA()),), cod=((ch_a, StateB()),), duration=1)
+    # m1 ends in State B
+    m1 = simple_builder("M1", StateA(), StateB(), 1)(ch_a, StateA())
+    # m2 starts with State C
+    m2 = simple_builder("M2", StateC(), StateA(), 1)(ch_a, StateC())
 
-    # m2 starts in StateA. Seam is B->A. States are different, so validate_transition
-    # should be called. Our mock doesn't forbid B->A, so this should pass.
-    m2_ok = PrimitiveMorphism("M2_ok", dom=((ch_a, StateA()),), cod=((ch_a, StateA()),), duration=1)
-    m1 @ m2_ok
-
-    # m3 starts in StateC. Seam is B->C. States are different.
-    # The mock hardware rule should be triggered and raise an error.
-    m3_bad = PrimitiveMorphism("M3_bad", dom=((ch_a, StateC()),), cod=((ch_a, StateA()),), duration=1)
+    # Composing m1 @ m2 should create a B->C transition on the seam for the
+    # hardware to validate, which our mock forbids.
     with pytest.raises(TypeError, match="Invalid hardware transition B->C"):
-        m1 @ m3_bad
+        m1 @ m2
 
-    # Restore the original hardware instance to not affect other tests
+    # Restore original hardware to not affect other tests
     from catseq.hardware.ttl import TTLDevice
     ch_a._hardware_instance = TTLDevice(ch_a.name)
 
-def test_dom_cod_sorting(m_a1, m_b1):
-    """
-    Tests that the `dom` and `cod` properties are correctly sorted by channel name.
-    TTL_0 (ch_a) should come before TTL_1 (ch_b).
-    """
+def test_dom_cod_sorting(ch_a, ch_b):
+    """Tests that the `dom` and `cod` properties are correctly sorted by channel name."""
+    m_a1 = simple_builder("A1", StateA(), StateB(), 1)(ch_a, StateA())
+    m_b1 = simple_builder("B1", StateA(), StateB(), 2)(ch_b, StateA())
     seq = m_b1 | m_a1 # Compose with b first
 
-    # DOM should be sorted: (ch_a, StateA), (ch_b, StateA)
     assert seq.dom[0][0].name == "TTL_0"
     assert seq.dom[1][0].name == "TTL_1"
-
-    # COD should be sorted: (ch_a, StateB), (ch_b, StateB)
     assert seq.cod[0][0].name == "TTL_0"
     assert seq.cod[1][0].name == "TTL_1"
 
-# --- Performance Test (final) ---
-
 def test_long_composition_performance_final(ch_a):
+    """Tests performance of composing builders."""
     num_compositions = 1000
-    step = PrimitiveMorphism("Step", dom=((ch_a, StateA()),), cod=((ch_a, StateA()),), duration=1e-6)
+    step_builder = simple_builder("Step", StateA(), StateA(), 1e-6)
 
     print(f"\n--- Starting FINAL performance test for {num_compositions} compositions ---")
     start_time = time.perf_counter()
-    long_sequence = LaneMorphism.from_primitive(step)
+
+    long_sequence_builder = step_builder
     for _ in range(num_compositions - 1):
-        long_sequence = long_sequence @ step
+        long_sequence_builder = long_sequence_builder @ step_builder
+
+    # Execution is now separate from definition
+    final_sequence = long_sequence_builder(ch_a, StateA())
     end_time = time.perf_counter()
     elapsed_time = end_time - start_time
     print(f"--- FINAL elapsed time: {elapsed_time:.6f} seconds ---")
 
-    assert isinstance(long_sequence, LaneMorphism)
-    assert len(long_sequence.lanes[ch_a]) == num_compositions
-    # Adjust assertion to a reasonable threshold for the more complex model
-    # This can be environment-dependent, so we give it a generous buffer.
+    assert isinstance(final_sequence, LaneMorphism)
+    assert len(final_sequence.lanes[ch_a]) == num_compositions
     assert elapsed_time < 0.8
 
-def test_composition_with_invalid_types(m_a1):
-    """
-    Tests that composing with a non-morphism type raises an AttributeError.
-    """
+def test_composition_with_invalid_types(ch_a):
+    """Tests that composing with a non-morphism type raises an AttributeError."""
+    m1 = simple_builder("M1", StateA(), StateB(), 1)(ch_a, StateA())
     with pytest.raises(AttributeError):
-        m_a1 | "not a morphism"
+        m1 | "not a morphism"  # type: ignore
 
     with pytest.raises(AttributeError):
-        m_a1 @ 123
+        m1 @ 123  # type: ignore
 
     with pytest.raises(AttributeError):
-        LaneMorphism.from_primitive(None)
+        LaneMorphism.from_primitive(None)  # type: ignore

@@ -130,15 +130,15 @@ def test_channel_constructor_error_handling():
 
     # Test for non-string name
     with pytest.raises(TypeError):
-        protocols.Channel(123, MockHardware)
+        protocols.Channel(123, MockHardware)  # type: ignore
 
     # Test for non-callable hardware_type
     with pytest.raises(TypeError, match="'int' object is not callable"):
-        protocols.Channel("test", 123)
+        protocols.Channel("test", 123)  # type: ignore
 
     # Test for hardware_type with incorrect __init__ signature
     class BadHardware:
         def __init__(self): pass # Does not accept 'name'
 
     with pytest.raises(TypeError, match=r"__init__\(\) got an unexpected keyword argument 'name'"):
-        protocols.Channel("test_bad_hw", BadHardware)
+        protocols.Channel("test_bad_hw", BadHardware)  # type: ignore

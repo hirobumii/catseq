@@ -1,6 +1,7 @@
 from typing import Callable, List, Self
 from catseq.protocols import Channel, State
 from catseq.model import LaneMorphism
+from catseq.states.common import Uninitialized
 
 class MorphismBuilder:
     """
@@ -38,9 +39,6 @@ class MorphismBuilder:
         """
         Executes the stored sequence of generators to produce a concrete LaneMorphism.
         """
-        from catseq.states.common import Uninitialized
-        from catseq.model import LaneMorphism
-
         # Use the provided from_state, or the builder's default, or Uninitialized.
         if from_state is None:
             from_state = self.default_from_state if self.default_from_state is not None else Uninitialized()

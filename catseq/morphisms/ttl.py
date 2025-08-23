@@ -1,5 +1,3 @@
-from __future__ import annotations
-from __future__ import annotations
 from catseq.protocols import State, Channel
 from catseq.model import PrimitiveMorphism, LaneMorphism
 from catseq.states.common import Uninitialized

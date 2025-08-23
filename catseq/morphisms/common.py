@@ -1,4 +1,3 @@
-from __future__ import annotations
 from catseq.protocols import State, Channel
 from catseq.model import IdentityMorphism, LaneMorphism
 from catseq.builder import MorphismBuilder

@@ -36,6 +36,9 @@ class Channel(ResourceIdentifier):
     _instances = {}
 
     def __new__(cls, name: str, hardware_type: Type[HardwareInterface]):
+        if not isinstance(name, str):
+            raise TypeError("Channel name must be a string.")
+
         # Implements a singleton pattern based on the channel name.
         if name in cls._instances:
             return cls._instances[name]

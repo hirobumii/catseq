@@ -43,20 +43,35 @@ def test_turn_off(ttl_channel):
     assert m.dom == ((ttl_channel, start_state),)
     assert m.cod == ((ttl_channel, TTLOutputOff()),)
 
+def test_turn_off_invalid_state(ttl_channel):
+    """Tests that turn_off raises TypeError for non-TTLState input."""
+    with pytest.raises(TypeError, match="from_state for turn_off must be a TTLState"):
+        turn_off(ttl_channel, Uninitialized())
+
 def test_pulse_creates_lanemorphism(ttl_channel):
-    """Tests that a pulse composes into a LaneMorphism."""
+    """
+    Tests that the pulse() factory correctly composes a LaneMorphism.
+    A pulse should be composed of three primitive morphisms:
+    1. turn_on:  TTLOutputOff -> TTLOutputOn
+    2. Hold:     Holds TTLOutputOn for the specified duration.
+    3. turn_off: TTLOutputOn -> TTLOutputOff
+    """
     start_state = TTLOutputOff()
     hold_duration = 100e-9
     m = pulse(ttl_channel, start_state, duration=hold_duration)
 
+    # Check the overall structure
     assert isinstance(m, LaneMorphism)
+    # The lane for our channel should contain the three composed primitives
     assert len(m.lanes[ttl_channel]) == 3
 
+    # Check the initial and final states of the composite morphism
     final_dom_state = m.dom[0][1]
     final_cod_state = m.cod[0][1]
     assert final_dom_state == start_state
     assert final_cod_state == TTLOutputOff()
 
+    # Check the total duration
     expected_duration = (2 * SINGLE_CYCLE_DURATION_S) + hold_duration
     assert m.duration == pytest.approx(expected_duration)
 

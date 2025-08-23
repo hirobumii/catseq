@@ -4,15 +4,9 @@ from dataclasses import dataclass
 from catseq.protocols import State, Channel
 from catseq.model import PrimitiveMorphism
 from catseq.hardware.ttl import TTLDevice
+from .helpers import StateA, StateB, StateC
 
 # --- Test Fixtures and Dummy Classes ---
-
-@dataclass(frozen=True)
-class StateA(State): pass
-@dataclass(frozen=True)
-class StateB(State): pass
-@dataclass(frozen=True)
-class StateC(State): pass
 
 # Concrete Channel instances for use in all tests
 TTL_0 = Channel("TTL_0", TTLDevice)

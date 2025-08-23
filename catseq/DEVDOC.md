@@ -115,10 +115,14 @@ final_sequence = sequence_def(ttl_channel)
 ### 3. DAC 状态 (`states/dac.py`)
 * `DACState(State)`, `DACOff`, `DACStatic(voltage: float)`
 
-### 4. RWG 状态 (`states/rwg.py`)
+### 4. RWG 状态 (`states/rwg.py`) — 架构演进
 
-(注意：此处的定义可能已过时，请以 `catseq/states/rwg.py` 文件为准)
-* `WaveformParams`, `StaticWaveform`, `RWGState`, `RWGReady`, `RWGStaged`, `RWGArmed`, `RWGActive`
+RWG 的状态模型是理解本框架抽象层次的关键。我们区分了**用户感知的“纯净”状态**和**硬件内部的“物理”状态**。
+
+*   **用户感知的状态 (User-Facing State)**: 对于时序编写者而言，RWG 通道只有两种状态：`RF_Off` (一个抽象概念) 和 `RWGActive`。`RWGActive` 是一个富状态，它包含了当前时刻精确的频率、幅度和相位信息。用户编写的序列，例如 `ramp1 @ ramp2`，是 `RWGActive` 状态之间的一个平滑过渡。
+*   **内部物理状态 (Internal Physical States)**: `RWGReady`, `RWGStaged`, `RWGArmed` 这些状态真实存在于硬件的生命周期中，但它们是**对用户隐藏的实现细节**。用户不应该也无须为这些中间状态手动创建态射。
+
+这个设计的核心思想是，用户只需声明**期望的物理输出（波形）**，而将如何实现这一输出的复杂底层操作（参数写入、准备、使能）交给**编译器**去自动编排。
 
 ---
 
@@ -156,4 +160,8 @@ catseq/
 * `hardware/` (包): **物理规则库**。定义具体硬件类（如 `TTLDevice`）及其物理规则。
 * `morphisms/` (包): **Morphism 工厂**。提供 `hold()`, `pulse()` 等便捷函数，用于创建 `MorphismBuilder` 对象。
 * `sequence.py`: **(待实现)** **高级 API**。未来可以提供一个 `Sequence` 类或 `repeat()` 这样的高阶函数，进一步简化时序构建。
-* `compiler.py`: **(未实现)** **编译器**。接收 `LaneMorphism` 对象，并将其翻译成目标平台的指令。
+* `compiler.py`: **(未实现)** **编译器**。接收用户定义的“纯净” `LaneMorphism` 对象，并将其编排、优化和翻译成目标平台的最终指令。该组件的**关键职责**包括：
+    *   **序列展开 (Sequence Expansion)**: 将用户定义的高阶态射（如一个 `ramp`）展开成其底层的、硬件必需的低阶态射序列（如 `stage_waveform @ arm_and_rf_on @ active_ramp`）。
+    *   **调度与交错 (Scheduling and Interleaving)**: 智能地重新排序指令以优化硬件使用。最关键的例子是，编译器会自动将下一个波形 (`ramp2`) 的参数写入 (`stage_waveform`) 操作，调度到当前波形 (`ramp1`) 正在输出的时间段内并行执行。
+    *   **时长计算与修正 (Duration Calculation and Patching)**: 对类似 `stage_waveform` 这样需要与硬件通信的态射，编译器需要计算其真实的执行时间，并更新 `LaneMorphism` 对象中的占位时长。
+    *   **时序约束验证 (Timing Constraint Validation)**: 在调度完成后，编译器必须验证复杂的硬件时序约束。例如，它需要确保 `ramp1` 的时长足够长，以隐藏 `ramp2` 的参数写入时间。如果时间不足，编译器应报错，并向用户提供清晰的反馈。

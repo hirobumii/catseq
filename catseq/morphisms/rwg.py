@@ -122,8 +122,8 @@ def linear_ramp(
 
         ramp_params = WaveformParams(
             sbg_id=sbg_id,
-            freq_coeffs=(inferred_start_freq, freq_slope),
-            amp_coeffs=(inferred_start_amp, amp_slope),
+            freq_coeffs=(inferred_start_freq, freq_slope, None, None),
+            amp_coeffs=(inferred_start_amp, amp_slope, None, None),
             phase_reset=phase_reset,
         )
 

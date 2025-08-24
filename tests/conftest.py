@@ -1,5 +1,6 @@
 import pytest
 from dataclasses import dataclass
+from functools import partial
 
 from catseq.protocols import State, Channel
 from catseq.model import PrimitiveMorphism

@@ -8,6 +8,7 @@ from catseq.states.common import Uninitialized
 from catseq.states.rwg import RWGReady, WaveformParams, RWGActive
 from catseq.morphisms.rwg import play, initialize, linear_ramp
 from catseq.pending import PENDING
+
 from tests.conftest import TestRWGDevice
 
 # --- Channels ---
@@ -22,6 +23,7 @@ def test_pgc_cooling_use_case():
     """
     # --- 1. Define the Initialization Step ---
     # This step initializes two different RWG channels to different carrier frequencies.
+
 
     # Use the new `initialize` factory to create builders
     init_rwg0_def = initialize(carrier_freq=80.0, duration=1e-6)
@@ -48,6 +50,7 @@ def test_pgc_cooling_use_case():
 
     # --- 2. Define the PGC Cooling Step ---
     # This step consists of two different ramps running in parallel on the two channels.
+
     # We now use the high-level `linear_ramp` factory.
     # Crucially, we do NOT provide start_freq or start_amp, as these will be
     # inferred from the context provided by `initialize_all`.
@@ -99,6 +102,7 @@ def test_pgc_cooling_use_case():
     final_state_rwg1 = final_cod_map["RWG1"]
     assert isinstance(final_state_rwg1, RWGActive) # Type narrowing
     assert np.isclose(final_state_rwg1.waveforms[0].freq, -5.0)
+
 
     print("\nPGC Cooling use-case test constructed and verified successfully!")
     print(f"Final sequence: {full_sequence}")

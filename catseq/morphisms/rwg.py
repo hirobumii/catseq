@@ -17,6 +17,13 @@ from catseq.states.rwg import (
 # A small tolerance for float comparisons in state validation.
 _STATE_TOLERANCE = 1e-9
 
+def _pad_coeffs(coeffs: Tuple[Optional[float], ...], target_length: int = 4) -> Tuple[float, ...]:
+    """Pads a tuple of coefficients with zeros to a target length."""
+    num_missing = target_length - len(coeffs)
+    # Replace None with 0.0 before padding
+    cleaned_coeffs = [c if c is not None else 0.0 for c in coeffs]
+    return tuple(cleaned_coeffs + [0.0] * num_missing)
+
 def _evaluate_waveforms_at_time(
     t: float,
     params_tuple: Tuple[WaveformParams, ...],
@@ -28,8 +35,8 @@ def _evaluate_waveforms_at_time(
     """
     static_waveforms = []
     for params in params_tuple:
-        d0_f, d1_f, d2_f, d3_f = params.freq_coeffs
-        d0_a, d1_a, d2_a, d3_a = params.amp_coeffs
+        d0_f, d1_f, d2_f, d3_f = _pad_coeffs(params.freq_coeffs)
+        d0_a, d1_a, d2_a, d3_a = _pad_coeffs(params.amp_coeffs)
 
         freq = d0_f + d1_f*t + d2_f*(t**2)/2.0 + d3_f*(t**3)/6.0
         amp = d0_a + d1_a*t + d2_a*(t**2)/2.0 + d3_a*(t**3)/6.0

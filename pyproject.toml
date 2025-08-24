@@ -27,6 +27,6 @@ ignore = ["E501", "E701"]
 
 [tool.mypy]
 # Allow mypy to work with the implicit namespace packages in this project.
-# This will be less necessary once __init__.py files are added,
-# but it is harmless to keep.
 namespace_packages = true
+# Exclude the temporary build directory created by pip/uv to avoid duplicate module errors.
+exclude = ["build/"]

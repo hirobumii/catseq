@@ -17,24 +17,16 @@ class WaveformParams(Dynamics):
     sbg_id: int
     """The ID of the SBG (0-127) these parameters apply to."""
 
-    freq_coeffs: Tuple[Optional[float], ...]
+    freq_coeffs: Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]
     """Taylor series coefficients (F0-F3) for frequency ramping."""
 
-    amp_coeffs: Tuple[Optional[float], ...]
+    amp_coeffs: Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]
     """Taylor series coefficients (A0-A3) for amplitude ramping."""
 
     initial_phase: Optional[float] = 0.0
     
     phase_reset: Optional[bool] = None
     """A flag to indicate if the phase accumulator should be reset."""
-
-    def __post_init__(self):
-        # Pad the coefficient tuples to a length of 4 to prevent index errors.
-        padded_freq = list(self.freq_coeffs) + [0.0] * (4 - len(self.freq_coeffs))
-        object.__setattr__(self, 'freq_coeffs', tuple(padded_freq[:4]))
-
-        padded_amp = list(self.amp_coeffs) + [0.0] * (4 - len(self.amp_coeffs))
-        object.__setattr__(self, 'amp_coeffs', tuple(padded_amp[:4]))
 
     @property
     def required_ramping_order(self) -> int:
@@ -84,10 +76,9 @@ class RWGState(State):
 class RWGReady(RWGState):
     """
     State: RF channel is initialized. The carrier is set, but no
-    waveform is active. The carrier_freq can be None to indicate a 'pending'
-    state whose value will be inferred during composition.
+    waveform is active.
     """
-    carrier_freq: Optional[float] = None
+    carrier_freq: float
 
 
 @dataclasses.dataclass(frozen=True)

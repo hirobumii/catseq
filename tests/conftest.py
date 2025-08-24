@@ -10,8 +10,17 @@ from .helpers import StateA, StateB, StateC
 
 # --- Test Fixtures and Dummy Classes ---
 
-# Create a pre-configured RWGDevice type for testing purposes
-TestRWGDevice = partial(RWGDevice, available_sbgs={0, 1, 2, 3}, max_ramping_order=3)
+class TestRWGDevice(RWGDevice):
+    """
+    A concrete RWGDevice class for testing that provides default parameters
+    to satisfy the RWGDevice.__init__ signature.
+    """
+    def __init__(self, name: str):
+        super().__init__(
+            name=name,
+            available_sbgs={0, 1, 2, 3},
+            max_ramping_order=3
+        )
 
 # Concrete Channel instances for use in all tests
 TTL_0 = Channel("TTL_0", TTLDevice)

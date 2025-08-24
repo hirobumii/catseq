@@ -12,7 +12,38 @@ from catseq.states.rwg import (
     WaveformParams,
     StaticWaveform,
 )
-from catseq.morphisms.rwg import play
+from catseq.states.common import Uninitialized
+from catseq.morphisms.rwg import play, initialize, linear_ramp
+
+# --- Test Cases ---
+
+def test_initialize_morphism(rwg_channel):
+    """Tests the initialize() factory function for RWGs."""
+    carrier_freq = 120.5
+    duration = 5e-6
+
+    # 1. Test that the factory returns a builder
+    init_def = initialize(carrier_freq=carrier_freq, duration=duration)
+    assert isinstance(init_def, MorphismBuilder)
+
+    # 2. Test execution of the builder
+    start_state = Uninitialized()
+    result_lm = init_def(rwg_channel, from_state=start_state)
+
+    assert isinstance(result_lm, LaneMorphism)
+    assert result_lm.duration == duration
+
+    # 3. Check domain and codomain
+    assert result_lm.dom[0][1] == start_state
+
+    cod_state = result_lm.cod[0][1]
+    assert isinstance(cod_state, RWGReady)
+    assert cod_state.carrier_freq == carrier_freq
+
+    # 4. Test that it fails from an incorrect starting state
+    with pytest.raises(TypeError, match="can only be called from an Uninitialized state"):
+        init_def(rwg_channel, from_state=RWGReady(carrier_freq=100.0))
+
 
 # --- Test Fixtures ---
 
@@ -122,3 +153,45 @@ def test_play_composition(rwg_channel, ready_state):
     assert isinstance(cod_state, RWGActive)
     final_freq = d0_f + d2_f*(5e-6)**2/2.0
     assert np.isclose(cod_state.waveforms[0].freq, final_freq)
+
+
+def test_linear_ramp_factory(rwg_channel, ready_state):
+    """Tests the linear_ramp() factory, including start state inference."""
+    duration = 20e-6
+
+    # --- Case 1: All parameters explicit ---
+    ramp1_def = linear_ramp(
+        duration=duration,
+        start_freq=10.0,
+        end_freq=20.0,
+        start_amp=0.1,
+        end_amp=0.5
+    )
+    ramp1_lm = ramp1_def(rwg_channel, from_state=ready_state)
+    cod1 = ramp1_lm.cod[0][1]
+    assert isinstance(cod1, RWGActive)
+    assert np.isclose(cod1.waveforms[0].freq, 20.0)
+    assert np.isclose(cod1.waveforms[0].amp, 0.5)
+
+    # --- Case 2: Infer start_freq and start_amp from an Active state ---
+    ramp2_def = linear_ramp(duration=duration, end_freq=5.0, end_amp=0.2)
+    # Execute this ramp from the end-state of the previous one
+    ramp2_lm = ramp2_def(rwg_channel, from_state=cod1)
+    cod2 = ramp2_lm.cod[0][1]
+    assert isinstance(cod2, RWGActive)
+    assert np.isclose(cod2.waveforms[0].freq, 5.0)
+    assert np.isclose(cod2.waveforms[0].amp, 0.2)
+    # Check that the start point was correctly inferred from cod1
+    assert np.isclose(ramp2_lm.lanes[rwg_channel][0].dynamics[0].freq_coeffs[0], 20.0)
+    assert np.isclose(ramp2_lm.lanes[rwg_channel][0].dynamics[0].amp_coeffs[0], 0.5)
+
+    # --- Case 3: Infer start_freq and start_amp from a Ready state (should be 0) ---
+    ramp3_def = linear_ramp(duration=duration, end_freq=-10.0, end_amp=0.8)
+    ramp3_lm = ramp3_def(rwg_channel, from_state=ready_state)
+    cod3 = ramp3_lm.cod[0][1]
+    assert isinstance(cod3, RWGActive)
+    assert np.isclose(cod3.waveforms[0].freq, -10.0)
+    assert np.isclose(cod3.waveforms[0].amp, 0.8)
+    # Check that the start point was correctly inferred as 0.0
+    assert np.isclose(ramp3_lm.lanes[rwg_channel][0].dynamics[0].freq_coeffs[0], 0.0)
+    assert np.isclose(ramp3_lm.lanes[rwg_channel][0].dynamics[0].amp_coeffs[0], 0.0)

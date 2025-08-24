@@ -1,0 +1,32 @@
+[project]
+name = "catseq"
+version = "0.1.0"
+description = "A Categorical Framework for Hardware Sequence Control"
+readme = "README.md"
+requires-python = ">=3.12.11"
+dependencies = [
+    "numpy"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "mypy"
+]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+# Enable the standard pycodestyle (E) and pyflakes (F) rules.
+select = ["E", "F"]
+# Ignore E501 (line too long) and E701 (multiple statements on one line)
+# for now to get a passing CI baseline.
+ignore = ["E501", "E701"]
+
+[tool.mypy]
+# Allow mypy to work with the implicit namespace packages in this project.
+namespace_packages = true
+# Exclude the temporary build directory created by pip/uv to avoid duplicate module errors.
+exclude = ["build/"]

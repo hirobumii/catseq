@@ -1,5 +1,4 @@
-import dataclasses
-from typing import Tuple, Union, Optional, Dict
+from typing import Tuple, Optional, Dict
 import numpy as np
 
 from catseq.protocols import Channel, State
@@ -7,7 +6,6 @@ from catseq.model import PrimitiveMorphism, LaneMorphism
 from catseq.builder import MorphismBuilder
 from catseq.states.common import Uninitialized
 from catseq.states.rwg import (
-    RWGState,
     RWGReady,
     RWGActive,
     WaveformParams,
@@ -124,8 +122,8 @@ def linear_ramp(
 
         ramp_params = WaveformParams(
             sbg_id=sbg_id,
-            freq_coeffs=(inferred_start_freq, freq_slope),
-            amp_coeffs=(inferred_start_amp, amp_slope),
+            freq_coeffs=(inferred_start_freq, freq_slope, None, None),
+            amp_coeffs=(inferred_start_amp, amp_slope, None, None),
             phase_reset=phase_reset,
         )
 

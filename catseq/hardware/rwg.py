@@ -1,10 +1,8 @@
-from typing import Set, Union, Tuple
-import numpy as np
+from typing import Set, Tuple
 from catseq.protocols import State
 from catseq.hardware.base import BaseHardware
-from catseq.states.common import Uninitialized
 from catseq.states.rwg import (
-    RWGState, RWGReady, RWGStaged, RWGArmed, RWGActive, WaveformParams, StaticWaveform
+    RWGActive, WaveformParams
 )
 
 

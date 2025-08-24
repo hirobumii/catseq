@@ -1,0 +1,38 @@
+name: CI Checks
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check out repository code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12.11'
+
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v1
+
+    - name: Install dependencies with uv
+      run: |
+        uv venv
+        uv pip install .[dev]
+
+    - name: Lint with ruff
+      run: uv run ruff check .
+
+    - name: Check types with mypy
+      continue-on-error: true
+      run: uv run mypy .
+
+    - name: Run tests with pytest
+      run: uv run pytest

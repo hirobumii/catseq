@@ -17,7 +17,7 @@ specific attributes properly, and are immutable. The logic within
 import pytest
 import numpy as np
 from dataclasses import FrozenInstanceError
-from catseq.protocols import State, Dynamics
+from catseq.protocols import State
 from catseq.states.rwg import (
     WaveformParams, StaticWaveform, RWGState, RWGReady, RWGStaged, RWGArmed, RWGActive
 )

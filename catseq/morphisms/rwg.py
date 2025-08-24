@@ -57,6 +57,85 @@ def _evaluate_waveforms_at_time(
     return tuple(sorted(static_waveforms, key=lambda wf: wf.sbg_id))
 
 
+def initialize(
+    carrier_freq: float,
+    duration: float = 1e-6
+) -> MorphismBuilder:
+    """
+    Creates a deferred morphism to initialize an RWG channel to a Ready state.
+    """
+    def generator(channel: Channel, from_state: State) -> LaneMorphism:
+        if not isinstance(from_state, Uninitialized):
+            raise TypeError(
+                f"RWG initialize() can only be called from an Uninitialized state, "
+                f"not {type(from_state).__name__}."
+            )
+
+        to_state = RWGReady(carrier_freq=carrier_freq)
+        m = PrimitiveMorphism(
+            name=f"{channel.name}.init({carrier_freq:.1f}MHz)",
+            dom=((channel, from_state),),
+            cod=((channel, to_state),),
+            duration=duration,
+        )
+        return LaneMorphism.from_primitive(m)
+
+    return MorphismBuilder(single_generator=generator)
+
+
+def linear_ramp(
+    duration: float,
+    end_freq: float,
+    end_amp: float,
+    start_freq: Optional[float] = None,
+    start_amp: Optional[float] = None,
+    sbg_id: int = 0,
+    phase_reset: bool = False,
+) -> MorphismBuilder:
+    """
+    A high-level factory to create a linear ramp for frequency and amplitude.
+
+    If start_freq or start_amp are not provided, they are inferred from the
+    preceding morphism's state at composition time.
+    """
+    def generator(channel: Channel, from_state: State) -> LaneMorphism:
+        # --- Infer Start Point from Context ---
+        inferred_start_freq = start_freq
+        inferred_start_amp = start_amp
+
+        if isinstance(from_state, RWGActive):
+            # Find the specific SBG from the previous state
+            from_wf = next((wf for wf in from_state.waveforms if wf.sbg_id == sbg_id), None)
+            if from_wf:
+                if inferred_start_freq is None:
+                    inferred_start_freq = from_wf.freq
+                if inferred_start_amp is None:
+                    inferred_start_amp = from_wf.amp
+
+        # If still not determined (e.g., from_state was RWGReady), default to 0.
+        if inferred_start_freq is None:
+            inferred_start_freq = 0.0
+        if inferred_start_amp is None:
+            inferred_start_amp = 0.0
+
+        # --- Build Waveform from Inferred Parameters ---
+        freq_slope = (end_freq - inferred_start_freq) / duration
+        amp_slope = (end_amp - inferred_start_amp) / duration
+
+        ramp_params = WaveformParams(
+            sbg_id=sbg_id,
+            freq_coeffs=(inferred_start_freq, freq_slope),
+            amp_coeffs=(inferred_start_amp, amp_slope),
+            phase_reset=phase_reset,
+        )
+
+        # Manually build the morphism, similar to `play`
+        play_builder = play(duration=duration, params=(ramp_params,))
+        return play_builder(channel, from_state=from_state)
+
+    return MorphismBuilder(single_generator=generator)
+
+
 def play(
     duration: float,
     params: Tuple[WaveformParams, ...],

@@ -39,7 +39,6 @@ class WaveformParams(Dynamics):
     @property
     def required_ramping_order(self) -> int:
         """Returns the minimum ramping order required to execute this waveform."""
-        # This property now relies on the __post_init__ to pad the tuples.
         if any(c is not None and not np.isclose(c, 0.0, atol=self._ZERO_TOLERANCE) 
                for c in (self.freq_coeffs[3], self.amp_coeffs[3])):
             return 3
@@ -85,9 +84,10 @@ class RWGState(State):
 class RWGReady(RWGState):
     """
     State: RF channel is initialized. The carrier is set, but no
-    waveform is active.
+    waveform is active. The carrier_freq can be None to indicate a 'pending'
+    state whose value will be inferred during composition.
     """
-    carrier_freq: float
+    carrier_freq: Optional[float] = None
 
 
 @dataclasses.dataclass(frozen=True)

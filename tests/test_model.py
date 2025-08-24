@@ -125,7 +125,7 @@ def test_serial_composition_validates_state_seam(ch_a):
 
     # Composing m1 @ m2 should create a B->C transition on the seam for the
     # hardware to validate, which our mock forbids.
-    with pytest.raises(TypeError, match="Invalid hardware transition B->C"):
+    with pytest.raises(TypeError, match="Invalid transition on channel TTL_0"):
         m1 @ m2
 
     # Restore original hardware to not affect other tests

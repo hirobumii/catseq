@@ -1,9 +1,9 @@
-from __future__ import annotations
 from typing import Tuple, Self, Optional, Dict, List
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from collections import defaultdict
 import functools
 from catseq.protocols import Channel, State, Dynamics, HardwareInterface
+from catseq.pending import fill_in_pending_state
 
 # --- Helper Functions ---
 
@@ -37,10 +37,10 @@ class PrimitiveMorphism:
     def __repr__(self) -> str:
         return self.name
 
-    def __or__(self, other: Self | LaneMorphism) -> "LaneMorphism":
+    def __or__(self, other: Self | "LaneMorphism") -> "LaneMorphism":
         return LaneMorphism.from_primitive(self) | other
 
-    def __matmul__(self, other: Self | LaneMorphism) -> "LaneMorphism":
+    def __matmul__(self, other: Self | "LaneMorphism") -> "LaneMorphism":
         return LaneMorphism.from_primitive(self) @ other
 
 @dataclass(frozen=True)
@@ -103,26 +103,61 @@ class LaneMorphism:
         return type(self)(lanes=new_lanes)
 
     def __matmul__(self, other: Self | PrimitiveMorphism) -> Self:
-        other_lanes = other.lanes if isinstance(other, LaneMorphism) else {other.channel: (other,)}
+        # If other is a PrimitiveMorphism, wrap it in a LaneMorphism
+        other_morphism = other if isinstance(other, LaneMorphism) else LaneMorphism.from_primitive(other)
 
-        new_lanes = self.lanes.copy()
+        # Create a mutable copy of the other morphism's lanes for potential modification
+        reconstructed_other_lanes = other_morphism.lanes.copy()
 
         self_cod_map = {ch: lane[-1].cod[0][1] for ch, lane in self.lanes.items()}
-        for ch, other_lane in other_lanes.items():
+
+        # --- V4 INFERENCE AND VALIDATION ---
+        for ch, other_lane in reconstructed_other_lanes.items():
             if ch not in self_cod_map:
                 raise TypeError(f"Composition Error: Channel {ch.name} not present in the preceding morphism.")
 
             from_state = self_cod_map[ch]
-            to_state = other_lane[0].dom[0][1]
-            if from_state != to_state:
-                ch.instance.validate_transition(from_state, to_state)
+            to_state_template = other_lane[0].dom[0][1]
 
-        for ch, other_lane in other_lanes.items():
-            new_lanes[ch] = new_lanes[ch] + other_lane
+            # Attempt to fill in pending fields
+            filled_to_state = fill_in_pending_state(to_state_template, from_state)
 
+            # Strict validation: the preceding state must exactly match the (now filled) subsequent state
+            if from_state != filled_to_state:
+                # If they don't match, try a hardware-level validation for a more specific error
+                try:
+                    ch.instance.validate_transition(from_state, to_state_template)
+                except Exception as e:
+                    # Re-raise the specific hardware validation error
+                    raise TypeError(f"Invalid transition on channel {ch.name} from {from_state} to {to_state_template}") from e
+
+                # If hardware validation passes but they still don't match, it's a logical error
+                raise TypeError(
+                    f"Composition Error on channel {ch.name}: State mismatch. "
+                    f"Cannot transition from {from_state} to {filled_to_state} (inferred from {to_state_template})."
+                )
+
+            # --- V4 RECONSTRUCTION ---
+            # If inference resulted in a new state, reconstruct the primitive and the lane
+            if filled_to_state is not to_state_template:
+                original_prim = other_lane[0]
+                # Create a new primitive with the inferred dom state
+                new_prim = replace(original_prim, dom=((ch, filled_to_state),))
+                # Reconstruct the lane with the new primitive at the start
+                reconstructed_other_lanes[ch] = (new_prim,) + other_lane[1:]
+
+        # --- V2 CORE COMPOSITION AND SYNCHRONIZATION ---
+        new_lanes = self.lanes.copy()
+
+        # Append the (potentially reconstructed) lanes from the other morphism
+        for ch, lane_to_append in reconstructed_other_lanes.items():
+            new_lanes[ch] = new_lanes.get(ch, ()) + lane_to_append
+
+        # Calculate the new total durations for all lanes
         lane_durations = {ch: sum(m.duration for m in lane) for ch, lane in new_lanes.items()}
         max_duration = max(lane_durations.values()) if lane_durations else 0
 
+        # Synchronize lanes by padding shorter ones with IdentityMorphisms
         for ch in list(new_lanes.keys()):
             dur = lane_durations.get(ch, 0)
             if abs(dur - max_duration) > 1e-12:

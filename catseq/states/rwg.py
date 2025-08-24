@@ -1,7 +1,8 @@
 import dataclasses
-from typing import Optional, Tuple, ClassVar
+from typing import Optional, Tuple, ClassVar, Union
 import numpy as np
 from catseq.protocols import State, Dynamics
+from catseq.pending import PENDING, PendingType
 
 
 @dataclasses.dataclass(frozen=True)
@@ -78,7 +79,7 @@ class RWGReady(RWGState):
     State: RF channel is initialized. The carrier is set, but no
     waveform is active.
     """
-    carrier_freq: float
+    carrier_freq: Union[float, PendingType] = PENDING
 
 
 @dataclasses.dataclass(frozen=True)
@@ -86,7 +87,7 @@ class RWGStaged(RWGState):
     """
     State: Waveform process parameters have been written to staging registers.
     """
-    carrier_freq: float
+    carrier_freq: Union[float, PendingType] = PENDING
 
 
 @dataclasses.dataclass(frozen=True)
@@ -95,8 +96,8 @@ class RWGArmed(RWGState):
     State: Waveform process parameters are effective (loaded into active
     logic), but the final RF output is off.
     """
-    carrier_freq: float
     waveforms: Tuple[StaticWaveform, ...]
+    carrier_freq: Union[float, PendingType] = PENDING
 
 
 @dataclasses.dataclass(frozen=True)
@@ -105,5 +106,5 @@ class RWGActive(RWGState):
     State: RF channel is actively outputting a signal. This is a snapshot
     of the instantaneous physical values.
     """
-    carrier_freq: float
     waveforms: Tuple[StaticWaveform, ...]
+    carrier_freq: Union[float, PendingType] = PENDING

@@ -1,0 +1,28 @@
+[project]
+name = "catseq"
+version = "0.1.0"
+description = "A Categorical Framework for Hardware Sequence Control"
+readme = "README.md"
+requires-python = ">=3.12.11"
+dependencies = [
+    "numpy"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "mypy"
+]
+
+[tool.ruff]
+# Set line length to 88, which is the default for "black"
+line-length = 88
+# Enable the standard pycodestyle (E) and pyflakes (F) rules.
+select = ["E", "F"]
+
+[tool.mypy]
+# Allow mypy to work with the implicit namespace packages in this project.
+# This will be less necessary once __init__.py files are added,
+# but it is harmless to keep.
+namespace_packages = true

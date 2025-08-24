@@ -15,7 +15,7 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.12.11'
 
@@ -23,13 +23,15 @@ jobs:
       uses: astral-sh/setup-uv@v1
 
     - name: Install dependencies with uv
-      run: uv pip install .[dev]
+      run: |
+        uv venv
+        uv pip install .[dev]
 
     - name: Lint with ruff
-      run: ruff check .
+      run: uv run ruff check .
 
     - name: Check types with mypy
-      run: mypy .
+      run: uv run mypy .
 
     - name: Run tests with pytest
-      run: pytest
+      run: uv run pytest

@@ -1,6 +1,5 @@
-import pytest
 from dataclasses import dataclass
-from typing import Union, Optional
+from typing import Union
 
 from catseq.protocols import State
 from catseq.pending import PENDING, PendingType, fill_in_pending_state

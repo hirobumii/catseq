@@ -1,12 +1,10 @@
-import pytest
 import numpy as np
 
 from catseq.model import LaneMorphism
 from catseq.protocols import Channel
-from catseq.hardware.rwg import RWGDevice
 from catseq.states.common import Uninitialized
-from catseq.states.rwg import RWGReady, WaveformParams, RWGActive
-from catseq.morphisms.rwg import play, initialize, linear_ramp
+from catseq.states.rwg import RWGReady, RWGActive
+from catseq.morphisms.rwg import initialize, linear_ramp
 from catseq.pending import PENDING
 
 from tests.conftest import TestRWGDevice

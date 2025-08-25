@@ -68,3 +68,44 @@ This project is currently a work in progress. The core framework for sequence de
 
 - **Framework Design:** For a deep dive into the design, architecture, and concepts of the Cat-SEQ framework itself, please see `catseq/DEVDOC.md`.
 - **Hardware & Protocols:** For detailed specifications of the RTMQ ISA, RTLink protocol, and hardware modules, please refer to the documents in the `doc/` directory.
+
+## Development
+
+### Setup
+
+To set up a local development environment, it is recommended to use a virtual environment. The project uses `uv` for fast package management.
+
+1.  **Create a virtual environment:**
+    ```bash
+    uv venv
+    ```
+
+2.  **Activate the virtual environment:**
+    *   On macOS/Linux: `source .venv/bin/activate`
+    *   On Windows: `.venv\Scripts\activate`
+
+3.  **Install the project in editable mode with development dependencies:**
+    ```bash
+    uv pip install -e .[dev]
+    ```
+
+### Running Checks
+
+Before submitting code, please run the following checks locally to ensure code quality and consistency. The CI pipeline will run these same checks.
+
+1.  **Linting with `ruff`:**
+    ```bash
+    ruff check .
+    ```
+
+2.  **Type Checking with `mypy`:**
+    ```bash
+    mypy .
+    ```
+
+3.  **Unit Tests with `pytest`:**
+    ```bash
+    pytest
+    ```
+
+The configurations for `ruff` and `mypy` can be found in the `pyproject.toml` file.

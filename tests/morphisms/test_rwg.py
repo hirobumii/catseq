@@ -5,7 +5,7 @@ from functools import partial
 from catseq.protocols import Channel
 from catseq.builder import MorphismBuilder
 from catseq.model import LaneMorphism
-from catseq.hardware.rwg import RWGDevice
+from catseq.hardware.rwg import RWGDevice, RWGChannel
 from catseq.states.rwg import (
     RWGReady,
     RWGActive,
@@ -57,7 +57,7 @@ def rwg_channel():
         enforce_continuity=True,
         max_freq_jump_mhz=1e-3
     )
-    return Channel("RF1", device_factory)
+    return RWGChannel("RF1", device_factory, sbg_ids=(0,))
 
 @pytest.fixture
 def ready_state():
@@ -162,10 +162,10 @@ def test_linear_ramp_factory(rwg_channel, ready_state):
     # --- Case 1: All parameters explicit ---
     ramp1_def = linear_ramp(
         duration=duration,
-        start_freq=10.0,
-        end_freq=20.0,
-        start_amp=0.1,
-        end_amp=0.5
+        start_freqs=(10.0,),
+        end_freqs=(20.0,),
+        start_amps=(0.1,),
+        end_amps=(0.5,),
     )
     ramp1_lm = ramp1_def(rwg_channel, from_state=ready_state)
     cod1 = ramp1_lm.cod[0][1]
@@ -174,7 +174,7 @@ def test_linear_ramp_factory(rwg_channel, ready_state):
     assert np.isclose(cod1.waveforms[0].amp, 0.5)
 
     # --- Case 2: Infer start_freq and start_amp from an Active state ---
-    ramp2_def = linear_ramp(duration=duration, end_freq=5.0, end_amp=0.2)
+    ramp2_def = linear_ramp(duration=duration, end_freqs=(5.0,), end_amps=(0.2,))
     # Execute this ramp from the end-state of the previous one
     ramp2_lm = ramp2_def(rwg_channel, from_state=cod1)
     cod2 = ramp2_lm.cod[0][1]
@@ -186,7 +186,7 @@ def test_linear_ramp_factory(rwg_channel, ready_state):
     assert np.isclose(ramp2_lm.lanes[rwg_channel][0].dynamics[0].amp_coeffs[0], 0.5)
 
     # --- Case 3: Infer start_freq and start_amp from a Ready state (should be 0) ---
-    ramp3_def = linear_ramp(duration=duration, end_freq=-10.0, end_amp=0.8)
+    ramp3_def = linear_ramp(duration=duration, end_freqs=(-10.0,), end_amps=(0.8,))
     ramp3_lm = ramp3_def(rwg_channel, from_state=ready_state)
     cod3 = ramp3_lm.cod[0][1]
     assert isinstance(cod3, RWGActive)

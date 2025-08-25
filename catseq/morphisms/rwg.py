@@ -83,52 +83,65 @@ def initialize(
 
 def linear_ramp(
     duration: float,
-    end_freq: float,
-    end_amp: float,
-    start_freq: Optional[float] = None,
-    start_amp: Optional[float] = None,
-    sbg_id: int = 0,
-    phase_reset: bool = False,
+    *,
+    end_freqs: Tuple[float, ...],
+    end_amps: Tuple[float, ...],
+    start_freqs: Optional[Tuple[float, ...]] = None,
+    start_amps: Optional[Tuple[float, ...]] = None,
+    phase_resets: Optional[Tuple[bool, ...]] = None,
 ) -> MorphismBuilder:
     """
-    A high-level factory to create a linear ramp for frequency and amplitude.
+    A high-level factory to create a linear ramp for N tones on an RWG channel.
 
-    If start_freq or start_amp are not provided, they are inferred from the
-    preceding morphism's state at composition time.
+    The channel must have an `sbg_ids` attribute. The number of frequencies and
+    amplitudes provided must match the number of sbg_ids on the channel.
+
+    If start frequencies/amplitudes are not provided, they are inferred from
+    the preceding morphism's state at composition time.
     """
     def generator(channel: Channel, from_state: State) -> LaneMorphism:
-        # --- Infer Start Point from Context ---
-        inferred_start_freq = start_freq
-        inferred_start_amp = start_amp
+        if not hasattr(channel, "sbg_ids") or not channel.sbg_ids:
+            raise TypeError("linear_ramp requires a channel with a non-empty 'sbg_ids' attribute.")
 
-        if isinstance(from_state, RWGActive):
-            # Find the specific SBG from the previous state
-            from_wf = next((wf for wf in from_state.waveforms if wf.sbg_id == sbg_id), None)
-            if from_wf:
-                if inferred_start_freq is None:
-                    inferred_start_freq = from_wf.freq
-                if inferred_start_amp is None:
-                    inferred_start_amp = from_wf.amp
+        sbg_ids = channel.sbg_ids
+        num_tones = len(sbg_ids)
 
-        # If still not determined (e.g., from_state was RWGReady), default to 0.
-        if inferred_start_freq is None:
-            inferred_start_freq = 0.0
-        if inferred_start_amp is None:
-            inferred_start_amp = 0.0
+        if len(end_freqs) != num_tones:
+            raise ValueError(f"Number of end_freqs ({len(end_freqs)}) must match the number of SBGs ({num_tones}).")
+        if len(end_amps) != num_tones:
+            raise ValueError(f"Number of end_amps ({len(end_amps)}) must match the number of SBGs ({num_tones}).")
 
-        # --- Build Waveform from Inferred Parameters ---
-        freq_slope = (end_freq - inferred_start_freq) / duration
-        amp_slope = (end_amp - inferred_start_amp) / duration
+        # Set up defaults for optional tuple arguments
+        _start_freqs = start_freqs or (None,) * num_tones
+        _start_amps = start_amps or (None,) * num_tones
+        _phase_resets = phase_resets or (False,) * num_tones
 
-        ramp_params = WaveformParams(
-            sbg_id=sbg_id,
-            freq_coeffs=(inferred_start_freq, freq_slope, None, None),
-            amp_coeffs=(inferred_start_amp, amp_slope, None, None),
-            phase_reset=phase_reset,
-        )
+        all_params = []
+        from_waveforms_map = {
+            wf.sbg_id: wf for wf in from_state.waveforms
+        } if isinstance(from_state, RWGActive) else {}
 
-        # Manually build the morphism, similar to `play`
-        play_builder = play(duration=duration, params=(ramp_params,))
+        for i in range(num_tones):
+            sbg_id = sbg_ids[i]
+            from_wf = from_waveforms_map.get(sbg_id)
+
+            # Infer start points from context if not explicitly provided
+            inferred_start_freq = _start_freqs[i] if _start_freqs[i] is not None else (from_wf.freq if from_wf else 0.0)
+            inferred_start_amp = _start_amps[i] if _start_amps[i] is not None else (from_wf.amp if from_wf else 0.0)
+
+            # Build waveform for this tone
+            freq_slope = (end_freqs[i] - inferred_start_freq) / duration
+            amp_slope = (end_amps[i] - inferred_start_amp) / duration
+
+            ramp_params = WaveformParams(
+                sbg_id=sbg_id,
+                freq_coeffs=(inferred_start_freq, freq_slope),
+                amp_coeffs=(inferred_start_amp, amp_slope),
+                phase_reset=_phase_resets[i],
+            )
+            all_params.append(ramp_params)
+
+        play_builder = play(duration=duration, params=tuple(all_params))
         return play_builder(channel, from_state=from_state)
 
     return MorphismBuilder(single_generator=generator)

@@ -6,13 +6,14 @@ from catseq.states.common import Uninitialized
 from catseq.states.rwg import RWGReady, RWGActive
 from catseq.morphisms.rwg import initialize, linear_ramp
 from catseq.pending import PENDING
+from catseq.hardware.rwg import RWGChannel
 
 from tests.conftest import TestRWGDevice
 
 # --- Channels ---
 # We use the pre-configured TestRWGDevice from the main conftest
-rwg0 = Channel("RWG0", TestRWGDevice)
-rwg1 = Channel("RWG1", TestRWGDevice)
+rwg0 = RWGChannel("RWG0", TestRWGDevice, sbg_ids=(0,))
+rwg1 = RWGChannel("RWG1", TestRWGDevice, sbg_ids=(1,))
 
 def test_pgc_cooling_use_case():
     """
@@ -53,8 +54,8 @@ def test_pgc_cooling_use_case():
     # Crucially, we do NOT provide start_freq or start_amp, as these will be
     # inferred from the context provided by `initialize_all`.
 
-    ramp_rwg0_def = linear_ramp(duration=20e-6, end_freq=20.0, end_amp=0.5, sbg_id=0)
-    ramp_rwg1_def = linear_ramp(duration=20e-6, end_freq=-5.0, end_amp=0.3, sbg_id=1)
+    ramp_rwg0_def = linear_ramp(duration=20e-6, end_freqs=(20.0,), end_amps=(0.5,))
+    ramp_rwg1_def = linear_ramp(duration=20e-6, end_freqs=(-5.0,), end_amps=(0.3,))
 
     # To create the parallel `pgc_cooling` block, we execute the builders
     # from a PENDING state. This creates concrete but context-independent morphisms.

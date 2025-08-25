@@ -1,8 +1,7 @@
-from typing import Tuple, Self, Optional, Dict, List
+from typing import Tuple, Self, Optional, Dict
 from dataclasses import dataclass, field, replace
-from collections import defaultdict
 import functools
-from catseq.protocols import Channel, State, Dynamics, HardwareInterface
+from catseq.protocols import Channel, State, Dynamics
 from catseq.pending import fill_in_pending_state
 
 # --- Helper Functions ---

@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Self
-from catseq.protocols import State, HardwareInterface, ResourceIdentifier
+from catseq.protocols import State, HardwareInterface
 
 
 class BaseHardware(ABC, HardwareInterface):

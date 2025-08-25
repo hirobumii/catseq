@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Type, Any
+from typing import Any
 from catseq.protocols import State
 
 # --- Sentinel Value for Pending Fields ---

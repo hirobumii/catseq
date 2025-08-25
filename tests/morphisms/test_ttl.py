@@ -1,8 +1,7 @@
 import pytest
-from catseq.protocols import State, Channel
 from catseq.model import PrimitiveMorphism, LaneMorphism
 from catseq.states.common import Uninitialized
-from catseq.states.ttl import TTLState, TTLOutputOn, TTLOutputOff
+from catseq.states.ttl import TTLOutputOn, TTLOutputOff
 from catseq.morphisms import ttl
 from catseq.builder import MorphismBuilder
 

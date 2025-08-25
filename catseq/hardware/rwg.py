@@ -1,5 +1,5 @@
-from typing import Set, Tuple
-from catseq.protocols import State
+from typing import Set, Tuple, Type
+from catseq.protocols import State, Channel, HardwareInterface
 from catseq.hardware.base import BaseHardware
 from catseq.states.rwg import (
     RWGActive, WaveformParams
@@ -87,3 +87,33 @@ class RWGDevice(BaseHardware):
                 f"Previous state ended in {from_state} but next state begins with {to_state}. "
                 "The endpoints of composed morphisms must be identical."
             )
+
+
+class RWGChannel(Channel):
+    """
+    A specialized Channel for an RWG output, which can be single- or multi-tone.
+    It is uniquely identified by its name and a tuple of SBG IDs.
+    """
+    _instances = {}
+
+    def __new__(cls, name: str, hardware_type: Type[HardwareInterface], sbg_ids: Tuple[int, ...]):
+        # A channel is uniquely identified by its name AND sbg_id configuration.
+        instance_key = (name, sbg_ids)
+        if instance_key in cls._instances:
+            return cls._instances[instance_key]
+
+        # Note: We call __new__ on the *base* Channel class to ensure it also
+        # gets its own singleton logic if needed, though in this model the RWGChannel
+        # cache is the primary one.
+        instance = super().__new__(cls, name, hardware_type)
+        cls._instances[instance_key] = instance
+        return instance
+
+    def __init__(self, name: str, hardware_type: Type[HardwareInterface], sbg_ids: Tuple[int, ...]):
+        if hasattr(self, 'sbg_ids'): # Already initialized
+            return
+        super().__init__(name, hardware_type)
+        self.sbg_ids = sbg_ids
+
+    def __repr__(self) -> str:
+        return f"<RWGChannel: {self.name} (SBGs: {self.sbg_ids})>"

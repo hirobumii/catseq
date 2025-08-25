@@ -2,7 +2,7 @@ import pytest
 
 from catseq.protocols import Channel
 from catseq.hardware.ttl import TTLDevice
-from catseq.hardware.rwg import RWGDevice
+from catseq.hardware.rwg import RWGDevice, RWGChannel
 
 # --- Test Fixtures and Dummy Classes ---
 
@@ -21,7 +21,7 @@ class TestRWGDevice(RWGDevice):
 # Concrete Channel instances for use in all tests
 TTL_0 = Channel("TTL_0", TTLDevice)
 TTL_1 = Channel("TTL_1", TTLDevice)
-RWG_0 = Channel("RWG_0", TestRWGDevice)
+RWG_0 = RWGChannel("RWG_0", TestRWGDevice, sbg_ids=(0,))
 
 
 # Fixtures now provide concrete channel instances

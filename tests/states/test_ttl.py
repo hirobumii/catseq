@@ -18,11 +18,15 @@ from dataclasses import FrozenInstanceError
 from catseq.protocols import State
 from catseq.states.ttl import TTLState, TTLInput, TTLOutputOn, TTLOutputOff
 
-@pytest.mark.parametrize("ttl_class", [
-    TTLInput,
-    TTLOutputOn,
-    TTLOutputOff,
-])
+
+@pytest.mark.parametrize(
+    "ttl_class",
+    [
+        TTLInput,
+        TTLOutputOn,
+        TTLOutputOff,
+    ],
+)
 def test_ttl_states(ttl_class):
     """
     Tests the properties of the concrete TTL state classes.
@@ -40,4 +44,4 @@ def test_ttl_states(ttl_class):
 
     # Verify that it is frozen (immutable)
     with pytest.raises(FrozenInstanceError):
-        state_instance.new_attribute = "test" # type: ignore
+        state_instance.new_attribute = "test"  # type: ignore

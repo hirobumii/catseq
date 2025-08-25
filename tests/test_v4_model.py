@@ -7,6 +7,7 @@ from .helpers import StateA, StateB
 
 # --- V4 Inference and Validation Tests ---
 
+
 def test_successful_inference_on_composition(ch_rwg):
     """
     Tests that a pending `carrier_freq` in the second morphism's `dom`
@@ -15,14 +16,24 @@ def test_successful_inference_on_composition(ch_rwg):
     # M1: Ends in a state with a fully defined carrier_freq
     m1_cod_state = RWGReady(carrier_freq=100.0)
     m1 = LaneMorphism.from_primitive(
-        PrimitiveMorphism("SetCarrier", dom=((ch_rwg, StateA()),), cod=((ch_rwg, m1_cod_state),), duration=1)
+        PrimitiveMorphism(
+            "SetCarrier",
+            dom=((ch_rwg, StateA()),),
+            cod=((ch_rwg, m1_cod_state),),
+            duration=1,
+        )
     )
 
     # M2: Starts in a state with a PENDING carrier_freq
     m2_dom_template = RWGReady(carrier_freq=PENDING)
-    m2_cod_state = RWGReady(carrier_freq=100.0) # The cod should be consistent
+    m2_cod_state = RWGReady(carrier_freq=100.0)  # The cod should be consistent
     m2 = LaneMorphism.from_primitive(
-        PrimitiveMorphism("DoSomething", dom=((ch_rwg, m2_dom_template),), cod=((ch_rwg, m2_cod_state),), duration=1)
+        PrimitiveMorphism(
+            "DoSomething",
+            dom=((ch_rwg, m2_dom_template),),
+            cod=((ch_rwg, m2_cod_state),),
+            duration=1,
+        )
     )
 
     # Act: Compose the two morphisms
@@ -40,21 +51,33 @@ def test_successful_inference_on_composition(ch_rwg):
     assert isinstance(inferred_dom_state, RWGReady)
     assert inferred_dom_state.carrier_freq == 100.0
 
+
 def test_validation_fails_on_mismatched_explicit_state(ch_rwg):
     """
     Tests that composition fails if M2's dom has a specific but incorrect
     value for a parameter.
     """
     m1 = LaneMorphism.from_primitive(
-        PrimitiveMorphism("SetCarrier100", dom=((ch_rwg, StateA()),), cod=((ch_rwg, RWGReady(100.0)),), duration=1)
+        PrimitiveMorphism(
+            "SetCarrier100",
+            dom=((ch_rwg, StateA()),),
+            cod=((ch_rwg, RWGReady(100.0)),),
+            duration=1,
+        )
     )
     # M2's dom explicitly requires a different carrier_freq
     m2 = LaneMorphism.from_primitive(
-        PrimitiveMorphism("Requires200", dom=((ch_rwg, RWGReady(200.0)),), cod=((ch_rwg, RWGReady(200.0)),), duration=1)
+        PrimitiveMorphism(
+            "Requires200",
+            dom=((ch_rwg, RWGReady(200.0)),),
+            cod=((ch_rwg, RWGReady(200.0)),),
+            duration=1,
+        )
     )
 
     with pytest.raises(TypeError, match="Invalid transition on channel RWG_0"):
         m1 @ m2
+
 
 def test_validation_fails_on_insufficient_information(ch_rwg):
     """
@@ -63,15 +86,26 @@ def test_validation_fails_on_insufficient_information(ch_rwg):
     """
     # M1 ends in a generic state that does NOT have a 'carrier_freq' attribute
     m1 = LaneMorphism.from_primitive(
-        PrimitiveMorphism("GenericOp", dom=((ch_rwg, StateA()),), cod=((ch_rwg, StateB()),), duration=1)
+        PrimitiveMorphism(
+            "GenericOp",
+            dom=((ch_rwg, StateA()),),
+            cod=((ch_rwg, StateB()),),
+            duration=1,
+        )
     )
     # M2 requires a 'carrier_freq' to be inferred
     m2 = LaneMorphism.from_primitive(
-        PrimitiveMorphism("NeedsCarrier", dom=((ch_rwg, RWGReady(PENDING)),), cod=((ch_rwg, RWGReady(100.0)),), duration=1)
+        PrimitiveMorphism(
+            "NeedsCarrier",
+            dom=((ch_rwg, RWGReady(PENDING)),),
+            cod=((ch_rwg, RWGReady(100.0)),),
+            duration=1,
+        )
     )
 
     with pytest.raises(TypeError, match="Invalid transition on channel RWG_0"):
         m1 @ m2
+
 
 def test_composition_succeeds_with_no_pending_values(ch_rwg):
     """
@@ -79,15 +113,26 @@ def test_composition_succeeds_with_no_pending_values(ch_rwg):
     and the states match perfectly.
     """
     m1 = LaneMorphism.from_primitive(
-        PrimitiveMorphism("Set100", dom=((ch_rwg, StateA()),), cod=((ch_rwg, RWGReady(100.0)),), duration=1)
+        PrimitiveMorphism(
+            "Set100",
+            dom=((ch_rwg, StateA()),),
+            cod=((ch_rwg, RWGReady(100.0)),),
+            duration=1,
+        )
     )
     m2 = LaneMorphism.from_primitive(
-        PrimitiveMorphism("Use100", dom=((ch_rwg, RWGReady(100.0)),), cod=((ch_rwg, RWGReady(100.0)),), duration=1)
+        PrimitiveMorphism(
+            "Use100",
+            dom=((ch_rwg, RWGReady(100.0)),),
+            cod=((ch_rwg, RWGReady(100.0)),),
+            duration=1,
+        )
     )
 
     result_seq = m1 @ m2
     assert result_seq.duration == 2.0
     assert result_seq.cod[0][1] == RWGReady(100.0)
+
 
 def test_multi_channel_composition_with_inference(ch_rwg, ch_a):
     """
@@ -96,20 +141,32 @@ def test_multi_channel_composition_with_inference(ch_rwg, ch_a):
     """
     # RWG Channel: Needs inference
     m_rwg1 = LaneMorphism.from_primitive(
-        PrimitiveMorphism("Set100", dom=((ch_rwg, StateA()),), cod=((ch_rwg, RWGReady(100.0)),), duration=2)
+        PrimitiveMorphism(
+            "Set100",
+            dom=((ch_rwg, StateA()),),
+            cod=((ch_rwg, RWGReady(100.0)),),
+            duration=2,
+        )
     )
     m_rwg2 = LaneMorphism.from_primitive(
-        PrimitiveMorphism("UsePending", dom=((ch_rwg, RWGReady(PENDING)),), cod=((ch_rwg, RWGReady(100.0)),), duration=1)
+        PrimitiveMorphism(
+            "UsePending",
+            dom=((ch_rwg, RWGReady(PENDING)),),
+            cod=((ch_rwg, RWGReady(100.0)),),
+            duration=1,
+        )
     )
 
     # TTL Channel: Simple composition
     m_ttl1 = LaneMorphism.from_primitive(
-        PrimitiveMorphism("TTL A->B", dom=((ch_a, StateA()),), cod=((ch_a, StateB()),), duration=1)
+        PrimitiveMorphism(
+            "TTL A->B", dom=((ch_a, StateA()),), cod=((ch_a, StateB()),), duration=1
+        )
     )
 
     # Create a parallel morphism for the first step
     seq1 = m_rwg1 | m_ttl1
-    assert seq1.duration == 2.0 # Check synchronization pad on TTL
+    assert seq1.duration == 2.0  # Check synchronization pad on TTL
 
     # Compose with the second RWG step
     result_seq = seq1 @ m_rwg2
@@ -130,4 +187,4 @@ def test_multi_channel_composition_with_inference(ch_rwg, ch_a):
     assert len(ttl_lane) == 3
     assert ttl_lane[2].name.startswith("Pad")
     assert ttl_lane[2].duration == 1.0
-    assert result_seq.cod[1][1] == StateB() # ch_a is sorted after rwg_ch
+    assert result_seq.cod[1][1] == StateB()  # ch_a is sorted after rwg_ch

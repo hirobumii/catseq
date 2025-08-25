@@ -11,13 +11,14 @@ def test_initialize_builder(ttl_channel):
     init_builder = ttl.initialize()
     assert isinstance(init_builder, MorphismBuilder)
 
-    m = init_builder(ttl_channel) # from_state defaults to Uninitialized
+    m = init_builder(ttl_channel)  # from_state defaults to Uninitialized
 
     primitive = m.lanes[ttl_channel][0]
     assert isinstance(primitive, PrimitiveMorphism)
     assert m.dom == ((ttl_channel, Uninitialized()),)
     assert m.cod == ((ttl_channel, TTLOutputOff()),)
     assert m.duration == ttl.SINGLE_CYCLE_DURATION_S
+
 
 def test_turn_on_builder(ttl_channel):
     """Tests the turn_on builder."""
@@ -28,11 +29,13 @@ def test_turn_on_builder(ttl_channel):
     assert m.dom == ((ttl_channel, TTLOutputOff()),)
     assert m.cod == ((ttl_channel, TTLOutputOn()),)
 
+
 def test_turn_on_invalid_state_types(ttl_channel):
     """Tests that the turn_on generator raises TypeError for non-TTLState input."""
     on_builder = ttl.turn_on()
     with pytest.raises(TypeError, match="from_state for turn_on must be a TTLState"):
         on_builder(ttl_channel, from_state=Uninitialized())
+
 
 def test_turn_off_builder(ttl_channel):
     """Tests the turn_off builder."""
@@ -42,6 +45,7 @@ def test_turn_off_builder(ttl_channel):
     m = off_builder(ttl_channel, from_state=TTLOutputOn())
     assert m.dom == ((ttl_channel, TTLOutputOn()),)
     assert m.cod == ((ttl_channel, TTLOutputOff()),)
+
 
 def test_pulse_builder(ttl_channel):
     """
@@ -63,13 +67,19 @@ def test_pulse_builder(ttl_channel):
     expected_duration = (2 * ttl.SINGLE_CYCLE_DURATION_S) + hold_duration
     assert m.duration == pytest.approx(expected_duration)
 
+
 def test_pulse_invalid_duration():
     """Tests that the pulse() factory raises ValueError for non-positive duration."""
-    with pytest.raises(ValueError, match="Pulse hold duration must be a positive number."):
+    with pytest.raises(
+        ValueError, match="Pulse hold duration must be a positive number."
+    ):
         ttl.pulse(duration=0)
 
-    with pytest.raises(ValueError, match="Pulse hold duration must be a positive number."):
+    with pytest.raises(
+        ValueError, match="Pulse hold duration must be a positive number."
+    ):
         ttl.pulse(duration=-100e-9)
+
 
 def test_factories_have_correct_defaults(ttl_channel):
     """
@@ -92,6 +102,7 @@ def test_factories_have_correct_defaults(ttl_channel):
     m_pulse = ttl.pulse(1e-6)(ttl_channel)
     assert m_pulse.dom == ((ttl_channel, TTLOutputOff()),)
 
+
 def test_logical_validation_errors(ttl_channel):
     """
     Tests that logical errors (e.g. turning on an already-on channel)
@@ -102,7 +113,9 @@ def test_logical_validation_errors(ttl_channel):
         ttl.turn_on()(ttl_channel, from_state=TTLOutputOn())
 
     # Test turning off a channel that is already off
-    with pytest.raises(ValueError, match="Cannot turn_off a channel that is already Off"):
+    with pytest.raises(
+        ValueError, match="Cannot turn_off a channel that is already Off"
+    ):
         ttl.turn_off()(ttl_channel, from_state=TTLOutputOff())
 
     # Test pulsing a channel that is already on. The error should come from the

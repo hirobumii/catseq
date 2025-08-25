@@ -16,9 +16,11 @@ from catseq.builder import MorphismBuilder
 
 # --- Test Fixtures ---
 
+
 class MockHardware(BaseHardware):
     def validate_transition(self, from_state: State, to_state: State) -> None:
         pass
+
 
 @pytest.fixture
 def mock_channel():
@@ -26,13 +28,19 @@ def mock_channel():
     Channel._instances.clear()
     return Channel(name="mock_ch", hardware_type=MockHardware)
 
+
 @pytest.fixture
 def mock_state():
     """Provides a mock state for tests."""
-    class MockState(State): pass
+
+    class MockState(State):
+        pass
+
     return MockState()
 
+
 # --- Tests for hold() ---
+
 
 def test_hold_builder(mock_channel, mock_state):
     """
@@ -57,6 +65,7 @@ def test_hold_builder(mock_channel, mock_state):
     assert m.dom == expected_domain
     assert m.cod == expected_domain
 
+
 @pytest.mark.parametrize("invalid_duration", [0, -0.1])
 def test_hold_builder_invalid_duration(invalid_duration):
     """
@@ -65,7 +74,9 @@ def test_hold_builder_invalid_duration(invalid_duration):
     with pytest.raises(ValueError, match="Hold duration must be a positive number"):
         hold(invalid_duration)
 
+
 # --- Tests for marker() ---
+
 
 def test_marker_builder(mock_channel, mock_state):
     """
@@ -82,7 +93,9 @@ def test_marker_builder(mock_channel, mock_state):
     assert primitive.name == "marker('test_marker')"
     assert m.dom == ((mock_channel, mock_state),)
 
+
 # --- Tests for Unimplemented Functions ---
+
 
 @pytest.mark.parametrize("func", [wait_on_trigger, call])
 def test_unimplemented_functions_raise_error(func):

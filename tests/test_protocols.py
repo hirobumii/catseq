@@ -15,17 +15,23 @@ from catseq import protocols
 
 # --- Test Fixtures and Mocks ---
 
+
 class MockHardware(protocols.HardwareInterface):
     """A mock implementation of the HardwareInterface for testing."""
+
     def __init__(self, name: str):
         self.name = name
-        self.validate_transition_calls = []
+        self.validate_transition_calls: list[tuple[protocols.State, protocols.State]] = []
 
-    def validate_transition(self, from_state: protocols.State, to_state: protocols.State) -> None:
+    def validate_transition(
+        self, from_state: protocols.State, to_state: protocols.State
+    ) -> None:
         """Mock validation method."""
         self.validate_transition_calls.append((from_state, to_state))
 
+
 # --- Tests for State ---
+
 
 def test_state_subclass_is_immutable_when_decorated():
     """
@@ -34,6 +40,7 @@ def test_state_subclass_is_immutable_when_decorated():
     effect, so subclasses must be explicitly decorated. This test verifies
     the intended usage pattern.
     """
+
     # Define a concrete state that is properly decorated.
     @dataclass(frozen=True)
     class MyState(protocols.State):
@@ -42,9 +49,11 @@ def test_state_subclass_is_immutable_when_decorated():
     s = MyState(value=1)
     with pytest.raises(FrozenInstanceError):
         # This attempt to mutate the instance must fail.
-        s.value = 2 # type: ignore
+        s.value = 2  # type: ignore
+
 
 # --- Tests for Channel ---
+
 
 def test_channel_is_singleton():
     """
@@ -59,6 +68,7 @@ def test_channel_is_singleton():
     ch2 = protocols.Channel("TTL_0", MockHardware)
 
     assert ch1 is ch2, "Channels with the same name should be the same object."
+
 
 def test_channel_properties_and_initialization():
     """
@@ -78,13 +88,21 @@ def test_channel_properties_and_initialization():
 
     # Try to "re-initialize" with different hardware, which should be ignored
     class AnotherMockHardware(protocols.HardwareInterface):
-        def __init__(self, name: str): pass
-        def validate_transition(self, from_state: protocols.State, to_state: protocols.State) -> None: pass
+        def __init__(self, name: str):
+            pass
+
+        def validate_transition(
+            self, from_state: protocols.State, to_state: protocols.State
+        ) -> None:
+            pass
 
     ch_same = protocols.Channel("DAC_1", AnotherMockHardware)
 
     assert ch_same is ch
-    assert isinstance(ch.instance, MockHardware), "Hardware instance should not have been replaced."
+    assert isinstance(ch.instance, MockHardware), (
+        "Hardware instance should not have been replaced."
+    )
+
 
 def test_channel_equality_and_hash():
     """
@@ -114,6 +132,7 @@ def test_channel_equality_and_hash():
     assert ch_a1 in channel_set
     assert ch_b in channel_set
 
+
 def test_channel_repr():
     """
     Tests the __repr__ method for a clear string representation.
@@ -121,6 +140,7 @@ def test_channel_repr():
     protocols.Channel._instances.clear()
     ch = protocols.Channel("TEST_CH", MockHardware)
     assert repr(ch) == "<Channel: TEST_CH>"
+
 
 def test_channel_constructor_error_handling():
     """
@@ -138,7 +158,10 @@ def test_channel_constructor_error_handling():
 
     # Test for hardware_type with incorrect __init__ signature
     class BadHardware:
-        def __init__(self): pass # Does not accept 'name'
+        def __init__(self):
+            pass  # Does not accept 'name'
 
-    with pytest.raises(TypeError, match=r"__init__\(\) got an unexpected keyword argument 'name'"):
+    with pytest.raises(
+        TypeError, match=r"__init__\(\) got an unexpected keyword argument 'name'"
+    ):
         protocols.Channel("test_bad_hw", BadHardware)  # type: ignore

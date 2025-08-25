@@ -17,6 +17,7 @@ from catseq.morphisms.rwg import play, initialize, linear_ramp
 
 # --- Test Cases ---
 
+
 def test_initialize_morphism(rwg_channel):
     """Tests the initialize() factory function for RWGs."""
     carrier_freq = 120.5
@@ -41,11 +42,14 @@ def test_initialize_morphism(rwg_channel):
     assert cod_state.carrier_freq == carrier_freq
 
     # 4. Test that it fails from an incorrect starting state
-    with pytest.raises(TypeError, match="can only be called from an Uninitialized state"):
+    with pytest.raises(
+        TypeError, match="can only be called from an Uninitialized state"
+    ):
         init_def(rwg_channel, from_state=RWGReady(carrier_freq=100.0))
 
 
 # --- Test Fixtures ---
+
 
 @pytest.fixture
 def rwg_channel():
@@ -55,14 +59,16 @@ def rwg_channel():
         available_sbgs={0, 1},
         max_ramping_order=3,
         enforce_continuity=True,
-        max_freq_jump_mhz=1e-3
+        max_freq_jump_mhz=1e-3,
     )
     return Channel("RF1", device_factory)
+
 
 @pytest.fixture
 def ready_state():
     """An initialized (Ready) RWG state with a realistic carrier."""
     return RWGReady(carrier_freq=95.0)
+
 
 @pytest.fixture
 def const_params_sbg0():
@@ -74,12 +80,15 @@ def const_params_sbg0():
         initial_phase=np.pi / 2,
     )
 
+
 # --- Test Cases ---
+
 
 def test_play_returns_builder(const_params_sbg0):
     """Tests that the factory function returns a MorphismBuilder."""
     p = play(duration=1e-6, params=(const_params_sbg0,))
     assert isinstance(p, MorphismBuilder)
+
 
 def test_play_from_ready_state(rwg_channel, ready_state, const_params_sbg0):
     """Tests the first transition from Ready -> Active."""
@@ -99,6 +108,7 @@ def test_play_from_ready_state(rwg_channel, ready_state, const_params_sbg0):
     expected_phase = (np.pi / 2 + 2 * np.pi * sbg_freq * 1e6 * duration) % (2 * np.pi)
     assert np.isclose(final_wf.phase, expected_phase)
 
+
 def test_play_from_active_continuous(rwg_channel):
     """Tests a continuous Active -> Active transition, including phase."""
     duration = 5e-6
@@ -107,10 +117,13 @@ def test_play_from_active_continuous(rwg_channel):
     d0_a = 0.5
     active_state_t0 = RWGActive(
         carrier_freq=95.0,
-        waveforms=(StaticWaveform(sbg_id=0, freq=d0_f, amp=d0_a, phase=start_phase),)
+        waveforms=(StaticWaveform(sbg_id=0, freq=d0_f, amp=d0_a, phase=start_phase),),
     )
     ramp_params = WaveformParams(
-        sbg_id=0, freq_coeffs=(d0_f, d1_f), amp_coeffs=(d0_a,), phase_reset=False,
+        sbg_id=0,
+        freq_coeffs=(d0_f, d1_f),
+        amp_coeffs=(d0_a,),
+        phase_reset=False,
     )
 
     play_def = play(duration=duration, params=(ramp_params,))
@@ -122,11 +135,12 @@ def test_play_from_active_continuous(rwg_channel):
     expected_phase = (start_phase + integral) % (2 * np.pi)
     assert np.isclose(cod_state.waveforms[0].phase, expected_phase)
 
+
 def test_play_from_active_discontinuous_fails(rwg_channel):
     """Tests that a discontinuous Active -> Active transition raises ValueError."""
     active_state_t0 = RWGActive(
         carrier_freq=95.0,
-        waveforms=(StaticWaveform(sbg_id=0, freq=5.0, amp=0.5, phase=0),)
+        waveforms=(StaticWaveform(sbg_id=0, freq=5.0, amp=0.5, phase=0),),
     )
     discontinuous_params = WaveformParams(
         sbg_id=0, freq_coeffs=(10.0,), amp_coeffs=(0.5,)
@@ -135,6 +149,7 @@ def test_play_from_active_discontinuous_fails(rwg_channel):
 
     with pytest.raises(ValueError, match="Frequency discontinuity"):
         play_def(rwg_channel, from_state=active_state_t0)
+
 
 def test_play_composition(rwg_channel, ready_state):
     """Tests chaining two play morphisms together with @."""
@@ -151,7 +166,7 @@ def test_play_composition(rwg_channel, ready_state):
     assert final_lm.duration == pytest.approx(15e-6)
     cod_state = final_lm.cod[0][1]
     assert isinstance(cod_state, RWGActive)
-    final_freq = d0_f + d2_f*(5e-6)**2/2.0
+    final_freq = d0_f + d2_f * (5e-6) ** 2 / 2.0
     assert np.isclose(cod_state.waveforms[0].freq, final_freq)
 
 
@@ -161,11 +176,7 @@ def test_linear_ramp_factory(rwg_channel, ready_state):
 
     # --- Case 1: All parameters explicit ---
     ramp1_def = linear_ramp(
-        duration=duration,
-        start_freq=10.0,
-        end_freq=20.0,
-        start_amp=0.1,
-        end_amp=0.5
+        duration=duration, start_freq=10.0, end_freq=20.0, start_amp=0.1, end_amp=0.5
     )
     ramp1_lm = ramp1_def(rwg_channel, from_state=ready_state)
     cod1 = ramp1_lm.cod[0][1]

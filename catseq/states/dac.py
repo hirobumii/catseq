@@ -10,6 +10,7 @@ class DACState(State):
 class DACOff(DACState):
     pass
 
+
 @dataclasses.dataclass(frozen=True)
 class DACStatic(DACState):
     voltage: float

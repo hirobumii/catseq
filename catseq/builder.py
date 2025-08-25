@@ -3,16 +3,20 @@ from catseq.protocols import Channel, State
 from catseq.model import LaneMorphism
 from catseq.states.common import Uninitialized
 
+
 class MorphismBuilder:
     """
     Represents a deferred-execution 'recipe' for a morphism.
     This class wraps a list of generator functions that can be composed and
     then executed to produce a final, concrete LaneMorphism.
     """
-    def __init__(self,
-                 generators: List[Callable[[Channel, State], LaneMorphism]] | None = None,
-                 single_generator: Callable | None = None,
-                 default_from_state: State | None = None):
+
+    def __init__(
+        self,
+        generators: List[Callable[[Channel, State], LaneMorphism]] | None = None,
+        single_generator: Callable | None = None,
+        default_from_state: State | None = None,
+    ):
         """Initializes the builder."""
         if generators is not None:
             self._generators = generators
@@ -31,17 +35,22 @@ class MorphismBuilder:
         """
         new_generators = self._generators + other._generators
         return type(self)(
-            generators=new_generators,
-            default_from_state=self.default_from_state
+            generators=new_generators, default_from_state=self.default_from_state
         )
 
-    def __call__(self, channel: Channel, from_state: State | None = None) -> LaneMorphism:
+    def __call__(
+        self, channel: Channel, from_state: State | None = None
+    ) -> LaneMorphism:
         """
         Executes the stored sequence of generators to produce a concrete LaneMorphism.
         """
         # Use the provided from_state, or the builder's default, or Uninitialized.
         if from_state is None:
-            from_state = self.default_from_state if self.default_from_state is not None else Uninitialized()
+            from_state = (
+                self.default_from_state
+                if self.default_from_state is not None
+                else Uninitialized()
+            )
 
         if not self._generators:
             return LaneMorphism(lanes={})

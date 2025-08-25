@@ -32,4 +32,4 @@ def test_uninitialized_state():
 
     # Verify that it is frozen (immutable)
     with pytest.raises(FrozenInstanceError):
-        uninitialized_state.new_attribute = "test" # type: ignore
+        uninitialized_state.new_attribute = "test"  # type: ignore

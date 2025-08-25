@@ -15,12 +15,16 @@ from catseq.states.rwg import (
 # A small tolerance for float comparisons in state validation.
 _STATE_TOLERANCE = 1e-9
 
-def _pad_coeffs(coeffs: Tuple[Optional[float], ...], target_length: int = 4) -> Tuple[float, ...]:
+
+def _pad_coeffs(
+    coeffs: Tuple[Optional[float], ...], target_length: int = 4
+) -> Tuple[float, ...]:
     """Pads a tuple of coefficients with zeros to a target length."""
     num_missing = target_length - len(coeffs)
     # Replace None with 0.0 before padding
     cleaned_coeffs = [c if c is not None else 0.0 for c in coeffs]
     return tuple(cleaned_coeffs + [0.0] * num_missing)
+
 
 def _evaluate_waveforms_at_time(
     t: float,
@@ -36,14 +40,19 @@ def _evaluate_waveforms_at_time(
         d0_f, d1_f, d2_f, d3_f = _pad_coeffs(params.freq_coeffs)
         d0_a, d1_a, d2_a, d3_a = _pad_coeffs(params.amp_coeffs)
 
-        freq = d0_f + d1_f*t + d2_f*(t**2)/2.0 + d3_f*(t**3)/6.0
-        amp = d0_a + d1_a*t + d2_a*(t**2)/2.0 + d3_a*(t**3)/6.0
+        freq = d0_f + d1_f * t + d2_f * (t**2) / 2.0 + d3_f * (t**3) / 6.0
+        amp = d0_a + d1_a * t + d2_a * (t**2) / 2.0 + d3_a * (t**3) / 6.0
 
-        integral_term = 2 * np.pi * 1e6 * (
-            d0_f*t +
-            d1_f*(t**2)/2.0 +
-            d2_f*(t**3)/6.0 +
-            d3_f*(t**4)/24.0
+        integral_term = (
+            2
+            * np.pi
+            * 1e6
+            * (
+                d0_f * t
+                + d1_f * (t**2) / 2.0
+                + d2_f * (t**3) / 6.0
+                + d3_f * (t**4) / 24.0
+            )
         )
 
         start_phase = start_phases.get(params.sbg_id, 0.0)
@@ -55,13 +64,11 @@ def _evaluate_waveforms_at_time(
     return tuple(sorted(static_waveforms, key=lambda wf: wf.sbg_id))
 
 
-def initialize(
-    carrier_freq: float,
-    duration: float = 1e-6
-) -> MorphismBuilder:
+def initialize(carrier_freq: float, duration: float = 1e-6) -> MorphismBuilder:
     """
     Creates a deferred morphism to initialize an RWG channel to a Ready state.
     """
+
     def generator(channel: Channel, from_state: State) -> LaneMorphism:
         if not isinstance(from_state, Uninitialized):
             raise TypeError(
@@ -96,6 +103,7 @@ def linear_ramp(
     If start_freq or start_amp are not provided, they are inferred from the
     preceding morphism's state at composition time.
     """
+
     def generator(channel: Channel, from_state: State) -> LaneMorphism:
         # --- Infer Start Point from Context ---
         inferred_start_freq = start_freq
@@ -103,7 +111,9 @@ def linear_ramp(
 
         if isinstance(from_state, RWGActive):
             # Find the specific SBG from the previous state
-            from_wf = next((wf for wf in from_state.waveforms if wf.sbg_id == sbg_id), None)
+            from_wf = next(
+                (wf for wf in from_state.waveforms if wf.sbg_id == sbg_id), None
+            )
             if from_wf:
                 if inferred_start_freq is None:
                     inferred_start_freq = from_wf.freq
@@ -154,16 +164,20 @@ def play(
             )
 
         start_phases: Dict[int, float] = {}
-        from_waveforms_map = {
-            wf.sbg_id: wf for wf in from_state.waveforms
-        } if isinstance(from_state, RWGActive) else {}
+        from_waveforms_map = (
+            {wf.sbg_id: wf for wf in from_state.waveforms}
+            if isinstance(from_state, RWGActive)
+            else {}
+        )
 
         for p in params:
             if p.phase_reset:
                 start_phases[p.sbg_id] = p.initial_phase or 0.0
             else:
                 from_wf = from_waveforms_map.get(p.sbg_id)
-                start_phases[p.sbg_id] = from_wf.phase if from_wf else (p.initial_phase or 0.0)
+                start_phases[p.sbg_id] = (
+                    from_wf.phase if from_wf else (p.initial_phase or 0.0)
+                )
 
         if isinstance(from_state, RWGActive):
             initial_waveforms = _evaluate_waveforms_at_time(0.0, params, start_phases)
@@ -172,7 +186,9 @@ def play(
             for sbg_id, from_wf in from_waveforms_map.items():
                 initial_wf = initial_waveforms_map.get(sbg_id)
                 if not initial_wf:
-                    raise ValueError(f"Continuity error: SBG {sbg_id} was active but is no longer defined.")
+                    raise ValueError(
+                        f"Continuity error: SBG {sbg_id} was active but is no longer defined."
+                    )
                 if not np.isclose(from_wf.freq, initial_wf.freq, atol=_STATE_TOLERANCE):
                     raise ValueError(f"Frequency discontinuity on SBG {sbg_id}.")
                 if not np.isclose(from_wf.amp, initial_wf.amp, atol=_STATE_TOLERANCE):

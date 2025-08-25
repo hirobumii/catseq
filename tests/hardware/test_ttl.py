@@ -18,23 +18,31 @@ from catseq.protocols import State
 
 # --- Test Fixtures ---
 
+
 @pytest.fixture
 def ttl_device():
     """Provides a default TTLDevice instance for tests."""
     return TTLDevice(name="test_ttl")
 
+
 class NotARealState(State):
     """A dummy state class for testing invalid transitions."""
+
     pass
+
 
 # --- Tests for Legal Transitions ---
 
-@pytest.mark.parametrize("from_state, to_state", [
-    (Uninitialized(), TTLOutputOn()),
-    (Uninitialized(), TTLOutputOff()),
-    (TTLOutputOn(), TTLOutputOff()),
-    (TTLOutputOff(), TTLOutputOn()),
-])
+
+@pytest.mark.parametrize(
+    "from_state, to_state",
+    [
+        (Uninitialized(), TTLOutputOn()),
+        (Uninitialized(), TTLOutputOff()),
+        (TTLOutputOn(), TTLOutputOff()),
+        (TTLOutputOff(), TTLOutputOn()),
+    ],
+)
 def test_ttl_legal_transitions(ttl_device, from_state, to_state):
     """
     Tests that `validate_transition` allows legal transitions between valid
@@ -43,9 +51,13 @@ def test_ttl_legal_transitions(ttl_device, from_state, to_state):
     try:
         ttl_device.validate_transition(from_state, to_state)
     except TypeError:
-        pytest.fail(f"Legal transition {from_state} -> {to_state} was incorrectly rejected.")
+        pytest.fail(
+            f"Legal transition {from_state} -> {to_state} was incorrectly rejected."
+        )
+
 
 # --- Tests for Illegal Transitions ---
+
 
 def test_ttl_illegal_to_state(ttl_device):
     """
@@ -54,6 +66,7 @@ def test_ttl_illegal_to_state(ttl_device):
     """
     with pytest.raises(TypeError, match="Invalid target stage"):
         ttl_device.validate_transition(Uninitialized(), NotARealState())
+
 
 def test_ttl_illegal_from_state(ttl_device):
     """

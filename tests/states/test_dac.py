@@ -17,6 +17,7 @@ from dataclasses import FrozenInstanceError
 from catseq.protocols import State
 from catseq.states.dac import DACState, DACOff, DACStatic
 
+
 def test_dac_off_state():
     """
     Tests the properties of the DACOff state.
@@ -33,7 +34,8 @@ def test_dac_off_state():
 
     # Verify that it is frozen (immutable)
     with pytest.raises(FrozenInstanceError):
-        dac_off_state.new_attribute = "test" # type: ignore
+        dac_off_state.new_attribute = "test"  # type: ignore
+
 
 def test_dac_static_state():
     """
@@ -53,4 +55,4 @@ def test_dac_static_state():
 
     # Verify that it is frozen (immutable)
     with pytest.raises(FrozenInstanceError):
-        dac_static_state.voltage = 4.56 # type: ignore
+        dac_static_state.voltage = 4.56  # type: ignore

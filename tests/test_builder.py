@@ -6,27 +6,46 @@ from .helpers import StateA, StateB, StateC
 
 # --- Test Fixtures and Mocks ---
 
+
 @pytest.fixture
 def generator_a_to_b() -> MorphismBuilder:
     """A builder that creates a morphism from StateA to StateB."""
+
     def generator(channel: Channel, from_state: State) -> LaneMorphism:
-        m = PrimitiveMorphism("A->B", dom=((channel, from_state),), cod=((channel, StateB()),), duration=1.0)
+        m = PrimitiveMorphism(
+            "A->B",
+            dom=((channel, from_state),),
+            cod=((channel, StateB()),),
+            duration=1.0,
+        )
         return LaneMorphism.from_primitive(m)
+
     return MorphismBuilder(single_generator=generator)
+
 
 @pytest.fixture
 def generator_b_to_c() -> MorphismBuilder:
     """A builder that creates a morphism from StateB to StateC."""
+
     def generator(channel: Channel, from_state: State) -> LaneMorphism:
-        m = PrimitiveMorphism("B->C", dom=((channel, from_state),), cod=((channel, StateC()),), duration=2.0)
+        m = PrimitiveMorphism(
+            "B->C",
+            dom=((channel, from_state),),
+            cod=((channel, StateC()),),
+            duration=2.0,
+        )
         return LaneMorphism.from_primitive(m)
+
     return MorphismBuilder(single_generator=generator)
 
+
 # --- Tests ---
+
 
 def test_builder_init(generator_a_to_b):
     """Tests that the MorphismBuilder is initialized correctly."""
     assert isinstance(generator_a_to_b, MorphismBuilder)
+
 
 def test_builder_call(generator_a_to_b, ch_a):
     """Tests that calling a builder executes its generator."""
@@ -38,6 +57,7 @@ def test_builder_call(generator_a_to_b, ch_a):
     assert morphism.cod == ((ch_a, StateB()),)
     assert morphism.duration == 1.0
 
+
 def test_builder_call_with_default_state(generator_a_to_b, ch_a):
     """Tests that calling without a from_state uses the default Uninitialized."""
     from catseq.states.common import Uninitialized
@@ -47,6 +67,7 @@ def test_builder_call_with_default_state(generator_a_to_b, ch_a):
 
     assert morphism.dom == ((ch_a, Uninitialized()),)
     assert morphism.cod == ((ch_a, StateB()),)
+
 
 def test_builder_composition(generator_a_to_b, generator_b_to_c, ch_a):
     """

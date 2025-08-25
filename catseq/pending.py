@@ -4,10 +4,13 @@ from catseq.protocols import State
 
 # --- Sentinel Value for Pending Fields ---
 
+
 class PendingType:
     """A unique type for the PENDING sentinel value."""
+
     def __repr__(self) -> str:
         return "PENDING"
+
 
 PENDING = PendingType()
 """
@@ -16,6 +19,7 @@ These fields are intended to be inferred from a preceding state during compositi
 """
 
 # --- State Inference Logic ---
+
 
 def fill_in_pending_state(template_state: State, source_state: State) -> State:
     """
@@ -33,7 +37,9 @@ def fill_in_pending_state(template_state: State, source_state: State) -> State:
         A new state object with pending fields filled, or the original
         template_state if no fields were filled.
     """
-    if not dataclasses.is_dataclass(template_state) or not isinstance(template_state, State):
+    if not dataclasses.is_dataclass(template_state) or not isinstance(
+        template_state, State
+    ):
         return template_state
 
     updates: dict[str, Any] = {}

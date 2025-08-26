@@ -89,6 +89,16 @@ To set up a local development environment, it is recommended to use a virtual en
     uv pip install -e .[dev]
     ```
 
+4.  **Set up OASM extensions (for RTMQ compiler support):**
+    ```bash
+    catseq-setup
+    ```
+    
+    This will install the necessary OASM extension files (including `rwg.py`) to the `oasm.dev` package. You can verify the installation with:
+    ```bash
+    catseq-verify
+    ```
+
 ### Running Checks
 
 Before submitting code, please run the following checks locally to ensure code quality and consistency. The CI pipeline will run these same checks.

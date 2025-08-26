@@ -15,6 +15,10 @@ dev = [
     "mypy"
 ]
 
+[project.scripts]
+catseq-setup = "catseq.setup:post_install"
+catseq-verify = "catseq.setup:verify_installation"
+
 [tool.ruff]
 line-length = 88
 

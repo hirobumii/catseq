@@ -188,60 +188,55 @@ def _compose_serial(m1: Morphism, m2: Morphism) -> Morphism:
             "Cannot compose: m1.cod and m2.dom are incompatible. "
             "Overlapping channels have different states."
         )
-    
-    # 合并dom和cod - 需要包含所有通道
-    new_dom = m1.dom.merge_with(m2.dom) 
-    new_cod = m1.cod.merge_with(m2.cod)
-    new_duration = m1.duration + m2.duration
-    
-    # 合并lanes
-    new_lanes: dict[Channel, list[AtomicOperation]] = {}
+
     all_channels = m1.channels | m2.channels
-    
+
+    # Correctly determine the new domain and codomain
+    # New domain is m1's domain + any channels only in m2
+    new_dom_states = m1.dom.channel_states.copy()
+    for ch in m2.channels - m1.channels:
+        new_dom_states[ch] = m2.dom.get_state(ch)
+    new_dom = SystemState(channel_states=new_dom_states)
+
+    # New codomain is m2's codomain + any channels only in m1
+    new_cod_states = m2.cod.channel_states.copy()
+    for ch in m1.channels - m2.channels:
+        new_cod_states[ch] = m1.cod.get_state(ch)
+    new_cod = SystemState(channel_states=new_cod_states)
+
+    new_duration = m1.duration + m2.duration
+    new_lanes: dict[Channel, list[AtomicOperation]] = {}
+
     for channel in all_channels:
         m1_ops = m1.get_lane_operations(channel)
         m2_ops = m2.get_lane_operations(channel)
-        
-        # Handle cases where channel is not in both morphisms
+
         if channel in m1.channels and channel not in m2.channels:
-            # Channel exists in m1 but not m2, need Identity for m2 duration
-            m1_end_state = m1.cod.get_state(channel)
-            identity_op = AtomicOperation(
-                channel=channel,
-                from_state=m1_end_state,
-                to_state=m1_end_state,
-                duration=m2.duration,
-                hardware_params={}
-            )
+            # Pad m2 with an identity operation
+            identity_state = m1.cod.get_state(channel)
+            identity_op = AtomicOperation(channel, identity_state, identity_state, m2.duration, {})
             new_lanes[channel] = m1_ops + [identity_op]
-            
         elif channel not in m1.channels and channel in m2.channels:
-            # Channel exists in m2 but not m1, need Identity for m1 duration  
-            m2_start_state = m2.dom.get_state(channel)
-            identity_op = AtomicOperation(
-                channel=channel,
-                from_state=m2_start_state,
-                to_state=m2_start_state,
-                duration=m1.duration,
-                hardware_params={}
-            )
+            # Pad m1 with an identity operation
+            identity_state = m2.dom.get_state(channel)
+            identity_op = AtomicOperation(channel, identity_state, identity_state, m1.duration, {})
             new_lanes[channel] = [identity_op] + m2_ops
+        else:  # Channel is in both morphisms
+            # The states at the composition boundary must match.
+            # This is already checked by is_compatible_for_composition, but we can be extra safe.
+            if m1.cod.get_state(channel) != m2.dom.get_state(channel):
+                raise CompositionError(
+                    f"State mismatch on channel {channel.name} during composition: "
+                    f"{m1.cod.get_state(channel)} != {m2.dom.get_state(channel)}"
+                )
             
-        else:
-            # Channel exists in both morphisms, direct concatenation
-            new_lanes[channel] = m1_ops + m2_ops
-    
-    # 验证每个通道的转换
-    for channel in all_channels:
-        if channel in m1.channels and channel in m2.channels:
-            # 通道在两个morphism中都存在，验证连接点状态
-            m1_end_state = m1.cod.get_state(channel)
-            m2_start_state = m2.dom.get_state(channel)
-            
+            # Also validate the physical transition between the two morphisms
             try:
-                channel.device.validate_transition(m1_end_state, m2_start_state)
+                channel.device.validate_transition(m1.cod.get_state(channel), m2.dom.get_state(channel))
             except Exception as e:
                 raise CompositionError(f"Invalid transition on {channel} during composition: {e}")
+
+            new_lanes[channel] = m1_ops + m2_ops
     
     return Morphism(
         dom=new_dom,

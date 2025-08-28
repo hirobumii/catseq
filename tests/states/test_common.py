@@ -12,7 +12,7 @@ data class, tests primarily focus on:
 
 import pytest
 from dataclasses import FrozenInstanceError
-from catseq.protocols import State
+from catseq.core.protocols import State
 from catseq.states.common import Uninitialized
 
 

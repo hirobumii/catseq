@@ -1,47 +1,34 @@
 # tests/states/test_ttl.py
-
 """
-Test suite for TTL states defined in `catseq/states/ttl.py`.
-
-This file tests the data classes for Transistor-Transistor Logic (TTL)
-states, including:
-- `TTLState`: The base state for TTL.
-- `TTLInput`: Represents the input state.
-- `TTLOutputOn`: Represents the high-voltage state.
-- `TTLOutputOff`: Represents the low-voltage state.
-
-Tests verify correct instantiation, subclassing, and immutability.
+Test suite for `catseq/states/ttl.py`.
 """
-
 import pytest
-from dataclasses import FrozenInstanceError
-from catseq.protocols import State
-from catseq.states.ttl import TTLState, TTLInput, TTLOutputOn, TTLOutputOff
+from dataclasses import is_dataclass, FrozenInstanceError
+from catseq.core.protocols import State
+from catseq.states.ttl import TTLState, TTLOn, TTLOff
 
+def test_ttl_state_inheritance():
+    """Tests that TTLState and its subclasses inherit from State."""
+    assert issubclass(TTLState, State)
+    assert issubclass(TTLOn, TTLState)
+    assert issubclass(TTLOff, TTLState)
 
-@pytest.mark.parametrize(
-    "ttl_class",
-    [
-        TTLInput,
-        TTLOutputOn,
-        TTLOutputOff,
-    ],
-)
-def test_ttl_states(ttl_class):
-    """
-    Tests the properties of the concrete TTL state classes.
-    - They should be subclasses of TTLState and State.
-    - They should be instantiable.
-    - They must be immutable (frozen).
-    """
-    # Verify subclassing
-    assert issubclass(ttl_class, TTLState)
-    assert issubclass(ttl_class, State)
+def test_ttl_states_are_dataclasses():
+    """Tests that TTLOn and TTLOff are frozen dataclasses."""
+    assert is_dataclass(TTLOn)
+    assert is_dataclass(TTLOff)
 
-    # Instantiate the state
-    state_instance = ttl_class()
-    assert isinstance(state_instance, ttl_class)
-
-    # Verify that it is frozen (immutable)
+    # Check if they are frozen
+    on_instance = TTLOn()
     with pytest.raises(FrozenInstanceError):
-        state_instance.new_attribute = "test"  # type: ignore
+        on_instance.some_attribute = "test"
+
+    off_instance = TTLOff()
+    with pytest.raises(FrozenInstanceError):
+        off_instance.some_attribute = "test"
+
+def test_ttl_state_equality():
+    """Tests that instances of the same state are equal."""
+    assert TTLOn() == TTLOn()
+    assert TTLOff() == TTLOff()
+    assert TTLOn() != TTLOff()

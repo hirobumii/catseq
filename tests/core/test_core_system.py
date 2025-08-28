@@ -5,8 +5,7 @@
 
 from dataclasses import dataclass
 from catseq.core import (
-    State, Channel, HardwareDevice, PhysicsViolationError,
-    SystemState, create_system_state,
+    State, Channel, create_system_state,
     AtomicOperation, Morphism
 )
 

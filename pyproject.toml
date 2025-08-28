@@ -21,6 +21,9 @@ catseq-verify = "catseq.setup:verify_installation"
 
 [tool.ruff]
 line-length = 88
+exclude = [
+    "catseq/oasm_extensions",
+]
 
 [tool.ruff.lint]
 # Enable the standard pycodestyle (E) and pyflakes (F) rules.
@@ -33,9 +36,19 @@ ignore = ["E501", "E701"]
 # Allow mypy to work with the implicit namespace packages in this project.
 namespace_packages = true
 # Exclude the temporary build directory created by pip/uv to avoid duplicate module errors.
-exclude = ["build/"]
+exclude = ["build/", "catseq/oasm_extensions"]
+
+[tool.pytest.ini_options]
+norecursedirs = "catseq/oasm_extensions"
 
 [dependency-groups]
 dev = [
     "ipykernel>=6.30.1",
 ]
+
+[[tool.mypy.overrides]]
+module = [
+    "pytest",
+    "oasm.*"
+]
+ignore_missing_imports = true

@@ -1,46 +1,42 @@
-from catseq.protocols import State, Channel
-from catseq.model import IdentityMorphism, LaneMorphism
-from catseq.builder import MorphismBuilder
+"""
+Common morphism factory functions
+"""
+
+from catseq.core.protocols import Channel, State
+from catseq.core.objects import SystemState
+from catseq.core.morphisms import Morphism, AtomicOperation
 
 
-def hold(duration: float) -> MorphismBuilder:
+def hold(channel: Channel, state: State, duration: float) -> Morphism:
     """
-    Creates a deferred hold operation.
-    This holds the channel in whatever state it is currently in.
+    Creates a morphism that holds a channel in a given state for a duration.
+
+    Args:
+        channel: The channel to hold.
+        state: The state to hold the channel in.
+        duration: The duration of the hold in seconds.
+
+    Returns:
+        A Morphism representing the hold operation.
     """
     if duration <= 0:
         raise ValueError("Hold duration must be a positive number.")
 
-    def generator(channel: Channel, from_state: State) -> LaneMorphism:
-        m = IdentityMorphism(
-            name=f"hold({duration:.2e}s)",
-            dom=((channel, from_state),),
-            cod=((channel, from_state),),
-            duration=duration,
-        )
-        return LaneMorphism.from_primitive(m)
+    # A hold is a single atomic operation that doesn't change the state.
+    hold_op = AtomicOperation(
+        channel=channel,
+        from_state=state,
+        to_state=state,
+        duration=duration,
+        hardware_params={}
+    )
 
-    return MorphismBuilder(single_generator=generator)
+    # The domain and codomain are the same for a hold operation.
+    system_state = SystemState({channel: state})
 
-
-def marker(label: str) -> MorphismBuilder:
-    """Creates a deferred, zero-duration marker."""
-
-    def generator(channel: Channel, from_state: State) -> LaneMorphism:
-        m = IdentityMorphism(
-            name=f"marker('{label}')",
-            dom=((channel, from_state),),
-            cod=((channel, from_state),),
-            duration=0.0,
-        )
-        return LaneMorphism.from_primitive(m)
-
-    return MorphismBuilder(single_generator=generator)
-
-
-def wait_on_trigger():
-    raise NotImplementedError
-
-
-def call():
-    raise NotImplementedError
+    return Morphism(
+        dom=system_state,
+        cod=system_state,
+        duration=duration,
+        lanes={channel: [hold_op]}
+    )

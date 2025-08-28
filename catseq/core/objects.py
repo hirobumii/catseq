@@ -142,39 +142,3 @@ def create_system_state(*channel_state_pairs: tuple[Channel, State], timestamp: 
     channel_states = dict(channel_state_pairs)
     return SystemState(channel_states=channel_states, timestamp=timestamp)
 
-
-class SystemStateBuilder:
-    """
-    系统状态构建器
-    
-    用于逐步构建复杂的系统状态
-    """
-    
-    def __init__(self, timestamp: float = 0.0):
-        self._channel_states: dict[Channel, State] = {}
-        self._timestamp = timestamp
-    
-    def add_channel(self, channel: Channel, state: State) -> Self:
-        """添加通道状态"""
-        self._channel_states[channel] = state
-        return self
-    
-    def set_timestamp(self, timestamp: float) -> Self:
-        """设置时间戳"""
-        self._timestamp = timestamp
-        return self
-    
-    def build(self) -> SystemState:
-        """构建系统状态"""
-        if not self._channel_states:
-            raise ValueError("SystemStateBuilder must contain at least one channel state")
-        
-        return SystemState(
-            channel_states=self._channel_states.copy(),
-            timestamp=self._timestamp
-        )
-    
-    def clear(self) -> Self:
-        """清除所有通道状态"""
-        self._channel_states.clear()
-        return self

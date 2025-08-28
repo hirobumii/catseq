@@ -8,12 +8,6 @@ class TTLState(State):
 
 
 @dataclass(frozen=True)
-class TTLInput(TTLState):
-    """TTL channel configured as input"""
-    pass
-
-
-@dataclass(frozen=True)
 class TTLOn(TTLState):
     """TTL channel outputting high signal"""
     pass

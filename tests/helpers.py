@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from catseq.protocols import State
+from catseq.core.protocols import State
 
 
 @dataclass(frozen=True)

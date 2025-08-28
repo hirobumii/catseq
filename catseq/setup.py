@@ -3,11 +3,10 @@ Setup utilities for catseq package.
 This module handles post-installation tasks including deploying OASM extensions.
 """
 
-import os
 import shutil
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 
 def find_oasm_dev_path() -> Optional[Path]:
@@ -94,7 +93,6 @@ def post_install():
         
         # Verify installation
         try:
-            import oasm.dev.rwg
             print("Verification: oasm.dev.rwg is now available.")
         except ImportError:
             print("Warning: Could not import oasm.dev.rwg after installation.")

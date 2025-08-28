@@ -8,7 +8,7 @@ abstract base class `BaseHardware`.
 """
 
 import pytest
-from catseq.protocols import State
+from catseq.core.protocols import State
 from catseq.hardware.base import BaseHardware
 
 # --- Test Fixture ---

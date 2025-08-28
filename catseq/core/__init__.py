@@ -14,7 +14,6 @@ from .protocols import (
 
 from .objects import (
     SystemState,
-    SystemStateBuilder,
     create_system_state
 )
 
@@ -34,7 +33,6 @@ __all__ = [
     
     # 对象系统
     'SystemState',
-    'SystemStateBuilder',
     'create_system_state',
     
     # Morphism系统

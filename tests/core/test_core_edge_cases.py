@@ -6,8 +6,7 @@ CatSeq核心系统边界情况测试
 
 from dataclasses import dataclass
 from catseq.core import (
-    State, Channel, HardwareDevice, PhysicsViolationError, CompositionError,
-    SystemState, SystemStateBuilder, create_system_state,
+    State, Channel, SystemState, create_system_state,
     AtomicOperation, Morphism
 )
 
@@ -41,17 +40,11 @@ def test_empty_system_state_error():
     print("=== 测试空SystemState错误处理 ===")
     
     try:
-        empty_state = SystemState(channel_states={})
+        SystemState(channel_states={})
         assert False, "应该抛出ValueError"
     except ValueError as e:
         print(f"✓ 空SystemState正确抛出错误: {e}")
     
-    try:
-        builder = SystemStateBuilder()
-        empty_from_builder = builder.build()
-        assert False, "应该抛出ValueError"
-    except ValueError as e:
-        print(f"✓ 空SystemStateBuilder正确抛出错误: {e}")
     
     print()
 
@@ -114,7 +107,7 @@ def test_morphism_validation_errors():
     # 测试：dom/cod不一致
     try:
         wrong_op = AtomicOperation(ttl0, TTLOn(), TTLOff(), 1.0, {})  # 与dom/cod不符
-        bad_morphism = Morphism(
+        Morphism(
             dom=dom,
             cod=cod,
             duration=1.0,
@@ -127,7 +120,7 @@ def test_morphism_validation_errors():
     # 测试：时长不一致
     try:
         wrong_duration_op = AtomicOperation(ttl0, TTLOff(), TTLOn(), 2.0, {})
-        bad_duration_morphism = Morphism(
+        Morphism(
             dom=dom,
             cod=cod,
             duration=1.0,  # 与操作时长不符
@@ -142,7 +135,7 @@ def test_morphism_validation_errors():
     op2 = AtomicOperation(ttl0, TTLOff(), TTLOn(), 0.5, {})  # from_state应该是TTLOn
     
     try:
-        bad_continuity_morphism = Morphism(
+        Morphism(
             dom=dom,
             cod=cod,
             duration=1.0,
@@ -189,7 +182,7 @@ def test_system_state_edge_operations():
     
     # 测试获取不存在的通道状态
     try:
-        missing_state = state.get_state(ttl1)
+        state.get_state(ttl1)
         assert False, "应该抛出ValueError"
     except ValueError as e:
         print(f"✓ 获取不存在通道状态错误: {e}")
@@ -200,7 +193,7 @@ def test_system_state_edge_operations():
     
     # 测试移除唯一通道
     try:
-        empty = state.without_channel(ttl0)
+        state.without_channel(ttl0)
         assert False, "应该抛出ValueError"
     except ValueError as e:
         print(f"✓ 移除唯一通道错误: {e}")

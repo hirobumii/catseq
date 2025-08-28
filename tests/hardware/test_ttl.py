@@ -13,8 +13,8 @@ so tests primarily cover:
 import pytest
 from catseq.hardware.ttl import TTLDevice
 from catseq.states.common import Uninitialized
-from catseq.states.ttl import TTLOutputOn, TTLOutputOff
-from catseq.protocols import State
+from catseq.states.ttl import TTLOn, TTLOff
+from catseq.core.protocols import State, PhysicsViolationError
 
 # --- Test Fixtures ---
 
@@ -37,10 +37,10 @@ class NotARealState(State):
 @pytest.mark.parametrize(
     "from_state, to_state",
     [
-        (Uninitialized(), TTLOutputOn()),
-        (Uninitialized(), TTLOutputOff()),
-        (TTLOutputOn(), TTLOutputOff()),
-        (TTLOutputOff(), TTLOutputOn()),
+        (Uninitialized(), TTLOn()),
+        (Uninitialized(), TTLOff()),
+        (TTLOn(), TTLOff()),
+        (TTLOff(), TTLOn()),
     ],
 )
 def test_ttl_legal_transitions(ttl_device, from_state, to_state):
@@ -64,7 +64,7 @@ def test_ttl_illegal_to_state(ttl_device):
     Tests that `validate_transition` raises a TypeError if the target state
     is not a valid TTLState.
     """
-    with pytest.raises(TypeError, match="Invalid target stage"):
+    with pytest.raises(PhysicsViolationError):
         ttl_device.validate_transition(Uninitialized(), NotARealState())
 
 
@@ -73,5 +73,5 @@ def test_ttl_illegal_from_state(ttl_device):
     Tests that `validate_transition` raises a TypeError if the source state
     is not Uninitialized or a valid TTLState.
     """
-    with pytest.raises(TypeError, match="Invalid source stage"):
-        ttl_device.validate_transition(NotARealState(), TTLOutputOn())
+    with pytest.raises(PhysicsViolationError):
+        ttl_device.validate_transition(NotARealState(), TTLOn())

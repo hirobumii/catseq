@@ -1,56 +1,49 @@
 """
 TTL morphism factory functions
-
-Provides convenient functions for creating TTL channel morphisms:
-- pulse(): Create TTL pulse sequences
-- hold_on(): Hold TTL channel in ON state
-- hold_off(): Hold TTL channel in OFF state
 """
 
 from catseq.core.protocols import Channel
 from catseq.core.objects import SystemState
 from catseq.core.morphisms import Morphism, AtomicOperation
-from catseq.states import TTLOn, TTLOff, TTLInput, Uninitialized
-from catseq.hardware import TTLDevice
-
-# Duration of a single RTMQ clock cycle (1 / 250 MHz)
-SINGLE_CYCLE_DURATION_S = 4e-9
+from catseq.states.ttl import TTLOn, TTLOff
+from catseq.states.common import Uninitialized
+from catseq.hardware.ttl import TTLDevice
 
 
 def pulse(channel: Channel, duration: float) -> Morphism:
     """
-    Create a TTL pulse morphism: OFF -> ON -> OFF
-    
+    Create a TTL pulse morphism: OFF -> ON -> OFF.
+    The state transitions are instantaneous (zero-duration).
+
     Args:
-        channel: TTL channel to pulse
-        duration: Duration of the high pulse in seconds
-        
+        channel: TTL channel to pulse.
+        duration: Duration of the high pulse in seconds.
+
     Returns:
-        Morphism representing the complete pulse sequence
+        Morphism representing the complete pulse sequence.
     """
     if duration <= 0:
-        raise ValueError("Pulse duration must be positive")
-    
+        raise ValueError("Pulse duration must be positive.")
+
     if not isinstance(channel.device, TTLDevice):
-        raise TypeError(f"Channel {channel.name} must use TTLDevice")
-    
-    # States for the pulse sequence
+        raise TypeError(f"Channel {channel.name} must use TTLDevice.")
+
     off_state = TTLOff()
     on_state = TTLOn()
-    
-    # System states
+
+    # The domain and codomain both assume the channel is OFF before and after.
     dom = SystemState({channel: off_state})
-    cod = SystemState({channel: off_state})  # Returns to OFF after pulse
-    
-    # Create atomic operations for the pulse
+    cod = SystemState({channel: off_state})
+
+    # State transitions are instantaneous at the morphism level.
     turn_on_op = AtomicOperation(
         channel=channel,
         from_state=off_state,
         to_state=on_state,
-        duration=SINGLE_CYCLE_DURATION_S,
+        duration=0.0,
         hardware_params={}
     )
-    
+
     hold_on_op = AtomicOperation(
         channel=channel,
         from_state=on_state,
@@ -58,129 +51,58 @@ def pulse(channel: Channel, duration: float) -> Morphism:
         duration=duration,
         hardware_params={}
     )
-    
+
     turn_off_op = AtomicOperation(
         channel=channel,
         from_state=on_state,
         to_state=off_state,
-        duration=SINGLE_CYCLE_DURATION_S,
+        duration=0.0,
         hardware_params={}
     )
-    
-    total_duration = 2 * SINGLE_CYCLE_DURATION_S + duration
-    
+
+    # The total duration of the morphism is the duration of the pulse itself.
     return Morphism(
         dom=dom,
         cod=cod,
-        duration=total_duration,
+        duration=duration,
         lanes={channel: [turn_on_op, hold_on_op, turn_off_op]}
     )
 
 
-def hold_on(channel: Channel, duration: float) -> Morphism:
+def initialize(channel: Channel, initial_state: TTLOff = TTLOff()) -> Morphism:
     """
-    Hold TTL channel in ON state for specified duration
-    
+    Initialize a TTL channel from Uninitialized to a known state (default OFF).
+
     Args:
-        channel: TTL channel 
-        duration: Hold duration in seconds
-        
+        channel: TTL channel to initialize.
+        initial_state: The target state, must be TTLOff or TTLOn.
+
     Returns:
-        Morphism: ON -> ON
-    """
-    if duration <= 0:
-        raise ValueError("Hold duration must be positive")
-    
-    if not isinstance(channel.device, TTLDevice):
-        raise TypeError(f"Channel {channel.name} must use TTLDevice")
-    
-    on_state = TTLOn()
-    dom = SystemState({channel: on_state})
-    cod = SystemState({channel: on_state})
-    
-    hold_op = AtomicOperation(
-        channel=channel,
-        from_state=on_state,
-        to_state=on_state,
-        duration=duration,
-        hardware_params={}
-    )
-    
-    return Morphism(
-        dom=dom,
-        cod=cod,
-        duration=duration,
-        lanes={channel: [hold_op]}
-    )
-
-
-def hold_off(channel: Channel, duration: float) -> Morphism:
-    """
-    Hold TTL channel in OFF state for specified duration
-    
-    Args:
-        channel: TTL channel
-        duration: Hold duration in seconds
-        
-    Returns:
-        Morphism: OFF -> OFF  
-    """
-    if duration <= 0:
-        raise ValueError("Hold duration must be positive")
-    
-    if not isinstance(channel.device, TTLDevice):
-        raise TypeError(f"Channel {channel.name} must use TTLDevice")
-    
-    off_state = TTLOff()
-    dom = SystemState({channel: off_state})
-    cod = SystemState({channel: off_state})
-    
-    hold_op = AtomicOperation(
-        channel=channel,
-        from_state=off_state,
-        to_state=off_state,
-        duration=duration,
-        hardware_params={}
-    )
-    
-    return Morphism(
-        dom=dom,
-        cod=cod,
-        duration=duration,
-        lanes={channel: [hold_op]}
-    )
-
-
-def initialize(channel: Channel) -> Morphism:
-    """
-    Initialize TTL channel from Uninitialized to OFF state
-    
-    Args:
-        channel: TTL channel to initialize
-        
-    Returns:
-        Morphism: Uninitialized -> OFF
+        A Morphism representing the initialization.
     """
     if not isinstance(channel.device, TTLDevice):
-        raise TypeError(f"Channel {channel.name} must use TTLDevice")
-    
+        raise TypeError(f"Channel {channel.name} must use TTLDevice.")
+
+    if not isinstance(initial_state, (TTLOn, TTLOff)):
+        raise TypeError(f"Initial state must be TTLOn or TTLOff, not {type(initial_state).__name__}")
+
     uninit_state = Uninitialized()
-    off_state = TTLOff()
-    
+
     dom = SystemState({channel: uninit_state})
-    cod = SystemState({channel: off_state})
-    
+    cod = SystemState({channel: initial_state})
+
+    # Initialization is an instantaneous operation.
     init_op = AtomicOperation(
         channel=channel,
         from_state=uninit_state,
-        to_state=off_state,
-        duration=SINGLE_CYCLE_DURATION_S,
+        to_state=initial_state,
+        duration=0.0,
         hardware_params={}
     )
-    
+
     return Morphism(
         dom=dom,
         cod=cod,
-        duration=SINGLE_CYCLE_DURATION_S,
+        duration=0.0,
         lanes={channel: [init_op]}
     )

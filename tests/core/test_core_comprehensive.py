@@ -6,8 +6,8 @@ CatSeq核心系统完整测试
 
 from dataclasses import dataclass
 from catseq.core import (
-    State, Channel, HardwareDevice, PhysicsViolationError, CompositionError,
-    SystemState, SystemStateBuilder, create_system_state,
+    State, Channel, PhysicsViolationError, CompositionError,
+    create_system_state,
     AtomicOperation, Morphism
 )
 
@@ -114,27 +114,6 @@ def test_system_state_operations():
     print()
 
 
-def test_system_state_builder():
-    """测试SystemStateBuilder"""
-    print("=== 测试SystemStateBuilder ===")
-    
-    device = TTLDevice("ttl")
-    ttl0 = Channel("ttl0", device)
-    ttl1 = Channel("ttl1", device)
-    
-    builder = SystemStateBuilder(timestamp=3.0)
-    state = (builder
-             .add_channel(ttl0, TTLOn())
-             .add_channel(ttl1, TTLOff())
-             .build())
-    
-    assert len(state.channels) == 2
-    assert state.timestamp == 3.0
-    assert state.get_state(ttl0) == TTLOn()
-    assert state.get_state(ttl1) == TTLOff()
-    
-    print("✓ SystemStateBuilder正确")
-    print()
 
 
 def test_atomic_operation_validation():
@@ -161,7 +140,7 @@ def test_atomic_operation_validation():
     ttl_restrictive = Channel("ttl_restrictive", restrictive_device)
     
     try:
-        bad_op = AtomicOperation(
+        AtomicOperation(
             channel=ttl_restrictive,
             from_state=TTLOn(),
             to_state=TTLOff(),  # 这个设备不允许关闭
@@ -174,7 +153,7 @@ def test_atomic_operation_validation():
     
     # 测试负时长
     try:
-        bad_duration_op = AtomicOperation(
+        AtomicOperation(
             channel=ttl_normal,
             from_state=TTLOff(),
             to_state=TTLOn(),
@@ -250,14 +229,14 @@ def test_composition_errors():
     m2 = Morphism(dom=dom2, cod=cod2, duration=1.0, lanes={ttl0: [op2]})
     
     try:
-        bad_serial = m1 @ m2
+        m1 @ m2
         assert False, "应该抛出CompositionError"
     except CompositionError:
         print("✓ 串行组合状态不匹配检查正确")
     
     # 测试并行组合通道冲突
     try:
-        bad_parallel = m1 | m1  # 相同通道
+        m1 | m1  # 相同通道
         assert False, "应该抛出CompositionError"
     except CompositionError:
         print("✓ 并行组合通道冲突检查正确")
@@ -329,7 +308,6 @@ def run_all_tests():
     try:
         test_channel_singleton()
         test_system_state_operations()
-        test_system_state_builder()
         test_atomic_operation_validation()
         test_parallel_composition()
         test_composition_errors()

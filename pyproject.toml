@@ -34,3 +34,8 @@ ignore = ["E501", "E701"]
 namespace_packages = true
 # Exclude the temporary build directory created by pip/uv to avoid duplicate module errors.
 exclude = ["build/"]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.30.1",
+]

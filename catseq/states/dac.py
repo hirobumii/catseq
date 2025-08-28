@@ -1,16 +1,19 @@
-import dataclasses
-from catseq.protocols import State
+from dataclasses import dataclass
+from catseq.core.protocols import State
 
 
 class DACState(State):
+    """Base class for DAC channel states"""
     pass
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclass(frozen=True)
 class DACOff(DACState):
+    """DAC channel output disabled"""
     pass
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclass(frozen=True)
 class DACStatic(DACState):
+    """DAC channel outputting static voltage"""
     voltage: float

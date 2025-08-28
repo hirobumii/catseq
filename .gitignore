@@ -47,6 +47,14 @@ htmlcov/
 *.zip
 .coverage
 
+# 开发工具缓存
+.ruff_cache/
+.mypy_cache/
+.claude/
+
+# OASM 样例文件 (临时开发用)
+examples/oasm_samples/
+
 # 操作系统生成的文件
 .DS_Store
 Thumbs.db

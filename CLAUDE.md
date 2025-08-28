@@ -21,17 +21,19 @@ uv pip install -e .[dev]
 # Linting with ruff
 ruff check .
 
-# Type checking with mypy
+# Type checking with mypy (must pass)
 mypy .
 
-# Run unit tests
+# Run unit tests (must pass)
 pytest
 
-# Run specific test file
-pytest tests/test_model.py
+# Run specific test directory
+pytest tests/states/ -v
 
 # Run tests with verbose output
 pytest -v
+
+# CRITICAL: All three checks (ruff, mypy, pytest) must pass for any code changes
 ```
 
 ### Formatting
@@ -42,28 +44,28 @@ ruff format .
 
 ## Architecture Overview
 
-Cat-SEQ is a Python framework for quantum physics experiment control based on Category Theory (Monoidal Categories). The codebase follows a layered architecture with clear separation of concerns:
+Cat-SEQ is a Python framework for quantum physics experiment control based on Category Theory (Monoidal Categories). The current architecture follows the FRAMEWORK_DESIGN.md specifications with a clean layered structure:
 
-### Core Layers (Bottom to Top)
+### Core System (Primary Implementation)
 
-**Layer 0: Core Protocols** (`catseq/protocols.py`)
-- Defines abstract base classes: `State`, `Channel`, `HardwareInterface`
+**Layer 0: Core Protocols** (`catseq/core/protocols.py`)
+- Defines base `State` class and `Channel` singleton implementation
+- `HardwareDevice` protocol for validation
 - Foundation layer with no internal dependencies
-- All other modules depend on this layer
 
-**Layer 1: Algebraic Engine** (`catseq/model.py`, `catseq/builder.py`)
-- `model.py`: Implements `PrimitiveMorphism` and `LaneMorphism` with composition operators (`@`, `|`)
-- `builder.py`: Implements `MorphismBuilder` for deferred execution patterns
-- Core logic for composing and building morphisms
+**Layer 1: Objects and Morphisms** (`catseq/core/objects.py`, `catseq/core/morphisms.py`)
+- `objects.py`: Implements `SystemState` as Category Theory objects
+- `morphisms.py`: Implements unified `Morphism` class and `AtomicOperation`
+- Core logic for serial (`@`) and parallel (`|`) composition
 
-**Layer 2: Hardware Vocabulary** (`catseq/hardware/`, `catseq/states/`)
-- Generic hardware device definitions (`TTLDevice`, `RWGDevice`)
-- State definitions (`TTLState`, `RWGActive`, etc.)
-- Hardware validation rules and state transitions
+**Layer 2: States and Hardware** (`catseq/states/`, `catseq/hardware/`)
+- Simplified state definitions following framework design
+- Hardware device classes for validation and constraints
+- Clean separation between state data and device behavior
 
-**Layer 3: Morphism API** (`catseq/morphisms/`)
-- Factory functions for creating `MorphismBuilder` objects
-- Convenient functions like `ttl.pulse()`, `rwg.linear_ramp()`, `common.hold()`
+**Layer 3: Factory Functions** (`catseq/morphisms/`) - *Planned*
+- Factory functions for creating morphism builders
+- High-level API for experiment sequences
 
 ### Key Design Patterns
 
@@ -95,14 +97,18 @@ concrete_sequence = sequence_def(ttl0)  # Returns LaneMorphism
 
 ```
 catseq/
-├── protocols.py      # Core abstractions (no internal deps)
-├── model.py          # LaneMorphism, PrimitiveMorphism, composition logic  
-├── builder.py        # MorphismBuilder for deferred execution
-├── pending.py        # State inference for compositional morphisms
-├── hardware/         # Hardware device classes and validation
-├── states/           # State definitions for different hardware types
-├── morphisms/        # Factory functions returning MorphismBuilder objects
-└── ARCHITECTURE.md   # Detailed design documentation (in Chinese)
+├── core/             # Core system implementation (primary)
+│   ├── protocols.py  # Base State, Channel, HardwareDevice
+│   ├── objects.py    # SystemState (Category objects)
+│   └── morphisms.py  # Morphism, AtomicOperation (Category morphisms)
+├── states/           # Hardware state definitions
+│   ├── ttl.py       # TTL states (TTLOn, TTLOff, TTLInput)
+│   ├── rwg.py       # RWG states (RWGUninitialized, RWGReady, RWGActive)
+│   ├── dac.py       # DAC states
+│   └── common.py    # Common states (Uninitialized)
+├── hardware/         # Hardware device classes (legacy system)
+├── morphisms/        # Factory functions (planned)
+└── FRAMEWORK_DESIGN.md # Complete system design documentation
 ```
 
 ### Important Implementation Details
@@ -120,9 +126,21 @@ catseq/
 - `frozen=True` dataclasses ensure immutability
 
 **Testing Structure:**
-- Test fixtures in `tests/conftest.py` provide standard channel instances
+- **CRITICAL REQUIREMENT**: Test directory structure must mirror catseq directory structure exactly
+- Tests for `catseq/core/` go in `tests/core/`
+- Tests for `catseq/states/` go in `tests/states/`
+- Tests for `catseq/hardware/` go in `tests/hardware/`
+- **CRITICAL REQUIREMENT**: All code changes must pass `pytest` tests before being considered complete
+- Every new module or significant change must have corresponding pytest tests
+- Tests must cover functionality, edge cases, type safety, and immutability
 - Comprehensive test coverage across all layers
 - Use cases in `tests/use_cases/` demonstrate real experiment patterns
+
+**Python Version Requirements:**
+- Uses Python 3.12.11 with uv virtual environment
+- No `from __future__ import annotations` needed
+- Uses modern typing features: `Self`, built-in generics (`list[T]`, `dict[K, V]`)
+- Strict type safety: no `Any` types or `# type: ignore` comments allowed
 
 ## Development Notes
 

@@ -1,101 +1,131 @@
-from typing import Set, Tuple
-from catseq.protocols import State
+from typing import Set, Tuple, Optional
+from catseq.core.protocols import State, PhysicsViolationError
 from catseq.hardware.base import BaseHardware
-from catseq.states.rwg import RWGActive, WaveformParams
+from catseq.states import RWGState, RWGUninitialized, RWGReady, RWGActive, Uninitialized
 
 
 class RWGDevice(BaseHardware):
     """
-    Represents a Real-time Waveform Generator (RWG) device.
+    Real-time Waveform Generator (RWG) device with Taylor coefficient validation
+    
+    Provides hardware constraint validation for RWG channels including:
+    - State transition validation
+    - Taylor coefficient feasibility checking  
+    - SBG resource management
+    - Optional amplitude lock constraints
     """
 
     def __init__(
         self,
         name: str,
-        # --- Physical Capability Parameters ---
         available_sbgs: Set[int],
-        max_ramping_order: int = 0,
-        # --- Policy & Role Parameters ---
-        allow_ramping: bool = True,
-        allow_disable: bool = True,
-        enforce_continuity: bool = False,
-        max_freq_jump_mhz: float = 1e-9,
-        max_amp_jump_fs: float = 1e-9,
+        max_ramping_order: int = 3,
+        max_freq_mhz: float = 1000.0,
+        max_amp_fs: float = 1.0,
+        amplitude_locked: bool = False,
     ):
         super().__init__(name)
         self.available_sbgs = available_sbgs
         self.max_ramping_order = max_ramping_order
-
-        if max_ramping_order == 0 and allow_ramping:
-            raise ValueError(
-                f"Configuration error for '{name}': Policy allows ramping, but hardware does not support it."
-            )
-
-        self.allow_ramping = allow_ramping
-        self.allow_disable = allow_disable
-        self.enforce_continuity = enforce_continuity
-        self.max_freq_jump_mhz = max_freq_jump_mhz
-        self.max_amp_jump_fs = max_amp_jump_fs
-
-    def validate_dynamics(self, dynamics: Tuple[WaveformParams, ...]) -> None:
-        """
-        Validates the process parameters against the hardware's capabilities and policies.
-        """
-        if not dynamics:
-            return
-
-        sbg_ids = set()
-        for wf in dynamics:
-            if wf.sbg_id in sbg_ids:
-                raise TypeError(f"Duplicate SBG ID {wf.sbg_id} used for '{self.name}'.")
-            sbg_ids.add(wf.sbg_id)
-            if wf.sbg_id not in self.available_sbgs:
-                raise TypeError(
-                    f"SBG ID {wf.sbg_id} is not available on device '{self.name}'."
-                )
-
-        required_order = max(wf.required_ramping_order for wf in dynamics)
-        if required_order > 0 and not self.allow_ramping:
-            raise TypeError(
-                f"Policy violation for '{self.name}': Ramping is not allowed."
-            )
-
-        if required_order > self.max_ramping_order:
-            raise TypeError(
-                f"Hardware capability exceeded for '{self.name}': Required order is {required_order}, "
-                f"but hardware only supports up to {self.max_ramping_order}."
-            )
+        self.max_freq_mhz = max_freq_mhz
+        self.max_amp_fs = max_amp_fs
+        self.amplitude_locked = amplitude_locked
 
     def validate_transition(self, from_state: State, to_state: State) -> None:
-        """
-        Validates the "seam" between two composed Morphisms.
-        """
-        if isinstance(from_state, RWGActive) and isinstance(to_state, RWGActive):
-            if self.enforce_continuity:
-                from_map = {wf.sbg_id: wf for wf in from_state.waveforms}
-                to_map = {wf.sbg_id: wf for wf in to_state.waveforms}
-
-                if from_map.keys() != to_map.keys():
-                    raise TypeError(
-                        f"Continuity violation on '{self.name}': Active SBGs changed."
+        """Validate RWG state transitions"""
+        
+        # Allow any transition from uninitialized state
+        if isinstance(from_state, Uninitialized):
+            if isinstance(to_state, RWGState):
+                return
+            else:
+                raise PhysicsViolationError(
+                    f"RWG device '{self.name}' cannot transition from Uninitialized to {type(to_state).__name__}"
+                )
+        
+        # Both states must be RWG states for other transitions
+        if not isinstance(from_state, RWGState) or not isinstance(to_state, RWGState):
+            raise PhysicsViolationError(
+                f"RWG device '{self.name}' requires RWG states, got {type(from_state).__name__} -> {type(to_state).__name__}"
+            )
+        
+        # Validate specific RWG transitions
+        if isinstance(from_state, RWGUninitialized):
+            # Can transition to any RWG state from uninitialized
+            return
+        elif isinstance(from_state, RWGReady):
+            # From Ready, can go to Active or back to Uninitialized
+            if not isinstance(to_state, (RWGActive, RWGUninitialized)):
+                raise PhysicsViolationError(
+                    f"RWG device '{self.name}' cannot transition from RWGReady to {type(to_state).__name__}"
+                )
+        elif isinstance(from_state, RWGActive):
+            # From Active, can go to Ready, Active (parameter change), or Uninitialized
+            if not isinstance(to_state, (RWGReady, RWGActive, RWGUninitialized)):
+                raise PhysicsViolationError(
+                    f"RWG device '{self.name}' cannot transition from RWGActive to {type(to_state).__name__}"
+                )
+            
+            # Validate SBG consistency for Active->Active transitions
+            if isinstance(to_state, RWGActive):
+                if from_state.sbg_id != to_state.sbg_id:
+                    raise PhysicsViolationError(
+                        f"RWG device '{self.name}' cannot change SBG ID during Active->Active transition"
+                    )
+                if from_state.sbg_id not in self.available_sbgs:
+                    raise PhysicsViolationError(
+                        f"RWG device '{self.name}' does not have access to SBG {from_state.sbg_id}"
                     )
 
-                for sbg_id, from_wf in from_map.items():
-                    to_wf = to_map[sbg_id]
-                    if abs(from_wf.freq - to_wf.freq) > self.max_freq_jump_mhz:
-                        raise TypeError(
-                            f"Frequency jump on SBG {sbg_id} of '{self.name}' exceeds policy."
-                        )
-                    if abs(from_wf.amp - to_wf.amp) > self.max_amp_jump_fs:
-                        raise TypeError(
-                            f"Amplitude jump on SBG {sbg_id} of '{self.name}' exceeds policy."
-                        )
-
-            return
-
-        if from_state != to_state:
-            raise TypeError(
-                f"State mismatch during composition on '{self.name}'. "
-                f"Previous state ended in {from_state} but next state begins with {to_state}. "
-                "The endpoints of composed morphisms must be identical."
+    def validate_taylor_coefficients(
+        self, 
+        freq_coeffs: Tuple[Optional[float], ...], 
+        amp_coeffs: Tuple[Optional[float], ...]
+    ) -> None:
+        """Validate Taylor coefficients for RWG hardware constraints"""
+        
+        if len(freq_coeffs) > 4 or len(amp_coeffs) > 4:
+            raise PhysicsViolationError(
+                f"RWG device '{self.name}' supports maximum 4 Taylor coefficients, got freq:{len(freq_coeffs)} amp:{len(amp_coeffs)}"
             )
+        
+        # Find highest non-zero coefficient order
+        max_freq_order = -1
+        for i, coeff in enumerate(freq_coeffs):
+            if coeff is not None and abs(coeff) > 1e-12:
+                max_freq_order = i
+                
+        max_amp_order = -1  
+        for i, coeff in enumerate(amp_coeffs):
+            if coeff is not None and abs(coeff) > 1e-12:
+                max_amp_order = i
+                
+        required_order = max(max_freq_order, max_amp_order)
+        
+        if required_order > self.max_ramping_order:
+            raise PhysicsViolationError(
+                f"RWG device '{self.name}' supports maximum ramping order {self.max_ramping_order}, "
+                f"but coefficients require order {required_order}"
+            )
+        
+        # Validate coefficient magnitudes
+        for i, coeff in enumerate(freq_coeffs):
+            if coeff is not None and abs(coeff) > self.max_freq_mhz * (10 ** i):
+                raise PhysicsViolationError(
+                    f"RWG device '{self.name}' frequency coefficient F{i} = {coeff} exceeds hardware limits"
+                )
+                
+        for i, coeff in enumerate(amp_coeffs):
+            if coeff is not None and abs(coeff) > self.max_amp_fs * (10 ** i):
+                raise PhysicsViolationError(
+                    f"RWG device '{self.name}' amplitude coefficient A{i} = {coeff} exceeds hardware limits"
+                )
+        
+        # Check amplitude lock constraint if enabled
+        if self.amplitude_locked:
+            for i, coeff in enumerate(amp_coeffs[1:], 1):  # A1, A2, A3
+                if coeff is not None and abs(coeff) > 1e-12:
+                    raise PhysicsViolationError(
+                        f"Amplitude-locked RWG device '{self.name}' prohibits amplitude modulation, "
+                        f"but A{i} = {coeff} is non-zero"
+                    )

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Protocol, Type
+from typing import Protocol, Type, Self
 from dataclasses import dataclass
 
 # This file contains the core abstract protocols and base classes for the catseq model.
@@ -45,7 +45,7 @@ class Channel(ResourceIdentifier):
 
     _instances: dict[str, "Channel"] = {}
 
-    def __new__(cls, name: str, hardware_type: Type[HardwareInterface]):
+    def __new__(cls, name: str, hardware_type: Type[HardwareInterface]) -> "Channel":
         if not isinstance(name, str):
             raise TypeError("Channel name must be a string.")
 

@@ -1,21 +1,25 @@
-import dataclasses
-from catseq.protocols import State
+from dataclasses import dataclass
+from catseq.core.protocols import State
 
 
 class TTLState(State):
+    """Base class for TTL channel states"""
     pass
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclass(frozen=True)
 class TTLInput(TTLState):
+    """TTL channel configured as input"""
     pass
 
 
-@dataclasses.dataclass(frozen=True)
-class TTLOutputOn(TTLState):
+@dataclass(frozen=True)
+class TTLOn(TTLState):
+    """TTL channel outputting high signal"""
     pass
 
 
-@dataclasses.dataclass(frozen=True)
-class TTLOutputOff(TTLState):
+@dataclass(frozen=True)
+class TTLOff(TTLState):
+    """TTL channel outputting low signal"""
     pass

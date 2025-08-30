@@ -42,12 +42,12 @@ def compile_to_oasm_calls(morphism: Morphism) -> List[OASMCall]:
             # 计算状态值和掩码
             value, mask = _compute_ttl_config(channel_states)
             
-            # 生成 TTL 配置调用
+            # 生成 TTL 配置调用 (注意参数顺序：mask, dir)
             call = OASMCall(
                 adr=adr,
                 dsl_func=OASMFunction.TTL_CONFIG,
-                args=(value,),
-                kwargs={'mask': mask}
+                args=(mask, value),  # 修改为 (mask, dir) 顺序
+                kwargs={}
             )
             calls.append(call)
     

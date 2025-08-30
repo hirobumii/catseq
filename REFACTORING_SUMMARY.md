@@ -21,7 +21,7 @@ catseq/
 ├── atomic.py            118 lines   (原子操作)
 ├── lanes.py              87 lines   (物理层)
 ├── morphism.py          262 lines   (组合逻辑)
-├── oasm/
+├── compilation/
 │   ├── functions.py      32 lines   (OASM 函数)
 │   ├── types.py          43 lines   (OASM 类型)  
 │   └── compiler.py       96 lines   (OASM 编译器)
@@ -62,9 +62,9 @@ lanes.py
     ↑
 morphism.py (核心层)
     ↑
-├── oasm/compiler.py (OASM层)
-│   ├── oasm/types.py
-│   └── oasm/functions.py
+├── compilation/compiler.py (OASM层)
+│   ├── compilation/types.py
+│   └── compilation/functions.py
 └── hardware/ttl.py (硬件层)
     ↑
 __init__.py (API层)
@@ -143,7 +143,7 @@ calls = catseq.compile_to_oasm_calls(sequence)
 ### 📈 **支持扩展**
 - **硬件扩展**: 新硬件类型可添加到 `hardware/` 
 - **功能扩展**: 新操作类型可添加到对应模块
-- **接口扩展**: 新的编译目标可添加到 `oasm/`
+- **接口扩展**: 新的编译目标可添加到 `compilation/`
 
 ## 兼容性保证
 

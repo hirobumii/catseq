@@ -14,8 +14,8 @@ catseq/
 ├── atomic.py                # 原子操作：AtomicMorphism, ttl_init, ttl_on, ttl_off, wait
 ├── morphism.py              # Morphism 类和组合逻辑：@, >>, | 操作符
 ├── lanes.py                 # Lane 和物理操作：Lane, PhysicalOperation, PhysicalLane
-├── oasm/
-│   ├── __init__.py          # OASM 接口导出
+├── compilation/
+│   ├── __init__.py          # OASM 编译接口导出
 │   ├── types.py             # OASM 类型：OASMAddress, OASMFunction, OASMCall
 │   ├── functions.py         # OASM DSL 函数：ttl_config, wait_us, etc.
 │   └── compiler.py          # OASM 编译器：compile_to_oasm_calls, execute_oasm_calls
@@ -53,22 +53,22 @@ catseq/
 - **内容**: `Morphism` 类，组合操作符 `@`, `>>`, `|`，状态推断逻辑
 - **依赖**: `types`, `atomic`, `lanes`, `time_utils`
 
-### OASM 接口模块
+### 编译接口模块
 
-#### `oasm/types.py`
+#### `compilation/types.py`
 - **职责**: OASM 接口类型定义
 - **内容**: `OASMAddress`, `OASMFunction`, `OASMCall` 
 - **依赖**: `functions` (for enum values)
 
-#### `oasm/functions.py`
+#### `compilation/functions.py`
 - **职责**: 实际的 OASM DSL 函数实现
 - **内容**: `ttl_config()`, `wait_us()`, `my_wait()`, `trig_slave()`
 - **依赖**: 无
 
-#### `oasm/compiler.py`
+#### `compilation/compiler.py`
 - **职责**: Morphism 到 OASM 的编译逻辑
 - **内容**: `compile_to_oasm_calls()`, `execute_oasm_calls()`
-- **依赖**: `types`, `morphism`, `lanes`, `oasm.types`
+- **依赖**: `types`, `morphism`, `lanes`, `compilation.types`
 
 ### 硬件抽象模块
 
@@ -99,7 +99,7 @@ catseq.Morphism, catseq.from_atomic
 # 硬件抽象
 catseq.pulse, catseq.initialize_channel, catseq.set_high, catseq.set_low, catseq.hold
 
-# OASM 接口
+# 编译接口
 catseq.compile_to_oasm_calls, catseq.execute_oasm_calls, catseq.OASMCall
 ```
 

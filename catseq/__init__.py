@@ -28,7 +28,7 @@ from .morphism import Morphism, from_atomic
 from .hardware import pulse, initialize_channel, set_high, set_low, hold
 
 # OASM interface
-from .oasm import compile_to_oasm_calls, execute_oasm_calls, OASMCall
+from .compilation import compile_to_oasm_calls, execute_oasm_calls, OASMCall
 
 __version__ = "0.1.0"
 

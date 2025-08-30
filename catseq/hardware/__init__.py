@@ -1,17 +1,16 @@
 """
-CatSeq hardware device classes
+Hardware abstraction layer for CatSeq.
 
-This module provides hardware device implementations with validation capabilities:
-- TTLDevice: TTL channel validation
-- RWGDevice: RWG channel with Taylor coefficient validation and optional amplitude lock
+This module provides hardware-specific abstractions and utilities
+for different types of hardware devices.
 """
 
-from .base import BaseHardware
-from .ttl import TTLDevice
-from .rwg import RWGDevice
+from .ttl import pulse, initialize_channel, set_high, set_low, hold
 
 __all__ = [
-    "BaseHardware",
-    "TTLDevice", 
-    "RWGDevice",
+    'pulse',
+    'initialize_channel', 
+    'set_high',
+    'set_low',
+    'hold',
 ]

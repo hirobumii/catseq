@@ -1,34 +1,75 @@
-from catseq.core.protocols import State, PhysicsViolationError
-from catseq.hardware.base import BaseHardware
-from catseq.states import TTLState, TTLInput, TTLOn, TTLOff, Uninitialized
+"""
+TTL hardware abstraction layer.
+
+This module provides TTL-specific hardware abstractions and utilities
+for working with TTL devices in the CatSeq framework.
+"""
+
+from ..types import Channel, TTLState
+from ..atomic import AtomicMorphism, ttl_init, ttl_on, ttl_off, wait
+from ..morphism import Morphism, from_atomic
 
 
-class TTLDevice(BaseHardware):
-    """
-    TTL device supporting input/output state transitions
+def pulse(channel: Channel, duration_us: float) -> Morphism:
+    """创建 TTL 脉冲序列：ON → wait → OFF
     
-    Valid transitions:
-    - Uninitialized -> Any TTL state
-    - TTLInput <-> TTLOn/TTLOff (configuration change)
-    - TTLOn <-> TTLOff (output toggle)
+    Args:
+        channel: 目标通道
+        duration_us: 脉冲持续时间（微秒）
+        
+    Returns:
+        脉冲 Morphism
     """
+    on_op = ttl_on(channel)
+    wait_op = wait(duration_us) 
+    off_op = ttl_off(channel)
+    
+    return from_atomic(on_op) >> from_atomic(wait_op) >> from_atomic(off_op)
 
-    def validate_transition(self, from_state: State, to_state: State) -> None:
-        # Allow any transition from uninitialized state
-        if isinstance(from_state, Uninitialized):
-            if isinstance(to_state, TTLState):
-                return
-            else:
-                raise PhysicsViolationError(
-                    f"TTL device '{self.name}' cannot transition from Uninitialized to {type(to_state).__name__}"
-                )
+
+def initialize_channel(channel: Channel) -> Morphism:
+    """初始化 TTL 通道到 OFF 状态
+    
+    Args:
+        channel: 目标通道
         
-        # Both states must be TTL states for other transitions
-        if not isinstance(from_state, TTLState) or not isinstance(to_state, TTLState):
-            raise PhysicsViolationError(
-                f"TTL device '{self.name}' requires TTL states, got {type(from_state).__name__} -> {type(to_state).__name__}"
-            )
+    Returns:
+        初始化 Morphism
+    """
+    return from_atomic(ttl_init(channel))
+
+
+def set_high(channel: Channel) -> Morphism:
+    """将 TTL 通道设为高电平
+    
+    Args:
+        channel: 目标通道
         
-        # All TTL state transitions are physically valid
-        # (TTL hardware can always change between input/output modes and high/low states)
-        return
+    Returns:
+        设置高电平的 Morphism
+    """
+    return from_atomic(ttl_on(channel))
+
+
+def set_low(channel: Channel) -> Morphism:
+    """将 TTL 通道设为低电平
+    
+    Args:
+        channel: 目标通道
+        
+    Returns:
+        设置低电平的 Morphism
+    """
+    return from_atomic(ttl_off(channel))
+
+
+def hold(duration_us: float) -> Morphism:
+    """创建等待操作
+    
+    Args:
+        duration_us: 等待时长（微秒）
+        
+    Returns:
+        等待 Morphism
+    """
+    return from_atomic(wait(duration_us))

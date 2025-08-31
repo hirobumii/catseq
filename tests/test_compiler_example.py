@@ -11,17 +11,16 @@
 """
 
 import sys
-sys.path.append('/home/tosaka/catseq')
 
 from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.compilation.types import OASMFunction
 from catseq.types import Board, Channel, OperationType
-from catseq.atomic import ttl_init, ttl_on, ttl_off, wait
-from catseq.morphism import Morphism, from_atomic
+from catseq.atomic import ttl_init, ttl_on, ttl_off, identity
+from catseq.morphism import Morphism
 
 
 def pulse(channel: Channel, duration_us: float) -> Morphism:
-    """创建TTL脉冲 morphism: init → on → wait(duration) → off
+    """创建TTL脉冲 morphism: init → on → identity(duration) → off
     
     Args:
         channel: TTL通道
@@ -32,10 +31,10 @@ def pulse(channel: Channel, duration_us: float) -> Morphism:
     """
     init_op = ttl_init(channel)
     on_op = ttl_on(channel)
-    wait_op = wait(duration_us)  
+    wait_op = identity(duration_us)
     off_op = ttl_off(channel)
     
-    return from_atomic(init_op) @ on_op >> from_atomic(wait_op) @ from_atomic(off_op)
+    return init_op >> on_op >> wait_op >> off_op
 
 
 def delay(duration_us: float) -> Morphism:
@@ -47,8 +46,7 @@ def delay(duration_us: float) -> Morphism:
     Returns:
         延时 morphism
     """
-    wait_op = wait(duration_us)
-    return from_atomic(wait_op)
+    return identity(duration_us)
 
 
 def create_complex_ttl_sequence():

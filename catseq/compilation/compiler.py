@@ -5,11 +5,19 @@ This module provides the compilation logic for translating high-level
 Morphism objects into concrete OASM DSL function calls.
 """
 
-from typing import List
+from typing import List, Dict, Callable
 
 from ..types import OperationType
 from ..lanes import merge_board_lanes
 from .types import OASMAddress, OASMFunction, OASMCall
+from .functions import ttl_config, ttl_set, wait_us
+
+# Map OASMFunction enum members to actual OASM DSL functions
+OASM_FUNCTION_MAP: Dict[OASMFunction, Callable] = {
+    OASMFunction.TTL_CONFIG: ttl_config,
+    OASMFunction.TTL_SET: ttl_set,
+    OASMFunction.WAIT_US: wait_us,
+}
 
 
 def compile_to_oasm_calls(morphism) -> List[OASMCall]:
@@ -64,7 +72,7 @@ def compile_to_oasm_calls(morphism) -> List[OASMCall]:
 
 
 def _process_physical_operations(calls: List[OASMCall], adr: OASMAddress, physical_operations):
-    """处理物理操作序列，提取公共逻辑"""
+    """处理物理操作序列，根据时间戳插入wait调用"""
     # 按时间戳分组操作，处理同时操作
     operations_by_timestamp = {}
     for pop in physical_operations:
@@ -72,35 +80,44 @@ def _process_physical_operations(calls: List[OASMCall], adr: OASMAddress, physic
         if timestamp not in operations_by_timestamp:
             operations_by_timestamp[timestamp] = []
         operations_by_timestamp[timestamp].append(pop.operation)
-    
+
+    # 跟踪上一个事件的时间，以计算wait时长
+    previous_timestamp_cycles = 0
+    from ..time_utils import cycles_to_us
+
     # 按时间顺序处理每个时间点的操作
     for timestamp in sorted(operations_by_timestamp.keys()):
+        # 1. 计算并插入WAIT指令
+        wait_cycles = timestamp - previous_timestamp_cycles
+        if wait_cycles > 0:
+            wait_us_val = cycles_to_us(wait_cycles)
+            wait_call = OASMCall(
+                adr=adr,
+                dsl_func=OASMFunction.WAIT_US,
+                args=(wait_us_val,),
+                kwargs={}
+            )
+            calls.append(wait_call)
+
+        # 2. 处理当前时间戳的硬件操作
         ops = operations_by_timestamp[timestamp]
-        # 显示绝对时间戳信息
-        print(f"  t={timestamp}: {len(ops)} operations: {[f'{op.operation_type.name}-CH{op.channel.local_id}' for op in ops]}")
-        
-        # 按操作类型分组同时操作
         ops_by_type = {}
         for op in ops:
             op_type = op.operation_type
             if op_type not in ops_by_type:
                 ops_by_type[op_type] = []
             ops_by_type[op_type].append(op)
-        
-        # 使用match语句按操作类型处理
+
         for op_type, type_ops in ops_by_type.items():
             match op_type:
                 case OperationType.TTL_INIT:
-                    # 处理TTL初始化操作
                     mask = 0
                     dir_value = 0
-                    
                     for op in type_ops:
                         channel_mask = 1 << op.channel.local_id
                         mask |= channel_mask
                         if op.end_state.value == 1:
                             dir_value |= channel_mask
-                    
                     call = OASMCall(
                         adr=adr,
                         dsl_func=OASMFunction.TTL_CONFIG,
@@ -108,34 +125,24 @@ def _process_physical_operations(calls: List[OASMCall], adr: OASMAddress, physic
                         kwargs={}
                     )
                     calls.append(call)
-                    
                 case OperationType.TTL_ON | OperationType.TTL_OFF:
-                    # TTL_ON和TTL_OFF需要统一处理，在下面单独处理
                     pass
-                    
                 case _:
                     print(f"Warning: Unhandled operation type: {op_type}")
-        
-        # 统一处理TTL状态设置操作（TTL_ON和TTL_OFF可能同时发生）
+
         if OperationType.TTL_ON in ops_by_type or OperationType.TTL_OFF in ops_by_type:
             mask = 0
             state_value = 0
-            
-            # 处理所有TTL_ON操作
             if OperationType.TTL_ON in ops_by_type:
                 for op in ops_by_type[OperationType.TTL_ON]:
                     channel_mask = 1 << op.channel.local_id
                     mask |= channel_mask
-                    state_value |= channel_mask  # 该通道设为HIGH
-            
-            # 处理所有TTL_OFF操作
+                    state_value |= channel_mask
             if OperationType.TTL_OFF in ops_by_type:
                 for op in ops_by_type[OperationType.TTL_OFF]:
                     channel_mask = 1 << op.channel.local_id
                     mask |= channel_mask
-                    # state_value中对应bit保持0 (该通道设为LOW)
-            
-            if mask > 0:  # 有实际的状态变化
+            if mask > 0:
                 call = OASMCall(
                     adr=adr,
                     dsl_func=OASMFunction.TTL_SET,
@@ -143,28 +150,51 @@ def _process_physical_operations(calls: List[OASMCall], adr: OASMAddress, physic
                     kwargs={}
                 )
                 calls.append(call)
+        
+        # 3. 更新时间戳
+        previous_timestamp_cycles = timestamp
 
 
-def execute_oasm_calls(calls: List[OASMCall], seq_object) -> bool:
+def execute_oasm_calls(calls: List[OASMCall]) -> bool:
     """执行 OASM 调用序列
     
     Args:
         calls: OASM 调用序列
-        seq_object: OASM 序列对象
         
     Returns:
         执行是否成功
     """
+    print("\n--- Executing OASM Calls ---")
+    if not calls:
+        print("No OASM calls to execute.")
+        return True
+        
     try:
-        for call in calls:
-            # 调用 seq 对象的方法
-            if call.kwargs:
-                seq_object(call.adr.value, call.dsl_func.value, *call.args, **call.kwargs)
-            else:
-                seq_object(call.adr.value, call.dsl_func.value, *call.args)
+        for i, call in enumerate(calls):
+            # 从映射中获取实际的 OASM 函数
+            func = OASM_FUNCTION_MAP.get(call.dsl_func)
+            
+            if func is None:
+                print(f"Error: OASM function '{call.dsl_func.name}' not found in map.")
+                return False
+            
+            # 准备打印信息
+            args_str = ", ".join(map(str, call.args))
+            kwargs_str = ", ".join(f"{k}={v}" for k, v in call.kwargs.items())
+            params_str = ", ".join(filter(None, [args_str, kwargs_str]))
+            
+            print(f"[{i+1:02d}] Board '{call.adr.value}': Calling {func.__name__}({params_str})")
+            
+            # 执行函数
+            func(*call.args, **call.kwargs)
+            
+        print("--- OASM Execution Finished ---")
         return True
     except Exception as e:
+        import traceback
         print(f"OASM execution failed: {e}")
+        traceback.print_exc()
         return False
+
 
 

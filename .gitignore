@@ -58,3 +58,5 @@ examples/oasm_samples/
 # 操作系统生成的文件
 .DS_Store
 Thumbs.db
+
+.env

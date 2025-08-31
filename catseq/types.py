@@ -52,4 +52,17 @@ class OperationType(Enum):
     TTL_OFF = auto()    # TTL 关闭：ON → OFF
     
     # 时间操作
-    WAIT = auto()       # 等待：保持当前状态
+    IDENTITY = auto()    # 恒等：保持当前状态
+
+@dataclass(frozen=True)
+class AtomicMorphism:
+    """最小操作单元 (不可变)"""
+    channel: Channel | None
+    start_state: TTLState | None
+    end_state: TTLState | None
+    duration_cycles: int
+    operation_type: OperationType
+
+    def __post_init__(self):
+        if self.duration_cycles < 0:
+            raise ValueError("Duration must be non-negative")

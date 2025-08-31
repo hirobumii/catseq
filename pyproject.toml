@@ -2,8 +2,7 @@
 name = "catseq"
 version = "0.1.0"
 description = "A Categorical Framework for Hardware Sequence Control"
-readme = "README.md"
-requires-python = ">=3.12.11"
+requires-python = ">=3.12"
 dependencies = [
     "numpy"
 ]
@@ -11,6 +10,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-mock",
     "ruff",
     "mypy"
 ]
@@ -18,6 +18,9 @@ dev = [
 [project.scripts]
 catseq-setup = "catseq.setup:post_install"
 catseq-verify = "catseq.setup:verify_installation"
+
+[tool.setuptools]
+packages = ["catseq"]
 
 [tool.ruff]
 line-length = 88

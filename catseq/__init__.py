@@ -13,13 +13,13 @@ Core concepts:
 """
 
 # Core types and enums
-from .types import Board, Channel, TTLState, OperationType
+from .types import AtomicMorphism, Board, Channel, TTLState, OperationType
 
 # Time utilities
 from .time_utils import us_to_cycles, cycles_to_us
 
 # Atomic operations
-from .atomic import AtomicMorphism, ttl_init, ttl_on, ttl_off, wait
+from .atomic import ttl_init, ttl_on, ttl_off, identity
 
 # Morphism system
 from .morphism import Morphism, from_atomic
@@ -38,17 +38,17 @@ __all__ = [
     'Channel', 
     'TTLState',
     'OperationType',
+    'AtomicMorphism',
     
     # Time utilities
     'us_to_cycles',
     'cycles_to_us',
     
     # Atomic operations
-    'AtomicMorphism',
     'ttl_init',
     'ttl_on', 
     'ttl_off',
-    'wait',
+    'identity',
     
     # Morphism system
     'Morphism',

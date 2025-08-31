@@ -6,10 +6,11 @@ including address enums, function enums, and call objects.
 """
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, auto
 from typing import Dict, Optional, Tuple
 
-from .functions import ttl_config, ttl_set, wait_us, my_wait, trig_slave
+# Note: Actual functions are no longer imported here for OASMFunction definition
+# They will be mapped in the compiler/executor.
 
 
 class OASMAddress(Enum):
@@ -26,24 +27,24 @@ class OASMAddress(Enum):
 
 
 class OASMFunction(Enum):
-    """OASM DSL 函数枚举 - 存储实际的函数对象"""
+    """OASM DSL 函数枚举 - 仅定义操作类型，不直接存储函数对象"""
     # TTL 函数
-    TTL_CONFIG = ttl_config  # TTL通道方向配置 (用于 TTL_INIT)
-    TTL_SET = ttl_set        # TTL通道状态设置 (用于 TTL_ON/TTL_OFF)
+    TTL_CONFIG = auto()
+    TTL_SET = auto()
     
     # 时间函数
-    WAIT_US = wait_us
-    MY_WAIT = my_wait
+    WAIT_US = auto()
+    MY_WAIT = auto()
     
     # 触发函数
-    TRIG_SLAVE = trig_slave
+    TRIG_SLAVE = auto()
 
 
 @dataclass(frozen=True)
 class OASMCall:
     """OASM 调用对象 - 表示一个 seq() 调用"""
     adr: OASMAddress           # 目标地址
-    dsl_func: OASMFunction     # DSL 函数
+    dsl_func: OASMFunction     # DSL 函数 (现在是枚举成员)
     args: Tuple = ()           # 位置参数
     kwargs: Optional[Dict] = field(default_factory=dict)  # 关键字参数
     

@@ -9,8 +9,7 @@ operations across multiple channels for hardware execution.
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
-from .types import Board, Channel, OperationType
-from .atomic import AtomicMorphism
+from .types import AtomicMorphism, Board, Channel, OperationType
 from .time_utils import cycles_to_us
 
 

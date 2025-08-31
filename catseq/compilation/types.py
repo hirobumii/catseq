@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Tuple, Union
 
-from .functions import ttl_config, wait_us, my_wait, trig_slave
+from .functions import ttl_config, ttl_set, wait_us, my_wait, trig_slave
 
 
 class OASMAddress(Enum):
@@ -28,7 +28,8 @@ class OASMAddress(Enum):
 class OASMFunction(Enum):
     """OASM DSL 函数枚举 - 存储实际的函数对象"""
     # TTL 函数
-    TTL_CONFIG = ttl_config
+    TTL_CONFIG = ttl_config  # TTL通道方向配置 (用于 TTL_INIT)
+    TTL_SET = ttl_set        # TTL通道状态设置 (用于 TTL_ON/TTL_OFF)
     
     # 时间函数
     WAIT_US = wait_us

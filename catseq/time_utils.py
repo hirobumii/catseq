@@ -8,6 +8,9 @@ hardware clock cycles for precise timing control.
 # RTMQ 硬件时钟频率：250 MHz
 CLOCK_FREQ_HZ = 250_000_000
 CYCLES_PER_US = CLOCK_FREQ_HZ / 1_000_000  # 250 cycles per microsecond
+us = 250
+ms = 250_000
+s = 250_000_000
 
 
 def us_to_cycles(microseconds: float) -> int:

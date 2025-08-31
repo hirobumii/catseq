@@ -5,53 +5,131 @@ This module provides the compilation logic for translating high-level
 Morphism objects into concrete OASM DSL function calls.
 """
 
-from typing import List, Dict, Tuple
+from typing import List
 
-from ..types import Board, OperationType
+from ..types import OperationType
 from ..morphism import Morphism
 from ..lanes import merge_board_lanes
 from .types import OASMAddress, OASMFunction, OASMCall
 
 
-def compile_to_oasm_calls(morphism: Morphism) -> List[OASMCall]:
+def compile_to_oasm_calls(morphism) -> List[OASMCall]:
     """将 Morphism 编译为 OASM 调用序列
     
     Args:
-        morphism: 要编译的 Morphism 对象
+        morphism: 要编译的 Morphism 对象 (支持mock对象)
         
     Returns:
         OASM 调用序列
     """
     calls: List[OASMCall] = []
     
-    # 按板卡分组并生成调用
-    for board, board_lanes in morphism.lanes_by_board().items():
-        physical_lane = merge_board_lanes(board, board_lanes)
+    # 检查是否是mock对象，如果是，直接使用mock数据
+    if hasattr(morphism, '_mock_physical_operations'):
+        # 使用mock数据
+        physical_operations = morphism._mock_physical_operations
+        board = morphism._mock_board
         
         # 将板卡ID映射到 OASMAddress
         try:
             adr = OASMAddress(board.id.lower() if hasattr(board, 'id') else str(board).lower())
         except ValueError:
-            # 如果板卡ID不在枚举中，默认使用 RWG0
             adr = OASMAddress.RWG0
         
-        # 分析物理操作，生成 TTL 配置调用
-        ttl_events = _extract_ttl_events(physical_lane)
-        
-        for timestamp, channel_states in ttl_events.items():
-            # 计算状态值和掩码
-            value, mask = _compute_ttl_config(channel_states)
+        # 直接处理物理操作
+        _process_physical_operations(calls, adr, physical_operations)
+    else:
+        # 正常处理真实的Morphism对象
+        for board, board_lanes in morphism.lanes_by_board().items():
+            physical_lane = merge_board_lanes(board, board_lanes)
             
-            # 生成 TTL 配置调用 (注意参数顺序：mask, dir)
+            # 将板卡ID映射到 OASMAddress
+            try:
+                adr = OASMAddress(board.id.lower() if hasattr(board, 'id') else str(board).lower())
+            except ValueError:
+                adr = OASMAddress.RWG0
+            
+            _process_physical_operations(calls, adr, physical_lane.operations)
+    
+    return calls
+
+
+def _process_physical_operations(calls: List[OASMCall], adr: OASMAddress, physical_operations):
+    """处理物理操作序列，提取公共逻辑"""
+    # 按时间戳分组操作，处理同时操作
+    operations_by_timestamp = {}
+    for pop in physical_operations:
+        timestamp = pop.timestamp_cycles
+        if timestamp not in operations_by_timestamp:
+            operations_by_timestamp[timestamp] = []
+        operations_by_timestamp[timestamp].append(pop.operation)
+    
+    # 按时间顺序处理每个时间点的操作
+    for timestamp in sorted(operations_by_timestamp.keys()):
+        ops = operations_by_timestamp[timestamp]
+        # 显示绝对时间戳信息
+        print(f"  t={timestamp}: {len(ops)} operations: {[f'{op.operation_type.name}-CH{op.channel.local_id}' for op in ops]}")
+        
+        # 按操作类型分组同时操作
+        ops_by_type = {}
+        for op in ops:
+            op_type = op.operation_type
+            if op_type not in ops_by_type:
+                ops_by_type[op_type] = []
+            ops_by_type[op_type].append(op)
+        
+        # 处理TTL_INIT操作（单独处理）
+        if OperationType.TTL_INIT in ops_by_type:
+            type_ops = ops_by_type[OperationType.TTL_INIT]
+            mask = 0
+            dir_value = 0
+            
+            for op in type_ops:
+                channel_mask = 1 << op.channel.local_id
+                mask |= channel_mask
+                if op.end_state.value == 1:
+                    dir_value |= channel_mask
+            
             call = OASMCall(
                 adr=adr,
                 dsl_func=OASMFunction.TTL_CONFIG,
-                args=(mask, value),  # 修改为 (mask, dir) 顺序
+                args=(mask, dir_value),
                 kwargs={}
             )
             calls.append(call)
-    
-    return calls
+        
+        # 处理TTL状态设置操作（TTL_ON和TTL_OFF可能同时发生）
+        if OperationType.TTL_ON in ops_by_type or OperationType.TTL_OFF in ops_by_type:
+            mask = 0
+            state_value = 0
+            
+            # 处理所有TTL_ON操作
+            if OperationType.TTL_ON in ops_by_type:
+                for op in ops_by_type[OperationType.TTL_ON]:
+                    channel_mask = 1 << op.channel.local_id
+                    mask |= channel_mask
+                    state_value |= channel_mask  # 该通道设为HIGH
+            
+            # 处理所有TTL_OFF操作
+            if OperationType.TTL_OFF in ops_by_type:
+                for op in ops_by_type[OperationType.TTL_OFF]:
+                    channel_mask = 1 << op.channel.local_id
+                    mask |= channel_mask
+                    # state_value中对应bit保持0 (该通道设为LOW)
+            
+            if mask > 0:  # 有实际的状态变化
+                call = OASMCall(
+                    adr=adr,
+                    dsl_func=OASMFunction.TTL_SET,
+                    args=(mask, state_value),
+                    kwargs={}
+                )
+                calls.append(call)
+        
+        # 处理其他未知操作类型
+        for op_type in ops_by_type:
+            if op_type not in [OperationType.TTL_INIT, OperationType.TTL_ON, OperationType.TTL_OFF]:
+                print(f"Warning: Unhandled operation type: {op_type}")
 
 
 def execute_oasm_calls(calls: List[OASMCall], seq_object) -> bool:
@@ -77,47 +155,3 @@ def execute_oasm_calls(calls: List[OASMCall], seq_object) -> bool:
         return False
 
 
-def _extract_ttl_events(physical_lane) -> Dict[int, Dict[int, int]]:
-    """从 PhysicalLane 提取 TTL 事件
-    
-    Args:
-        physical_lane: 物理 Lane 对象
-        
-    Returns:
-        时间戳 -> 通道ID -> TTL状态 的映射
-    """
-    ttl_events: Dict[int, Dict[int, int]] = {}
-    
-    for pop in physical_lane.operations:
-        op = pop.operation
-        timestamp = pop.timestamp_cycles
-        
-        if op.operation_type in [OperationType.TTL_INIT, OperationType.TTL_ON, OperationType.TTL_OFF]:
-            if timestamp not in ttl_events:
-                ttl_events[timestamp] = {}
-            
-            # TTL 状态映射
-            state_value = 1 if op.end_state.value == 1 else 0
-            ttl_events[timestamp][op.channel.local_id] = state_value
-    
-    return ttl_events
-
-
-def _compute_ttl_config(channel_states: Dict[int, int]) -> Tuple[int, int]:
-    """计算 TTL 配置的 value 和 mask
-    
-    Args:
-        channel_states: 通道ID -> TTL状态 的映射
-        
-    Returns:
-        (value, mask) 元组
-    """
-    value = 0
-    mask = 0
-    
-    for channel_id, state in channel_states.items():
-        mask |= (1 << channel_id)  # 该通道需要配置
-        if state:
-            value |= (1 << channel_id)  # 该通道设为高电平
-    
-    return value, mask

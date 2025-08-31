@@ -8,7 +8,6 @@ Morphism objects into concrete OASM DSL function calls.
 from typing import List
 
 from ..types import OperationType
-from ..morphism import Morphism
 from ..lanes import merge_board_lanes
 from .types import OASMAddress, OASMFunction, OASMCall
 
@@ -26,18 +25,28 @@ def compile_to_oasm_calls(morphism) -> List[OASMCall]:
     
     # 检查是否是mock对象，如果是，直接使用mock数据
     if hasattr(morphism, '_mock_physical_operations'):
-        # 使用mock数据
+        # 使用mock数据 - 支持多板卡
         physical_operations = morphism._mock_physical_operations
-        board = morphism._mock_board
         
-        # 将板卡ID映射到 OASMAddress
-        try:
-            adr = OASMAddress(board.id.lower() if hasattr(board, 'id') else str(board).lower())
-        except ValueError:
-            adr = OASMAddress.RWG0
+        # 按板卡分组物理操作
+        operations_by_board = {}
+        for pop in physical_operations:
+            board = pop.operation.channel.board
+            if board not in operations_by_board:
+                operations_by_board[board] = []
+            operations_by_board[board].append(pop)
         
-        # 直接处理物理操作
-        _process_physical_operations(calls, adr, physical_operations)
+        # 为每个板卡生成OASM调用
+        for board, board_ops in operations_by_board.items():
+            # 将板卡ID映射到 OASMAddress
+            try:
+                adr = OASMAddress(board.id.lower() if hasattr(board, 'id') else str(board).lower())
+            except ValueError:
+                adr = OASMAddress.RWG0
+            
+            print(f"\n🔷 处理{board.id}板卡 ({len(board_ops)}个操作):")
+            # 处理该板卡的物理操作
+            _process_physical_operations(calls, adr, board_ops)
     else:
         # 正常处理真实的Morphism对象
         for board, board_lanes in morphism.lanes_by_board().items():
@@ -78,27 +87,36 @@ def _process_physical_operations(calls: List[OASMCall], adr: OASMAddress, physic
                 ops_by_type[op_type] = []
             ops_by_type[op_type].append(op)
         
-        # 处理TTL_INIT操作（单独处理）
-        if OperationType.TTL_INIT in ops_by_type:
-            type_ops = ops_by_type[OperationType.TTL_INIT]
-            mask = 0
-            dir_value = 0
-            
-            for op in type_ops:
-                channel_mask = 1 << op.channel.local_id
-                mask |= channel_mask
-                if op.end_state.value == 1:
-                    dir_value |= channel_mask
-            
-            call = OASMCall(
-                adr=adr,
-                dsl_func=OASMFunction.TTL_CONFIG,
-                args=(mask, dir_value),
-                kwargs={}
-            )
-            calls.append(call)
+        # 使用match语句按操作类型处理
+        for op_type, type_ops in ops_by_type.items():
+            match op_type:
+                case OperationType.TTL_INIT:
+                    # 处理TTL初始化操作
+                    mask = 0
+                    dir_value = 0
+                    
+                    for op in type_ops:
+                        channel_mask = 1 << op.channel.local_id
+                        mask |= channel_mask
+                        if op.end_state.value == 1:
+                            dir_value |= channel_mask
+                    
+                    call = OASMCall(
+                        adr=adr,
+                        dsl_func=OASMFunction.TTL_CONFIG,
+                        args=(mask, dir_value),
+                        kwargs={}
+                    )
+                    calls.append(call)
+                    
+                case OperationType.TTL_ON | OperationType.TTL_OFF:
+                    # TTL_ON和TTL_OFF需要统一处理，在下面单独处理
+                    pass
+                    
+                case _:
+                    print(f"Warning: Unhandled operation type: {op_type}")
         
-        # 处理TTL状态设置操作（TTL_ON和TTL_OFF可能同时发生）
+        # 统一处理TTL状态设置操作（TTL_ON和TTL_OFF可能同时发生）
         if OperationType.TTL_ON in ops_by_type or OperationType.TTL_OFF in ops_by_type:
             mask = 0
             state_value = 0
@@ -125,11 +143,6 @@ def _process_physical_operations(calls: List[OASMCall], adr: OASMAddress, physic
                     kwargs={}
                 )
                 calls.append(call)
-        
-        # 处理其他未知操作类型
-        for op_type in ops_by_type:
-            if op_type not in [OperationType.TTL_INIT, OperationType.TTL_ON, OperationType.TTL_OFF]:
-                print(f"Warning: Unhandled operation type: {op_type}")
 
 
 def execute_oasm_calls(calls: List[OASMCall], seq_object) -> bool:

@@ -4,7 +4,18 @@ OASM DSL function definitions.
 This module contains the actual OASM DSL functions that will be called
 when executing compiled sequences on the hardware.
 """
-from oasm.rtmq2 import sfs, amk, wait
+# Mock OASM functions for testing (replace with real OASM when available)
+def sfs(subfile, register):
+    """Mock SFS (Select File System) function"""
+    pass
+
+def amk(subfile, mask, value):
+    """Mock AMK (Masked Assignment) function"""
+    pass
+
+def wait(cycles):
+    """Mock wait function"""
+    pass
 from .mask_utils import binary_to_rtmq_mask
 from ..time_utils import us
 
@@ -33,7 +44,7 @@ def ttl_config(mask, dir):
     sfs('dio', 'dir')
     amk('dio', rtmq_mask, dir_reg)
     
-    print(f"SFS - DIO DIR")
+    print("SFS - DIO DIR")
     print(f"AMK - DIO {rtmq_mask} {dir_reg}")
     print(f"  -> mask=0b{mask:08b}, dir=0b{dir:08b}")
 

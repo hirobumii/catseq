@@ -49,7 +49,7 @@ def demo_ttl_compilation():
     # Compile to executable CompiledMorphism
     compiled = compile_morphism(concrete_morphism)
     
-    print(f"Compiled morphism:")
+    print("Compiled morphism:")
     print(f"  - Duration: {compiled.duration*1e6:.3f} μs") 
     print(f"  - Channels: {[ch.name for ch in compiled.channels]}")
     print(f"  - Callable: {callable(compiled)}")
@@ -57,7 +57,7 @@ def demo_ttl_compilation():
     # Create executable function for use with rwg_play()
     executable = create_executable_morphism(concrete_morphism, "ttl_pulse_sequence")
     
-    print(f"Executable function:")
+    print("Executable function:")
     print(f"  - Name: {executable.__name__}")
     print(f"  - Callable: {callable(executable)}")
     print(f"  - Doc: {executable.__doc__}")
@@ -97,7 +97,7 @@ def demo_rwg_compilation():
     # Compile to executable
     compiled = compile_morphism(morphism)
     
-    print(f"Compiled RWG morphism:")
+    print("Compiled RWG morphism:")
     print(f"  - Duration: {compiled.duration*1000:.3f} ms")
     print(f"  - Channels: {[ch.name for ch in compiled.channels]}")
     
@@ -124,7 +124,7 @@ def demo_parallel_compilation():
     # Combine in parallel (| operator)
     parallel_morphism = short_pulse | long_pulse
     
-    print(f"Parallel morphism:")
+    print("Parallel morphism:")
     print(f"  - Duration: {parallel_morphism.duration*1e6:.3f} μs (synchronized)")
     print(f"  - Lanes: {len(parallel_morphism.lanes)}")
     print(f"  - Channels: {[ch.name for ch in parallel_morphism.lanes.keys()]}")
@@ -132,7 +132,7 @@ def demo_parallel_compilation():
     # Compile parallel morphism
     compiled = compile_morphism(parallel_morphism)
     
-    print(f"Compiled parallel morphism:")
+    print("Compiled parallel morphism:")
     print(f"  - Channels: {[ch.name for ch in compiled.channels]}")
     print(f"  - Operations are synchronized to {compiled.duration*1e6:.3f} μs")
     

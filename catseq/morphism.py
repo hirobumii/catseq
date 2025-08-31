@@ -6,11 +6,11 @@ and state inference logic for building complex quantum control sequences.
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Union
+from typing import Dict
 
 from .types import Board, Channel, TTLState, OperationType
 from .atomic import AtomicMorphism
-from .lanes import Lane, PhysicalLane, merge_board_lanes
+from .lanes import Lane
 from .time_utils import cycles_to_us
 
 
@@ -286,21 +286,65 @@ def auto_compose_morphisms(first: Morphism, second: Morphism) -> Morphism:
 def parallel_compose_morphisms(left: Morphism, right: Morphism) -> Morphism:
     """并行组合操作 (|)
     
-    将两个Morphism并行执行，要求时长相等
+    将两个Morphism并行执行，根据CLAUDE.md规范：
+    不同长度的morphism做|组合时，把短的后面补上wait直到和长的morphism一样长
     """
-    # 检查时长是否相等
-    if left.total_duration_cycles != right.total_duration_cycles:
-        raise ValueError(
-            f"Cannot compose morphisms with different durations: "
-            f"{left.total_duration_us:.1f}μs vs {right.total_duration_us:.1f}μs"
-        )
-    
     # 检查通道是否重叠
     overlapping_channels = set(left.lanes.keys()) & set(right.lanes.keys())
     if overlapping_channels:
         channel_names = [ch.global_id for ch in overlapping_channels]
         raise ValueError(f"Cannot compose: overlapping channels {channel_names}")
     
-    # 简单合并lanes
+    # 获取两个morphism的时长
+    left_duration = left.total_duration_cycles
+    right_duration = right.total_duration_cycles
+    
+    # 如果时长相等，直接合并
+    if left_duration == right_duration:
+        result_lanes = {**left.lanes, **right.lanes}
+        return Morphism(result_lanes)
+    
+    # 根据CLAUDE.md规范：把短的后面补上wait直到和长的一样长
+    max_duration = max(left_duration, right_duration)
+    
+    def pad_morphism_to_duration(morphism: Morphism, target_duration: int) -> Morphism:
+        """为morphism补齐wait操作到指定时长"""
+        current_duration = morphism.total_duration_cycles
+        if current_duration >= target_duration:
+            return morphism
+            
+        # 需要补齐的时长
+        padding_cycles = target_duration - current_duration
+        
+        # 为每个通道添加padding wait操作
+        padded_lanes = {}
+        for channel, lane in morphism.lanes.items():
+            # 获取最后一个操作的结束状态
+            last_op = lane.operations[-1]
+            end_state = last_op.end_state if hasattr(last_op, 'end_state') else None
+            
+            # 创建padding wait操作
+            from .atomic import AtomicMorphism
+            padding_wait = AtomicMorphism(
+                channel=channel,
+                start_state=end_state,
+                end_state=end_state,
+                duration_cycles=padding_cycles,
+                operation_type=OperationType.WAIT
+            )
+            
+            # 添加到lane的操作序列末尾
+            padded_operations = lane.operations + (padding_wait,)
+            padded_lanes[channel] = Lane(padded_operations)
+        
+        return Morphism(padded_lanes)
+    
+    # 补齐较短的morphism
+    if left_duration < max_duration:
+        left = pad_morphism_to_duration(left, max_duration)
+    if right_duration < max_duration:
+        right = pad_morphism_to_duration(right, max_duration)
+    
+    # 合并lanes
     result_lanes = {**left.lanes, **right.lanes}
     return Morphism(result_lanes)

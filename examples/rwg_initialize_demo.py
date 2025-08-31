@@ -10,9 +10,8 @@ to RTMQ DSL based on morphism state transitions rather than string matching.
 from catseq.compiler import compile_morphism, create_executable_morphism
 from catseq.protocols import Channel
 from catseq.hardware.rwg import RWGDevice
-from catseq.morphisms import rwg, common
-from catseq.states.common import Uninitialized
-from catseq.states.rwg import RWGReady, RWGActive, StaticWaveform
+from catseq.morphisms import rwg
+from catseq.states.rwg import RWGReady
 
 
 class DemoRWGDevice(RWGDevice):
@@ -54,7 +53,7 @@ def demo_type_based_initialize():
     print("\n2. Compiling with type-based translation:")
     compiled = compile_morphism(init_morphism)
     
-    print(f"   Compiled successfully!")
+    print("   Compiled successfully!")
     print(f"   Duration: {compiled.duration*1e6:.3f} μs")
     print(f"   Channels: {[ch.name for ch in compiled.channels]}")
     print(f"   Callable: {callable(compiled)}")
@@ -103,12 +102,12 @@ def demo_initialize_vs_waveform():
     
     sequence_compiled = compile_morphism(sequence_morphism)
     
-    print(f"\nComparison:")
+    print("\nComparison:")
     print(f"Initialize only - Duration: {init_compiled.duration*1e6:.3f} μs")
     print(f"Full sequence   - Duration: {sequence_compiled.duration*1e6:.3f} μs")
     
-    print(f"\nBoth are properly compiled based on state transition types,")
-    print(f"not string matching!")
+    print("\nBoth are properly compiled based on state transition types,")
+    print("not string matching!")
     
     return init_compiled, sequence_compiled
 
@@ -139,14 +138,14 @@ def demo_complete_sequence():
     # Compile the complete sequence
     compiled_sequence = compile_morphism(sequence_morphism)
     
-    print(f"Compiled sequence:")
+    print("Compiled sequence:")
     print(f"  Duration: {compiled_sequence.duration*1e6:.3f} μs")
     print(f"  Channels: {[ch.name for ch in compiled_sequence.channels]}")
     
     # Create executable function
     executable = create_executable_morphism(sequence_morphism, "rwg_init_and_ramp")
     print(f"  Executable: {executable.__name__}")
-    print(f"  Usage: rwg0_play(rwg_init_and_ramp)()")
+    print("  Usage: rwg0_play(rwg_init_and_ramp)()")
     
     return compiled_sequence, executable
 
@@ -165,16 +164,16 @@ def demo_parallel_rwg_operations():
     
     parallel_init = init0 | init1
     
-    print(f"Parallel initialization:")
+    print("Parallel initialization:")
     print(f"  Duration: {parallel_init.duration*1e6:.3f} μs")
     print(f"  Channels: {len(parallel_init.lanes)}")
     
     # Compile parallel operations
     compiled_parallel = compile_morphism(parallel_init)
     
-    print(f"Compiled parallel morphism:")
+    print("Compiled parallel morphism:")
     print(f"  Channels: {[ch.name for ch in compiled_parallel.channels]}")
-    print(f"  Both initialize morphisms detected by state transitions")
+    print("  Both initialize morphisms detected by state transitions")
     
     return compiled_parallel
 

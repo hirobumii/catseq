@@ -7,7 +7,7 @@ including address enums, function enums, and call objects.
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple
 
 from .functions import ttl_config, ttl_set, wait_us, my_wait, trig_slave
 

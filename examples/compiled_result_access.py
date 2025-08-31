@@ -162,7 +162,7 @@ def demo_inspection_tools():
     
     compiled = compile_morphism(complex_sequence)
     
-    print(f"序列分析:")
+    print("序列分析:")
     print(f"  总持续时间: {compiled.duration*1e6:.3f} μs")
     print(f"  通道数量: {len(compiled.channels)}")
     print(f"  通道列表: {[ch.name for ch in compiled.channels]}")

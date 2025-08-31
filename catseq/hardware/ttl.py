@@ -5,8 +5,8 @@ This module provides TTL-specific hardware abstractions and utilities
 for working with TTL devices in the CatSeq framework.
 """
 
-from ..types import Channel, TTLState
-from ..atomic import AtomicMorphism, ttl_init, ttl_on, ttl_off, wait
+from ..types import Channel
+from ..atomic import ttl_init, ttl_on, ttl_off, wait
 from ..morphism import Morphism, from_atomic
 
 

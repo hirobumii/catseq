@@ -15,8 +15,8 @@ sys.path.append('/home/tosaka/catseq')
 
 from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.compilation.types import OASMFunction
-from catseq.types import Board, Channel, TTLState, OperationType
-from catseq.atomic import AtomicMorphism, ttl_init, ttl_on, ttl_off, wait
+from catseq.types import Board, Channel, OperationType
+from catseq.atomic import ttl_init, ttl_on, ttl_off, wait
 from catseq.morphism import Morphism, from_atomic
 
 
@@ -213,7 +213,7 @@ def test_complex_ttl_sequence_compilation():
         else:
             print("❌ 映射数量不符合预期")
             print(f"   实际: TTL_CONFIG={init_count}, TTL_SET={on_off_count}")
-            print(f"   预期: TTL_CONFIG=1, TTL_SET=7")
+            print("   预期: TTL_CONFIG=1, TTL_SET=7")
             return False
             
     except Exception as e:

@@ -2,7 +2,8 @@ import pytest
 from catseq.atomic import ttl_on
 from catseq.lanes import Lane
 from catseq.morphism import Morphism
-from catseq.types import AtomicMorphism, Board, Channel, OperationType, TTLState
+from catseq.types.common import AtomicMorphism, Board, Channel, OperationType
+from catseq.types.ttl import TTLState
 
 # Define a board and channel for testing
 RWG0 = Board("RWG0")

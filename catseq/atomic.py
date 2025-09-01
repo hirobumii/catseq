@@ -6,7 +6,8 @@ which are the fundamental building blocks of sequences.
 """
 from .morphism import Morphism, from_atomic
 from .time_utils import us_to_cycles
-from .types import Channel, OperationType, TTLState, AtomicMorphism
+from .types.common import Channel, OperationType, AtomicMorphism
+from .types.ttl import TTLState
 
 
 def ttl_init(channel: Channel, initial_state: TTLState = TTLState.OFF) -> Morphism:

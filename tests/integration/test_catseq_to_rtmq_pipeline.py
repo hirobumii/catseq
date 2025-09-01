@@ -19,7 +19,7 @@ def test_catseq_to_rtmq_full_pipeline():
     
     try:
         from catseq.atomic import ttl_init, ttl_on, ttl_off, identity
-        from catseq.types import Board, Channel
+        from catseq.types.common import Board, Channel
         from catseq.compilation.compiler import compile_to_oasm_calls, execute_oasm_calls
         print("✅ CatSeq modules imported successfully")
     except ImportError as e:
@@ -141,7 +141,7 @@ def test_simple_catseq_pulse():
     
     try:
         from catseq.atomic import ttl_init, ttl_on, ttl_off, identity
-        from catseq.types import Board, Channel
+        from catseq.types.common import Board, Channel
         from catseq.compilation.compiler import compile_to_oasm_calls
         
         # Define a simple single-channel pulse
@@ -185,7 +185,7 @@ def test_complex_catseq_experiment():
     
     try:
         from catseq.atomic import ttl_init, ttl_on, ttl_off, identity
-        from catseq.types import Board, Channel
+        from catseq.types.common import Board, Channel
         from catseq.compilation.compiler import compile_to_oasm_calls
         
         # Define experimental hardware channels

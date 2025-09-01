@@ -14,7 +14,7 @@ import sys
 
 from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.compilation.types import OASMFunction
-from catseq.types import Board, Channel, OperationType
+from catseq.types.common import Board, Channel, OperationType
 from catseq.atomic import ttl_init, ttl_on, ttl_off, identity
 from catseq.morphism import Morphism
 

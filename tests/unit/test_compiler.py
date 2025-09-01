@@ -1,7 +1,7 @@
 import pytest
 from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.compilation.types import OASMCall, OASMFunction, OASMAddress
-from catseq.types import Board, Channel
+from catseq.types.common import Board, Channel
 from catseq.atomic import ttl_on, ttl_off, identity
 from catseq.time_utils import cycles_to_us, us_to_cycles
 

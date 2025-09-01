@@ -15,13 +15,14 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.compilation.types import OASMFunction
-from catseq.types import Board, Channel, OperationType
+from catseq.types.common import Board, Channel, OperationType
 
 
 def pulse_with_padding(channel: Channel, pulse_duration_cycles: int, total_duration_cycles: int):
     """创建带填充的TTL脉冲: init → on → wait(pulse_duration) → off → wait(padding)"""
     from catseq.atomic import AtomicMorphism
-    from catseq.types import TTLState, OperationType
+    from catseq.types.ttl import TTLState
+from catseq.types.common import OperationType
     from catseq.lanes import Lane
     from catseq.morphism import Morphism
     
@@ -75,7 +76,8 @@ def pulse_with_padding(channel: Channel, pulse_duration_cycles: int, total_durat
 def pulse(channel: Channel, duration_cycles: int):
     """创建TTL脉冲: init → on → wait(duration) → off"""
     from catseq.atomic import AtomicMorphism
-    from catseq.types import TTLState, OperationType
+    from catseq.types.ttl import TTLState
+from catseq.types.common import OperationType
     from catseq.lanes import Lane
     from catseq.morphism import Morphism
     
@@ -119,7 +121,8 @@ def pulse(channel: Channel, duration_cycles: int):
 def create_wait_for_channel(channel: Channel, duration_cycles: int):
     """为特定通道创建等待操作，保持当前状态"""
     from catseq.atomic import AtomicMorphism
-    from catseq.types import TTLState, OperationType
+    from catseq.types.ttl import TTLState
+from catseq.types.common import OperationType
     from catseq.lanes import Lane
     from catseq.morphism import Morphism
     
@@ -139,7 +142,8 @@ def create_wait_for_channel(channel: Channel, duration_cycles: int):
 def create_ttl_init_with_duration(channel: Channel, duration_cycles: int = 1):
     """创建带有指定时长的TTL初始化操作"""
     from catseq.atomic import AtomicMorphism
-    from catseq.types import TTLState, OperationType
+    from catseq.types.ttl import TTLState
+from catseq.types.common import OperationType
     from catseq.lanes import Lane
     from catseq.morphism import Morphism
     

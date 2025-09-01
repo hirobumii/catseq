@@ -9,7 +9,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from catseq.atomic import ttl_init, ttl_on, ttl_off, identity
-from catseq.types import Board, Channel
+from catseq.types.common import Board, Channel
 from catseq.compilation.compiler import compile_to_oasm_calls, execute_oasm_calls
 from catseq.compilation.types import OASMAddress, OASMFunction, OASMCall
 

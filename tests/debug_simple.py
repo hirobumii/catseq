@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from catseq.types import Board, Channel
+from catseq.types.common import Board, Channel
 from catseq.atomic import ttl_init, ttl_on, wait
 from catseq.morphism import from_atomic
 

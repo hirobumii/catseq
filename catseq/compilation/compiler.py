@@ -7,7 +7,7 @@ Morphism objects into concrete OASM DSL function calls.
 
 from typing import List, Dict, Callable
 
-from ..types import OperationType
+from ..types.common import OperationType
 from ..lanes import merge_board_lanes
 from .types import OASMAddress, OASMFunction, OASMCall
 from .functions import ttl_config, ttl_set, wait_us

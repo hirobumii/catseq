@@ -1,7 +1,7 @@
 
 # tests/debug_compiler_output.py
 
-from catseq.types import Board, Channel
+from catseq.types.common import Board, Channel
 from catseq.hardware.ttl import pulse
 from catseq.lanes import merge_board_lanes
 from catseq.compilation.compiler import compile_to_oasm_calls

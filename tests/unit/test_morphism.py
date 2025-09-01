@@ -2,13 +2,13 @@ import pytest
 from catseq.morphism import Morphism
 from catseq.lanes import Lane
 from catseq.time_utils import us_to_cycles
-from catseq.types import (
+from catseq.types.common import (
     AtomicMorphism,
     Board,
     Channel,
     OperationType,
-    TTLState,
 )
+from catseq.types.ttl import TTLState
 from catseq.atomic import ttl_on, ttl_off, identity
 
 # Define boards and channels for testing

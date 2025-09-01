@@ -236,7 +236,8 @@ class TestOASMCallStructure:
         """Test OASM function enumeration completeness."""
         # Check that all expected functions are defined
         expected_functions = {
-            'TTL_CONFIG', 'TTL_SET', 'WAIT_US', 'MY_WAIT', 'TRIG_SLAVE'
+            'TTL_CONFIG', 'TTL_SET', 'WAIT_US', 'TRIG_SLAVE',
+            'RWG_INITIALIZE_PORT', 'RWG_RF_SWITCH', 'RWG_LOAD_WAVEFORM', 'RWG_PLAY'
         }
         actual_functions = {func.name for func in OASMFunction}
         assert expected_functions.issubset(actual_functions)

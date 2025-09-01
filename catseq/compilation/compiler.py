@@ -44,7 +44,7 @@ class LogicalEvent:
 
 # --- Main Compiler Entry Point ---
 
-def compile_to_oasm_calls(morphism) -> List[OASMCall]:
+def compile_to_oasm_calls(morphism, _return_internal_events=False) -> List[OASMCall]:
     """Drives the multi-pass compilation process."""
     
     # Pass 0: Extract a flat list of events from the morphism, grouped by board.
@@ -55,6 +55,10 @@ def compile_to_oasm_calls(morphism) -> List[OASMCall]:
     
     # Pass 2: Check for timing violations (e.g., pipelining constraints).
     _pass2_check_constraints(events_by_board)
+
+    # For testing purposes, allow returning the internal event list
+    if _return_internal_events:
+        return events_by_board
     
     # Pass 3: Generate the final, scheduled OASM calls.
     oasm_calls = _pass3_generate_oasm_calls(events_by_board)
@@ -95,46 +99,86 @@ def _pass1_analyze_costs(events_by_board: Dict[OASMAddress, List[LogicalEvent]])
     print("Compiler Pass 1: Analyzing costs...")
     for adr, events in events_by_board.items():
         for event in events:
+            print(f"  - Analyzing event: {event.operation.operation_type.name}") # DEBUG PRINT
             if event.operation.operation_type == OperationType.RWG_LOAD_COEFFS:
                 # Placeholder cost model: 20 cycles per parameter.
                 # The end_state of a LOAD op is RWGWaveformInstruction.
                 if isinstance(event.operation.end_state, RWGWaveformInstruction):
                     num_params = len(event.operation.end_state.params)
                     event.cost_cycles = num_params * 20
-                    print(f"  - Cost for LOAD at {event.timestamp_cycles} on {adr.value}: {event.cost_cycles} cycles")
+                    print(f"    - Cost for LOAD at {event.timestamp_cycles} on {adr.value}: {event.cost_cycles} cycles")
 
 def _pass2_check_constraints(events_by_board: Dict[OASMAddress, List[LogicalEvent]]):
-    """Pass 2: Checks for timing violations."""
-    # For TTL, there are no complex pipelining constraints to check.
-    # This pass is a placeholder for future RWG constraint checking.
-    pass
+    """Pass 2: Checks for timing violations, such as pipelining."""
+    print("Compiler Pass 2: Checking constraints...")
+    for adr, events in events_by_board.items():
+        # Group events by channel to check sequences correctly
+        events_by_channel: Dict[int, List[LogicalEvent]] = {}
+        for event in events:
+            if event.operation.channel:
+                cid = event.operation.channel.local_id
+                if cid not in events_by_channel:
+                    events_by_channel[cid] = []
+                events_by_channel[cid].append(event)
+
+        for cid, channel_events in events_by_channel.items():
+            for i, event in enumerate(channel_events):
+                if event.operation.operation_type == OperationType.RWG_UPDATE_PARAMS:
+                    play_op = event.operation
+                    play_duration = play_op.duration_cycles
+
+                    if play_duration > 0:
+                        # Find the next load operation on the same channel
+                        next_load_event = None
+                        for j in range(i + 1, len(channel_events)):
+                            if channel_events[j].operation.operation_type == OperationType.RWG_LOAD_COEFFS:
+                                next_load_event = channel_events[j]
+                                break
+                        
+                        if next_load_event:
+                            load_cost = next_load_event.cost_cycles
+                            if play_duration < load_cost:
+                                raise ValueError(
+                                    f"Timing violation on board {adr.value}, channel {cid}: "
+                                    f"Waveform segment at {event.timestamp_cycles} cycles has duration {play_duration} cycles, "
+                                    f"but the next parameter load requires {load_cost} cycles."
+                                )
+                            print(f"  - OK: Play at {event.timestamp_cycles} ({play_duration}c) >= Load at {next_load_event.timestamp_cycles} ({load_cost}c)")
 
 def _pass3_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEvent]]) -> List[OASMCall]:
     """Pass 3: Generates the final scheduled OASM calls from the logical events."""
+    print("Compiler Pass 3: Generating and scheduling OASM calls...")
     all_calls: List[OASMCall] = []
 
     for adr, events in events_by_board.items():
-        operations_by_timestamp: Dict[int, List[AtomicMorphism]] = {}
-        for event in events:
-            if event.timestamp_cycles not in operations_by_timestamp:
-                operations_by_timestamp[event.timestamp_cycles] = []
-            operations_by_timestamp[event.timestamp_cycles].append(event.operation)
+        events_by_ts: Dict[int, List[LogicalEvent]] = {}
+        for event in events: 
+            if event.timestamp_cycles not in events_by_ts: events_by_ts[event.timestamp_cycles] = []
+            events_by_ts[event.timestamp_cycles].append(event)
 
-        previous_timestamp_cycles = 0
-        for timestamp in sorted(operations_by_timestamp.keys()):
-            wait_cycles = timestamp - previous_timestamp_cycles
+        previous_ts = 0
+        pipelined_load_cost = 0
+        sorted_timestamps = sorted(events_by_ts.keys())
+
+        for i, timestamp in enumerate(sorted_timestamps):
+            # Adjust wait time for any pipelined loads from the previous segment
+            wait_cycles = timestamp - previous_ts - pipelined_load_cost
+            if wait_cycles < 0:
+                # This should be caught by Pass 2, but as a safeguard:
+                raise ValueError(f"Negative wait time calculated at timestamp {timestamp}. This indicates a timing violation.")
             if wait_cycles > 0:
                 all_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.WAIT_US, args=(cycles_to_us(wait_cycles),)))
+            
+            pipelined_load_cost = 0 # Reset cost for current timestamp
+            
+            ops_by_type: Dict[OperationType, List[AtomicMorphism]] = {}
+            for event in events_by_ts[timestamp]:
+                op_type = event.operation.operation_type
+                if op_type not in ops_by_type: ops_by_type[op_type] = []
+                ops_by_type[op_type].append(event.operation)
 
-            ops = operations_by_timestamp[timestamp]
-            ops_by_type: Dict[OperationType, List] = {}
-            for op in ops:
-                op_type = op.operation_type
-                if op_type not in ops_by_type:
-                    ops_by_type[op_type] = []
-                ops_by_type[op_type].append(op)
-
-            # --- Main processing logic for TTL (as per user request) ---
+            # --- Generate calls for current timestamp ---
+            # TTL and non-pipelined RWG ops
             if OperationType.TTL_INIT in ops_by_type:
                 mask, dir_value = 0, 0
                 for op in ops_by_type[OperationType.TTL_INIT]:
@@ -148,7 +192,43 @@ def _pass3_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEv
                 for op in ops_by_type.get(OperationType.TTL_OFF, []): mask |= (1 << op.channel.local_id)
                 if mask > 0: all_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.TTL_SET, args=(mask, state_value)))
 
-            previous_timestamp_cycles = timestamp
+            if OperationType.RWG_INIT in ops_by_type:
+                for op in ops_by_type[OperationType.RWG_INIT]:
+                    all_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_INITIALIZE_PORT, args=(op.channel.local_id, op.end_state.carrier_freq)))
+
+            if OperationType.RWG_RF_SWITCH in ops_by_type:
+                on_mask = 0
+                for op in ops_by_type[OperationType.RWG_RF_SWITCH]:
+                    if op.end_state.rf_on: on_mask |= (1 << op.channel.local_id)
+                all_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_RF_SWITCH, args=(on_mask,)))
+
+            # Handle PLAY operations and schedule subsequent LOADs
+            if OperationType.RWG_UPDATE_PARAMS in ops_by_type:
+                pud_mask, iou_mask = 0, 0
+                play_ops = ops_by_type[OperationType.RWG_UPDATE_PARAMS]
+                duration_us = cycles_to_us(play_ops[0].duration_cycles)
+                playing_channels = {op.channel.local_id for op in play_ops}
+                
+                for op in play_ops: 
+                    pud_mask |= (1 << op.channel.local_id)
+                    iou_mask |= (1 << op.channel.local_id)
+                all_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_PLAY, args=(duration_us, pud_mask, iou_mask)))
+
+                # --- Pipelining Logic ---
+                next_ts_index = i + 1
+                if next_ts_index < len(sorted_timestamps):
+                    next_timestamp = sorted_timestamps[next_ts_index]
+                    for next_event in events_by_ts[next_timestamp]:
+                        if next_event.operation.operation_type == OperationType.RWG_LOAD_COEFFS and next_event.operation.channel.local_id in playing_channels:
+                            if isinstance(next_event.operation.end_state, RWGWaveformInstruction):
+                                for params in next_event.operation.end_state.params:
+                                    all_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_LOAD_WAVEFORM, args=(params,)))
+                                pipelined_load_cost += next_event.cost_cycles
+
+            # Don't generate calls for LOAD_COEFFS here, as they are handled by the pipelining logic.
+
+            previous_ts = timestamp
+
     return all_calls
 
 # Map OASMFunction enum members to actual OASM DSL functions

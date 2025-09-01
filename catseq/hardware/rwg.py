@@ -83,8 +83,9 @@ def set_state(targets: List[InitialTarget]) -> MorphismDef:
             StaticWaveform(sbg_id=t.sbg_id, freq=t.freq, amp=t.amp, phase=0.0)
             for t in targets
         ]
+        rf_should_be_on = any(abs(t.amp) > 1e-9 for t in targets)
         end_state = RWGActive(
-            carrier_freq=start_state.carrier_freq, waveforms=tuple(end_waveforms)
+            carrier_freq=start_state.carrier_freq, rf_on=rf_should_be_on, waveforms=tuple(end_waveforms)
         )
 
         update_morphism = rwg_update_params(channel, 0.0, instruction_state, end_state)
@@ -147,7 +148,9 @@ def linear_ramp(targets: List[Optional[RampTarget]], duration_us: float) -> Morp
         instruction_state = load_morphism.lanes[channel].operations[-1].end_state
 
         end_state = RWGActive(
-            carrier_freq=start_state.carrier_freq, waveforms=tuple(end_waveforms)
+            carrier_freq=start_state.carrier_freq,
+            rf_on=start_state.rf_on, # Preserve RF state during ramp
+            waveforms=tuple(end_waveforms)
         )
 
         update_morphism = rwg_update_params(

@@ -77,9 +77,8 @@ def merge_board_lanes(board: Board, board_lanes: Dict[Channel, Lane]) -> Physica
     for channel, lane in board_lanes.items():
         timestamp = 0
         for op in lane.operations:
-            # 只记录实际的 TTL 状态变化
-            if op.operation_type in [OperationType.TTL_INIT, OperationType.TTL_ON, OperationType.TTL_OFF]:
-                physical_ops.append(PhysicalOperation(op, timestamp))
+            # Record all operations to preserve the timeline
+            physical_ops.append(PhysicalOperation(op, timestamp))
             
             # 累积时间戳（所有操作都占用时间）
             timestamp += op.duration_cycles

@@ -4,18 +4,22 @@ OASM DSL function definitions.
 This module contains the actual OASM DSL functions that will be called
 when executing compiled sequences on the hardware.
 """
-# Mock OASM functions for testing (replace with real OASM when available)
-def sfs(subfile, register):
-    """Mock SFS (Select File System) function"""
-    pass
+# Import actual OASM functions
+try:
+    from oasm.rtmq2 import sfs, amk, wait
+except ImportError:
+    # Fallback mock functions if OASM not available
+    def sfs(subfile, register):
+        """Mock SFS (Select File System) function"""
+        pass
 
-def amk(subfile, mask, value):
-    """Mock AMK (Masked Assignment) function"""
-    pass
+    def amk(subfile, mask, value):
+        """Mock AMK (Masked Assignment) function"""
+        pass
 
-def wait(cycles):
-    """Mock wait function"""
-    pass
+    def wait(cycles):
+        """Mock wait function"""
+        pass
 from .mask_utils import binary_to_rtmq_mask
 from ..time_utils import us
 

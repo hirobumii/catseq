@@ -41,4 +41,5 @@ exclude = ["build/"]
 [dependency-groups]
 dev = [
     "ipykernel>=6.30.1",
+    "pytest-mock>=3.14.1",
 ]

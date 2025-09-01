@@ -12,6 +12,17 @@ from ..lanes import merge_board_lanes
 from .types import OASMAddress, OASMFunction, OASMCall
 from .functions import ttl_config, ttl_set, wait_us
 
+# Import OASM modules for actual assembly generation
+try:
+    from oasm.rtmq2.intf import sim_intf
+    from oasm.rtmq2 import assembler, disassembler
+    from oasm.dev.main import C_MAIN, run_cfg
+    from oasm.dev.rwg import C_RWG, rwg
+    OASM_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: OASM modules not available: {e}")
+    OASM_AVAILABLE = False
+
 # Map OASMFunction enum members to actual OASM DSL functions
 OASM_FUNCTION_MAP: Dict[OASMFunction, Callable] = {
     OASMFunction.TTL_CONFIG: ttl_config,
@@ -155,20 +166,76 @@ def _process_physical_operations(calls: List[OASMCall], adr: OASMAddress, physic
         previous_timestamp_cycles = timestamp
 
 
-def execute_oasm_calls(calls: List[OASMCall]) -> bool:
-    """执行 OASM 调用序列
+def execute_oasm_calls(calls: List[OASMCall], seq=None):
+    """执行 OASM 调用序列并生成实际的 RTMQ 汇编代码
     
     Args:
         calls: OASM 调用序列
+        seq: 可选的 OASM assembler 实例，如果提供则生成实际汇编
         
     Returns:
-        执行是否成功
+        (success: bool, seq: assembler object or None)
     """
     print("\n--- Executing OASM Calls ---")
     if not calls:
         print("No OASM calls to execute.")
-        return True
-        
+        return True, seq
+    
+    if seq is not None and OASM_AVAILABLE:
+        # 使用提供的 seq 对象生成实际汇编
+        print("🔧 Generating actual RTMQ assembly...")
+        try:
+            for i, call in enumerate(calls):
+                # 从映射中获取实际的 OASM 函数
+                func = OASM_FUNCTION_MAP.get(call.dsl_func)
+                
+                if func is None:
+                    print(f"Error: OASM function '{call.dsl_func.name}' not found in map.")
+                    return False
+                
+                # 准备打印信息
+                args_str = ", ".join(map(str, call.args))
+                kwargs_str = ", ".join(f"{k}={v}" for k, v in call.kwargs.items())
+                params_str = ", ".join(filter(None, [args_str, kwargs_str]))
+                
+                print(f"[{i+1:02d}] Board '{call.adr.value}': Calling {func.__name__}({params_str})")
+                
+                # 直接调用 seq(adr, function, *args, **kwargs)
+                seq(call.adr.value, func, *call.args, **call.kwargs)
+            
+            # 生成汇编代码
+            board_names = set(call.adr.value for call in calls)
+            for board_name in board_names:
+                print(f"\n📋 Generated RTMQ assembly for {board_name}:")
+                try:
+                    asm_lines = disassembler(core=C_RWG)(seq.asm[board_name])
+                    for line in asm_lines:
+                        print(f"   {line}")
+                except KeyError:
+                    print(f"   No assembly generated for {board_name}")
+                except Exception as e:
+                    print(f"   Assembly generation failed: {e}")
+            
+            print("\n--- OASM Execution Finished ---")
+            return True, seq
+            
+        except Exception as e:
+            import traceback
+            print(f"❌ OASM execution with seq failed: {e}")
+            traceback.print_exc()
+            return False, seq
+    elif OASM_AVAILABLE:
+        print("⚠️  No seq object provided, falling back to mock execution...")
+        success = _execute_oasm_calls_mock(calls)
+        return success, None
+    else:
+        print("⚠️  OASM modules not available, falling back to mock execution...")
+        success = _execute_oasm_calls_mock(calls)
+        return success, None
+
+
+def _execute_oasm_calls_mock(calls: List[OASMCall]) -> bool:
+    """Mock execution fallback when OASM is not available"""
     try:
         for i, call in enumerate(calls):
             # 从映射中获取实际的 OASM 函数
@@ -188,11 +255,10 @@ def execute_oasm_calls(calls: List[OASMCall]) -> bool:
             # 执行函数
             func(*call.args, **call.kwargs)
             
-        print("--- OASM Execution Finished ---")
         return True
     except Exception as e:
         import traceback
-        print(f"OASM execution failed: {e}")
+        print(f"Mock execution failed: {e}")
         traceback.print_exc()
         return False
 

@@ -9,6 +9,10 @@ from oasm.rtmq2.intf import sim_intf
 from oasm.rtmq2 import assembler, disassembler
 from oasm.dev.main import C_MAIN, run_cfg
 from oasm.dev.rwg import C_RWG, rwg
+from catseq.atomic import ttl_init, ttl_on, ttl_off
+from catseq.morphism import identity
+from catseq.types.common import Board, Channel, ChannelType
+from catseq.compilation.compiler import compile_to_oasm_calls, execute_oasm_calls
 
 
 def test_catseq_to_rtmq_full_pipeline():
@@ -18,9 +22,7 @@ def test_catseq_to_rtmq_full_pipeline():
     print("\n🎯 Testing CatSeq → OASM → RTMQ full pipeline...")
     
     try:
-        from catseq.atomic import ttl_init, ttl_on, ttl_off, identity
-        from catseq.types.common import Board, Channel
-        from catseq.compilation.compiler import compile_to_oasm_calls, execute_oasm_calls
+        
         print("✅ CatSeq modules imported successfully")
     except ImportError as e:
         print(f"❌ CatSeq modules not available: {e}")
@@ -28,8 +30,8 @@ def test_catseq_to_rtmq_full_pipeline():
     
     # Define hardware configuration
     rwg_board = Board("RWG_0")
-    ch0 = Channel(rwg_board, 0)  # TTL channel 0
-    ch1 = Channel(rwg_board, 1)  # TTL channel 1
+    ch0 = Channel(rwg_board, 0, ChannelType.TTL)  # TTL channel 0
+    ch1 = Channel(rwg_board, 1, ChannelType.TTL)  # TTL channel 1
     print("✅ Hardware configuration defined")
     
     # Create CatSeq Morphism sequence
@@ -140,13 +142,10 @@ def test_simple_catseq_pulse():
     print("\n🔬 Testing simple CatSeq TTL pulse...")
     
     try:
-        from catseq.atomic import ttl_init, ttl_on, ttl_off, identity
-        from catseq.types.common import Board, Channel
-        from catseq.compilation.compiler import compile_to_oasm_calls
         
         # Define a simple single-channel pulse
         rwg_board = Board("RWG_0") 
-        laser = Channel(rwg_board, 0)
+        laser = Channel(rwg_board, 0, ChannelType.TTL)
         
         # Create a simple 20μs pulse sequence
         simple_pulse = (
@@ -184,15 +183,11 @@ def test_complex_catseq_experiment():
     print("\n🎯 Testing complex experimental sequence...")
     
     try:
-        from catseq.atomic import ttl_init, ttl_on, ttl_off, identity
-        from catseq.types.common import Board, Channel
-        from catseq.compilation.compiler import compile_to_oasm_calls
-        
         # Define experimental hardware channels
         rwg_board = Board("RWG_0")
-        laser = Channel(rwg_board, 0)      # Laser control
-        detector = Channel(rwg_board, 1)   # Detector gate
-        trigger = Channel(rwg_board, 2)    # External trigger
+        laser = Channel(rwg_board, 0, ChannelType.TTL)      # Laser control
+        detector = Channel(rwg_board, 1, ChannelType.TTL)   # Detector gate
+        trigger = Channel(rwg_board, 2, ChannelType.TTL)    # External trigger
         
         print("🔬 Creating experimental sequence:")
         print("   - Laser: 10μs pulse starting at 5μs")

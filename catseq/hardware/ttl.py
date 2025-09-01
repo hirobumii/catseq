@@ -6,7 +6,8 @@ for working with TTL devices in the CatSeq framework.
 """
 
 from ..types.common import Channel
-from ..atomic import ttl_init, ttl_on, ttl_off, identity
+from ..atomic import ttl_init, ttl_on, ttl_off
+from ..morphism import identity
 from ..morphism import Morphism
 from ..time_utils import us_to_cycles, cycles_to_us
 

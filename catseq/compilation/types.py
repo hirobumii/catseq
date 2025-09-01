@@ -34,7 +34,12 @@ class OASMFunction(Enum):
     
     # 时间函数
     WAIT_US = auto()
-    MY_WAIT = auto()
+
+    # RWG 函数
+    RWG_INITIALIZE_PORT = auto()
+    RWG_RF_SWITCH = auto()
+    RWG_LOAD_WAVEFORM = auto()
+    RWG_PLAY = auto()
     
     # 触发函数
     TRIG_SLAVE = auto()

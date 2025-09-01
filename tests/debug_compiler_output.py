@@ -17,8 +17,8 @@ def run_compiler_debug():
 
     # 1. 设置硬件
     rwg0 = Board("RWG0")
-    ch0 = Channel(rwg0, 0)
-    ch1 = Channel(rwg0, 1)
+    ch0 = Channel(rwg0, 0, ChannelType.TTL)
+    ch1 = Channel(rwg0, 1, ChannelType.TTL)
 
     # 2. 构建 Morphism
     # pulse() is a high-level abstraction that creates:

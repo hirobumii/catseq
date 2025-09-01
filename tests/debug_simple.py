@@ -16,7 +16,7 @@ def test_simple_sequence():
     
     # Create board and channel
     board = Board("test")
-    channel = Channel(board, 0)
+    channel = Channel(board, 0, ChannelType.TTL)
     
     # Create operations
     init_op = ttl_init(channel)

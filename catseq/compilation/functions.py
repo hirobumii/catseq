@@ -93,3 +93,29 @@ def trig_slave(param):
         param: 触发参数
     """
     print(f"OASM: Trigger slave - param={param}")
+
+# --- RWG Placeholder Functions ---
+
+def rwg_initialize_port(rf_port: int, carrier_mhz: float):
+    """Placeholder to initialize an RF port."""
+    print(f"[DSL Placeholder] rwg_initialize_port(rf_port={rf_port}, carrier_mhz={carrier_mhz})")
+    # User implementation will call rwg.rst_cic() and rwg.carrier()
+    pass
+
+def rwg_rf_switch(rf_mask: int, on: bool):
+    """Placeholder to control the RF switch."""
+    print(f"[DSL Placeholder] rwg_rf_switch(rf_mask={rf_mask:04b}, on={on})")
+    # User implementation will call pdm.source()
+    pass
+
+def rwg_load_waveform(params):
+    """Placeholder to load waveform parameters for a single SBG."""
+    print(f"[DSL Placeholder] rwg_load_waveform(params={params})")
+    # User implementation will call rwg.frq() and rwg.amp()
+    pass
+
+def rwg_play(duration_us: float, pud_mask: int, iou_mask: int):
+    """Placeholder to trigger the waveform playback."""
+    print(f"[DSL Placeholder] rwg_play(duration_us={duration_us}, pud_mask={pud_mask:04b}, iou_mask={iou_mask:04b})")
+    # User implementation will call rwg.play()
+    pass

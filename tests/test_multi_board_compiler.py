@@ -22,7 +22,7 @@ def pulse_with_padding(channel: Channel, pulse_duration_cycles: int, total_durat
     """创建带填充的TTL脉冲: init → on → wait(pulse_duration) → off → wait(padding)"""
     from catseq.atomic import AtomicMorphism
     from catseq.types.ttl import TTLState
-from catseq.types.common import OperationType
+    from catseq.types.common import OperationType
     from catseq.lanes import Lane
     from catseq.morphism import Morphism
     
@@ -77,7 +77,7 @@ def pulse(channel: Channel, duration_cycles: int):
     """创建TTL脉冲: init → on → wait(duration) → off"""
     from catseq.atomic import AtomicMorphism
     from catseq.types.ttl import TTLState
-from catseq.types.common import OperationType
+    from catseq.types.common import OperationType
     from catseq.lanes import Lane
     from catseq.morphism import Morphism
     
@@ -122,7 +122,7 @@ def create_wait_for_channel(channel: Channel, duration_cycles: int):
     """为特定通道创建等待操作，保持当前状态"""
     from catseq.atomic import AtomicMorphism
     from catseq.types.ttl import TTLState
-from catseq.types.common import OperationType
+    from catseq.types.common import OperationType
     from catseq.lanes import Lane
     from catseq.morphism import Morphism
     
@@ -143,7 +143,7 @@ def create_ttl_init_with_duration(channel: Channel, duration_cycles: int = 1):
     """创建带有指定时长的TTL初始化操作"""
     from catseq.atomic import AtomicMorphism
     from catseq.types.ttl import TTLState
-from catseq.types.common import OperationType
+    from catseq.types.common import OperationType
     from catseq.lanes import Lane
     from catseq.morphism import Morphism
     
@@ -183,9 +183,9 @@ def create_multi_board_ttl_sequence_real():
     rwg0_board = Board("rwg0")
     rwg1_board = Board("rwg1")
     
-    rwg0_ch0 = Channel(rwg0_board, 0)
-    rwg0_ch1 = Channel(rwg0_board, 1)  
-    rwg1_ch0 = Channel(rwg1_board, 0)
+    rwg0_ch0 = Channel(rwg0_board, 0, ChannelType.TTL)
+    rwg0_ch1 = Channel(rwg0_board, 1, ChannelType.TTL)  
+    rwg1_ch0 = Channel(rwg1_board, 0, ChannelType.TTL)
     
     print("🔧 实现时序表达式:")
     print("(ttl_init(rwg0_ch0)|ttl_init(rwg0_ch1)|ttl_init(rwg1_ch0))@wait(100)@(pulse(rwg0_ch0,100)|pulse(rwg1_ch0,150))")
@@ -242,9 +242,9 @@ def create_multi_board_ttl_sequence():
     rwg1_board = Board("rwg1")
     
     # 创建TTL通道
-    ttl_rwg0_ch0 = Channel(rwg0_board, 0)  # RWG0板卡TTL通道0
-    ttl_rwg0_ch1 = Channel(rwg0_board, 1)  # RWG0板卡TTL通道1
-    ttl_rwg1_ch0 = Channel(rwg1_board, 0)  # RWG1板卡TTL通道0
+    ttl_rwg0_ch0 = Channel(rwg0_board, 0, ChannelType.TTL)  # RWG0板卡TTL通道0
+    ttl_rwg0_ch1 = Channel(rwg0_board, 1, ChannelType.TTL)  # RWG0板卡TTL通道1
+    ttl_rwg1_ch0 = Channel(rwg1_board, 0, ChannelType.TTL)  # RWG1板卡TTL通道0
     
     # 创建操作mock的辅助函数
     def create_operation_mock(op_type, channel, state_value, timestamp):

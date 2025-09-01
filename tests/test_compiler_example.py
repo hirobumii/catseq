@@ -15,7 +15,8 @@ import sys
 from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.compilation.types import OASMFunction
 from catseq.types.common import Board, Channel, OperationType
-from catseq.atomic import ttl_init, ttl_on, ttl_off, identity
+from catseq.atomic import ttl_init, ttl_on, ttl_off
+from catseq.morphism import identity
 from catseq.morphism import Morphism
 
 
@@ -56,8 +57,8 @@ def create_complex_ttl_sequence():
     main_board = Board("main")
     
     # 创建TTL通道
-    ttl_ch0 = Channel(main_board, 0)
-    ttl_ch1 = Channel(main_board, 1)
+    ttl_ch0 = Channel(main_board, 0, ChannelType.TTL)
+    ttl_ch1 = Channel(main_board, 1, ChannelType.TTL)
     
     # 直接构建具有正确绝对时间戳的操作序列
     # 我们将直接使用Mock方式，但使用正确的timestamp

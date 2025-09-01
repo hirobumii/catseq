@@ -6,15 +6,17 @@ from catseq.types.common import (
     AtomicMorphism,
     Board,
     Channel,
+    ChannelType,
     OperationType,
 )
 from catseq.types.ttl import TTLState
-from catseq.atomic import ttl_on, ttl_off, identity
+from catseq.atomic import ttl_on, ttl_off
+from catseq.morphism import identity
 
 # Define boards and channels for testing
 RWG0 = Board("RWG0")
-CH0 = Channel(RWG0, 0)
-CH1 = Channel(RWG0, 1)
+CH0 = Channel(RWG0, 0, ChannelType.TTL)
+CH1 = Channel(RWG0, 1, ChannelType.TTL)
 
 def test_sequential_composition_with_identity():
     """

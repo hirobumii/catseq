@@ -8,8 +8,9 @@ and assembly generation.
 import pytest
 from pytest_mock import MockerFixture
 
-from catseq.atomic import ttl_init, ttl_on, ttl_off, identity
-from catseq.types.common import Board, Channel
+from catseq.atomic import ttl_init, ttl_on, ttl_off
+from catseq.morphism import identity
+from catseq.types.common import Board, Channel, ChannelType
 from catseq.compilation.compiler import compile_to_oasm_calls, execute_oasm_calls
 from catseq.compilation.types import OASMAddress, OASMFunction, OASMCall
 
@@ -20,8 +21,8 @@ class TestCompileToOASMCalls:
     def test_single_channel_simple_sequence(self):
         """Test compiling a simple single-channel sequence."""
         board = Board("RWG_0")
-        ch0 = Channel(board, 0)
-        
+        ch0 = Channel(board, 0, ChannelType.TTL)
+    
         # Create simple sequence: init → wait → on → wait → off
         sequence = (
             ttl_init(ch0) @
@@ -53,8 +54,8 @@ class TestCompileToOASMCalls:
     def test_dual_channel_parallel_sequence(self):
         """Test compiling parallel operations on two channels."""
         board = Board("RWG_0")
-        ch0 = Channel(board, 0)
-        ch1 = Channel(board, 1)
+        ch0 = Channel(board, 0, ChannelType.TTL)
+        ch1 = Channel(board, 1, ChannelType.TTL)
         
         # Channel 0: init → wait(5μs) → on → wait(10μs) → off
         ch0_seq = (
@@ -94,8 +95,8 @@ class TestCompileToOASMCalls:
         rwg0 = Board("RWG_0")
         rwg1 = Board("RWG_1") 
         
-        ch0 = Channel(rwg0, 0)
-        ch1 = Channel(rwg1, 0)
+        ch0 = Channel(rwg0, 0, ChannelType.TTL)
+        ch1 = Channel(rwg1, 0, ChannelType.TTL)
         
         # Parallel operations on different boards
         seq0 = ttl_init(ch0) @ identity(5e-6) @ ttl_on(ch0)
@@ -116,7 +117,7 @@ class TestCompileToOASMCalls:
     def test_timing_precision(self):
         """Test that timing values are correctly converted."""
         board = Board("RWG_0")
-        ch0 = Channel(board, 0)
+        ch0 = Channel(board, 0, ChannelType.TTL)
         
         # Sequence with specific timing that should generate wait
         sequence = ttl_init(ch0) @ identity(5e-6) @ ttl_on(ch0)  # 5 microseconds
@@ -248,8 +249,8 @@ class TestIntegrationCompilerFlow:
         """Test complete compilation of a realistic pulse sequence."""
         # Setup hardware
         board = Board("RWG_0")
-        laser = Channel(board, 0)
-        detector = Channel(board, 1)
+        laser = Channel(board, 0, ChannelType.TTL)
+        detector = Channel(board, 1, ChannelType.TTL)
         
         # Create experimental sequence
         laser_pulse = (
@@ -294,7 +295,7 @@ class TestIntegrationCompilerFlow:
         
         # Setup
         board = Board("RWG_0")
-        ch0 = Channel(board, 0)
+        ch0 = Channel(board, 0, ChannelType.TTL)
         
         # Simple sequence
         sequence = ttl_init(ch0) @ ttl_on(ch0) @ ttl_off(ch0)
@@ -324,7 +325,7 @@ class TestIntegrationCompilerFlow:
     def test_error_handling_invalid_board_mapping(self):
         """Test handling of boards that don't map to valid OASM addresses."""
         invalid_board = Board("INVALID_BOARD_XYZ")
-        ch0 = Channel(invalid_board, 0)
+        ch0 = Channel(invalid_board, 0, ChannelType.TTL)
         
         # Should fallback to RWG0
         sequence = ttl_init(ch0)

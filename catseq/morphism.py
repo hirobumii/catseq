@@ -6,11 +6,14 @@ and state inference logic for building complex quantum control sequences.
 """
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Callable, List, Self
 
-from .types import AtomicMorphism, Board, Channel, TTLState, OperationType
+
 from .lanes import Lane
-from .time_utils import cycles_to_us
+from .time_utils import cycles_to_us, us_to_cycles
+from .types.common import AtomicMorphism, Board, Channel, OperationType, State
+from .types.rwg import RWGUninitialized
+from .types.ttl import TTLState
 
 
 @dataclass(frozen=True)
@@ -192,6 +195,13 @@ def from_atomic(op: AtomicMorphism) -> Morphism:
     lane = Lane((op,))
     return Morphism({op.channel: lane})
 
+def identity(duration_us: float) -> "Morphism":
+    """Creates a channelless identity morphism (a pure wait)."""
+    duration_cycles = us_to_cycles(duration_us)
+    if duration_cycles < 0:
+        raise ValueError("Identity duration must be non-negative.")
+    return Morphism(lanes={}, _duration_cycles=duration_cycles)
+
 
 def strict_compose_morphisms(first: Morphism, second: Morphism) -> Morphism:
     """严格状态匹配组合 (@)
@@ -350,9 +360,6 @@ def parallel_compose_morphisms(left: Morphism, right: Morphism) -> Morphism:
         return Morphism(result_lanes)
 
     # 利用 >> identity() 逻辑补齐
-    from .atomic import identity
-    from .time_utils import cycles_to_us
-
     if left_duration < right_duration:
         padding_cycles = right_duration - left_duration
         padding_us = cycles_to_us(padding_cycles)
@@ -367,3 +374,75 @@ def parallel_compose_morphisms(left: Morphism, right: Morphism) -> Morphism:
     # 合并lanes
     result_lanes = {**left.lanes, **right.lanes}
     return Morphism(result_lanes)
+
+# --- Morphism Builder Pattern ---
+
+class MorphismDef:
+    """
+    Represents a deferred-execution 'recipe' for a morphism.
+    It wraps a generator function that produces a Morphism when provided
+    with a channel and a starting state.
+    """
+
+    def __init__(self, generator: Callable[[Channel, State], Morphism]):
+        self._generator = generator
+
+    def __call__(self, channel: Channel, start_state: State | None = None) -> Morphism:
+        """Executes the generator to produce a concrete Morphism."""
+        if start_state is None:
+            start_state = RWGUninitialized() # Default start for RWG
+        return self._generator(channel, start_state)
+
+    def __rshift__(self, other: Self) -> 'MorphismSequence':
+        """Composes this definition with another in a sequence."""
+        if isinstance(other, MorphismSequence):
+            return MorphismSequence(self, *other.defs)
+        return MorphismSequence(self, other)
+
+class MorphismSequence:
+    """
+    Represents a sequence of MorphismDefs to be executed in order.
+    """
+
+    def __init__(self, *defs: MorphismDef):
+        self.defs = list(defs)
+
+    def __rshift__(self, other: MorphismDef) -> Self:
+        """Appends another MorphismDef to the sequence."""
+        self.defs.append(other)
+        return self
+
+    def __call__(self, channel: Channel, start_state: State | None = None) -> Morphism:
+        """Executes the full sequence of generators."""
+        if start_state is None:
+            start_atate = RWGUninitialized()
+
+        if not self.defs:
+            return Morphism(lanes={})
+
+        # Execute the first generator
+        current_morphism = self.defs[0](channel, start_state)
+
+        # Iteratively compose the rest
+        for next_def in self.defs[1:]:
+            # The next start state is the end state of the current morphism
+            # This assumes single-channel operation for now.
+            if channel not in current_morphism.lanes:
+                # If the first morphism was just an identity, the state is unchanged
+                next_start_state = start_state
+            else:
+                last_op = current_morphism.lanes[channel].operations[-1]
+                # Infer state from last non-identity op
+                inferred_state = None
+                for op in reversed(current_morphism.lanes[channel].operations):
+                    if op.operation_type != OperationType.IDENTITY:
+                        inferred_state = op.end_state
+                        break
+                next_start_state = inferred_state if inferred_state is not None else last_op.start_state
+
+            next_morphism_piece = next_def(channel, next_start_state)
+            
+            # Use the Morphism's own composition logic
+            current_morphism = current_morphism >> next_morphism_piece
+
+        return current_morphism

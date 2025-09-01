@@ -2,12 +2,12 @@ import pytest
 from catseq.atomic import ttl_on
 from catseq.lanes import Lane
 from catseq.morphism import Morphism
-from catseq.types.common import AtomicMorphism, Board, Channel, OperationType
+from catseq.types.common import AtomicMorphism, Board, Channel, OperationType, ChannelType
 from catseq.types.ttl import TTLState
 
 # Define a board and channel for testing
 RWG0 = Board("RWG0")
-CH0 = Channel(RWG0, 0)
+CH0 = Channel(RWG0, 0, ChannelType.TTL)
 
 def test_ttl_on_creates_correct_morphism():
     """

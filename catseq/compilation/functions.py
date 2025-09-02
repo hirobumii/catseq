@@ -5,21 +5,10 @@ This module contains the actual OASM DSL functions that will be called
 when executing compiled sequences on the hardware.
 """
 # Import actual OASM functions
-try:
-    from oasm.rtmq2 import sfs, amk, wait
-except ImportError:
-    # Fallback mock functions if OASM not available
-    def sfs(subfile, register):
-        """Mock SFS (Select File System) function"""
-        pass
+from oasm.rtmq2 import sfs, amk, wait
+from oasm.dev.rwg import fte, rwg
 
-    def amk(subfile, mask, value):
-        """Mock AMK (Masked Assignment) function"""
-        pass
-
-    def wait(cycles):
-        """Mock wait function"""
-        pass
+from ..types.rwg import WaveformParams
 from .mask_utils import binary_to_rtmq_mask
 from ..time_utils import us
 
@@ -108,11 +97,14 @@ def rwg_rf_switch(rf_mask: int, on: bool):
     # User implementation will call pdm.source()
     pass
 
-def rwg_load_waveform(params):
+def rwg_load_waveform(params: WaveformParams):
     """Placeholder to load waveform parameters for a single SBG."""
     print(f"[DSL Placeholder] rwg_load_waveform(params={params})")
     # User implementation will call rwg.frq() and rwg.amp()
-    pass
+    pha_rld: int = 1 if params.phase_reset else 0
+    fte.cfg(params.sbg_id, 0, 0, pha_rld)
+    rwg.frq(None, params.freq_coeffs, params.initial_phase)
+    rwg.amp(None, params.amp_coeffs)
 
 def rwg_play(duration_us: float, pud_mask: int, iou_mask: int):
     """Placeholder to trigger the waveform playback."""

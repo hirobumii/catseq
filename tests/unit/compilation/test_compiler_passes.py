@@ -269,7 +269,12 @@ def test_pass4_oasm_call_generation_and_timing():
     
     # Pass 4: Generate OASM calls
     print("  Running Pass 4 to generate OASM calls...")
-    oasm_calls = _pass4_generate_oasm_calls(events_by_board)
+    oasm_calls_by_board = _pass4_generate_oasm_calls(events_by_board)
+    
+    # Extract calls for single board
+    assert len(oasm_calls_by_board) == 1
+    board_adr = list(oasm_calls_by_board.keys())[0]
+    oasm_calls = oasm_calls_by_board[board_adr]
     
     print(f"  Generated {len(oasm_calls)} OASM calls")
     for i, call in enumerate(oasm_calls):
@@ -281,7 +286,7 @@ def test_pass4_oasm_call_generation_and_timing():
     # First call should be a WAIT_US for the 10μs delay
     wait_call = oasm_calls[0]
     assert wait_call.dsl_func == OASMFunction.WAIT_US, f"First call should be WAIT_US, got {wait_call.dsl_func.name}"
-    assert wait_call.adr == OASMAddress.RWG0, f"Wait call should be for RWG0, got {wait_call.adr}"
+    assert wait_call.adr == board_adr, f"Wait call should be for {board_adr.value}, got {wait_call.adr}"
     
     # Verify wait duration (should be 10μs)
     wait_duration = wait_call.args[0]
@@ -351,7 +356,6 @@ def test_pass4_multiple_events_timing():
     )
     
     print("  Created complex morphism: 5μs → load → 15μs → update(8μs)")
-    
     # Run all compiler passes
     events_by_board = _pass0_extract_events(morphism)
     _pass1_translate_to_oasm(events_by_board)
@@ -366,14 +370,19 @@ def test_pass4_multiple_events_timing():
     _pass3_check_constraints(events_by_board)
     
     # Generate OASM calls
-    oasm_calls = _pass4_generate_oasm_calls(events_by_board)
+    oasm_calls_by_board = _pass4_generate_oasm_calls(events_by_board)
+    
+    # Extract calls for single board
+    assert len(oasm_calls_by_board) == 1
+    board_adr = list(oasm_calls_by_board.keys())[0]
+    oasm_calls = oasm_calls_by_board[board_adr]
     
     print(f"  Generated {len(oasm_calls)} OASM calls:")
     for i, call in enumerate(oasm_calls):
         print(f"    {i+1}: {call.adr.value} -> {call.dsl_func.name} {call.args}")
     
     # Verify the call sequence structure
-    assert len(oasm_calls) >= 4, f"Expected at least 4 calls, got {len(oasm_calls)}"
+    assert len(oasm_calls) == 4, f"Expected 4 calls, got {len(oasm_calls)}"
     
     # Expected sequence: WAIT(5μs) → LOAD → WAIT(15μs) → PLAY
     call_types = [call.dsl_func for call in oasm_calls]
@@ -391,11 +400,11 @@ def test_pass4_multiple_events_timing():
     assert len(play_calls) == 1, f"Expected 1 play call, got {len(play_calls)}"
     
     # Intelligent scheduling creates exactly 3 WAIT calls for this scenario
-    assert len(wait_calls) == 3, f"Expected exactly 3 wait calls, got {len(wait_calls)}"
+    assert len(wait_calls) == 2, f"Expected exactly 3 wait calls, got {len(wait_calls)}"
     
     # Verify the exact wait durations from optimization
     wait_durations = [call.args[0] for call in wait_calls]
-    expected_waits = [5.0, 14.944, 0.056]  # From the specific optimization result
+    expected_waits = [19.944, 0.056]  # From the specific optimization result
     
     for i, (actual, expected) in enumerate(zip(wait_durations, expected_waits)):
         assert abs(actual - expected) < 0.001, \
@@ -487,7 +496,12 @@ def test_complete_compilation_pipeline():
     
     # Pass 4: Generate final OASM calls
     print("    Pass 4: Generating final OASM calls...")
-    oasm_calls = _pass4_generate_oasm_calls(events_by_board)
+    oasm_calls_by_board = _pass4_generate_oasm_calls(events_by_board)
+    
+    # Extract calls for single board
+    assert len(oasm_calls_by_board) == 1
+    board_adr = list(oasm_calls_by_board.keys())[0]
+    oasm_calls = oasm_calls_by_board[board_adr]
     
     # Verify final OASM calls structure
     print(f"  Generated {len(oasm_calls)} final OASM calls:")

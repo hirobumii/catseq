@@ -36,13 +36,15 @@ class OASMFunction(Enum):
     WAIT_US = auto()
 
     # RWG 函数
-    RWG_INITIALIZE_PORT = auto()
+    RWG_INIT = auto()               # 板卡级初始化
+    RWG_SET_CARRIER = auto()        # 通道级载波设置
     RWG_RF_SWITCH = auto()
     RWG_LOAD_WAVEFORM = auto()
     RWG_PLAY = auto()
     
-    # 触发函数
-    TRIG_SLAVE = auto()
+    # 同步函数
+    WAIT_MASTER = auto()            # 主设备等待同步触发
+    TRIG_SLAVE = auto()             # 从设备发送同步触发码
 
 
 @dataclass(frozen=True)

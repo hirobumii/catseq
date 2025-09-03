@@ -32,14 +32,12 @@ class StaticWaveform:
 # --- Channel States ---
 class RWGState(State):
     """Base class for all RWG channel states."""
-    carrier_freq: float
-    rf_on: bool
+    pass
 
 @dataclass(frozen=True)
 class RWGUninitialized(RWGState):
     """State before the RWG channel has been configured."""
-    carrier_freq: Optional[float] = None
-    rf_on: bool = False
+    pass  # No parameters - this is just a marker state
 
 @dataclass(frozen=True)
 class RWGReady(RWGState):

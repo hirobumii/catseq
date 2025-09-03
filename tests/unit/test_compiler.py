@@ -34,9 +34,13 @@ def test_compile_sequential_morphism():
     m = ttl_on(CH0) >> identity(10) >> ttl_off(CH0)
 
     # Act
-    oasm_calls = compile_to_oasm_calls(m)
+    oasm_calls_by_board = compile_to_oasm_calls(m)
 
     # Assert
+    assert len(oasm_calls_by_board) == 1
+    board_adr = list(oasm_calls_by_board.keys())[0]
+    oasm_calls = oasm_calls_by_board[board_adr]
+    
     assert len(oasm_calls) > 1
     # Expected: TTL_SET, WAIT_US, TTL_SET
     assert "WAIT_US" in str(oasm_calls)
@@ -48,9 +52,14 @@ def test_compile_parallel_morphism():
     m = ttl_on(CH0) | ttl_on(CH1)
 
     # Act
-    oasm_calls = compile_to_oasm_calls(m)
+    oasm_calls_by_board = compile_to_oasm_calls(m)
 
     # Assert
+    # Extract calls for single board
+    assert len(oasm_calls_by_board) == 1
+    board_adr = list(oasm_calls_by_board.keys())[0]
+    oasm_calls = oasm_calls_by_board[board_adr]
+    
     # Both TTLs should be set in a single OASM call if they are simultaneous
     assert len(oasm_calls) == 1
     ttl_set_call = oasm_calls[0]
@@ -64,10 +73,10 @@ def test_compile_multi_board_morphism():
     m = ttl_on(CH0) | ttl_on(CH2)  # CH0 is BOARD0, CH2 is BOARD1
 
     # Act
-    oasm_calls = compile_to_oasm_calls(m)
+    oasm_calls_by_board = compile_to_oasm_calls(m)
 
     # Assert
-    assert len(oasm_calls) == 2
-    board_calls = {call.adr.value for call in oasm_calls}
-    assert "rwg0" in board_calls
-    assert "rwg1" in board_calls
+    assert len(oasm_calls_by_board) == 2
+    board_addresses = {adr.value for adr in oasm_calls_by_board.keys()}
+    assert "rwg0" in board_addresses
+    assert "rwg1" in board_addresses

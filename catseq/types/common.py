@@ -49,9 +49,14 @@ class OperationType(Enum):
 
     # RWG 操作
     RWG_INIT = auto()
+    RWG_SET_CARRIER = auto()
     RWG_LOAD_COEFFS = auto()
     RWG_UPDATE_PARAMS = auto()
     RWG_RF_SWITCH = auto()
+    
+    # 全局同步操作
+    SYNC_MASTER = auto()
+    SYNC_SLAVE = auto()
 
 
 # A generic base class for all hardware states.

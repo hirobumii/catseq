@@ -109,8 +109,12 @@ class Morphism:
         # Case 2: Morphism >> Morphism (standard composition)
         elif isinstance(other, Morphism):
             return auto_compose_morphisms(self, other)
+        
+        # Case 3: Morphism >> MorphismDef (apply MorphismDef to all channels)
+        elif isinstance(other, MorphismDef):
+            return other(self)  # Use the multi-channel call functionality
 
-        # Case 3: Unsupported type
+        # Case 4: Unsupported type
         return NotImplemented
     
     def __or__(self, other) -> 'Morphism':
@@ -397,11 +401,39 @@ class MorphismDef:
     def __init__(self, generator: Callable[[Channel, State], Morphism]):
         self._generator = generator
 
-    def __call__(self, channel: Channel, start_state: State | None = None) -> Morphism:
-        """Executes the generator to produce a concrete Morphism."""
-        if start_state is None:
-            start_state = RWGUninitialized() # Default start for RWG
-        return self._generator(channel, start_state)
+    def __call__(self, target: "Channel | Morphism", start_state: "State | None" = None) -> "Morphism":
+        """Executes the generator to produce a concrete Morphism.
+        
+        Args:
+            target: Either a Channel (single-channel mode) or a Morphism (multi-channel mode)
+            start_state: Starting state (only used in single-channel mode)
+        """
+        if isinstance(target, Channel):
+            # Single-channel mode: existing behavior
+            if start_state is None:
+                start_state = RWGUninitialized() # Default start for RWG
+            return self._generator(target, start_state)
+        else:
+            # Multi-channel mode: apply this MorphismDef to all channels in the target Morphism
+            if not hasattr(target, 'lanes'):
+                raise TypeError(f"Target must be Channel or Morphism, got {type(target)}")
+            
+            new_lanes = {}
+            for channel, lane in target.lanes.items():
+                # Get the end state of this channel from its last operation
+                if lane.operations:
+                    end_state = lane.operations[-1].end_state
+                else:
+                    end_state = RWGUninitialized()
+                
+                # Apply this MorphismDef to this channel
+                morphism_piece = self._generator(channel, end_state)
+                
+                # Extend existing lane with new operations
+                new_operations = lane.operations + morphism_piece.lanes[channel].operations
+                new_lanes[channel] = Lane(new_operations)
+                
+            return Morphism(lanes=new_lanes)
 
     def __rshift__(self, other: Self) -> 'MorphismSequence':
         """Composes this definition with another in a sequence."""

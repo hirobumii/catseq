@@ -7,9 +7,10 @@ architecture to support pipelined operations and timing checks.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Callable
+from typing import List, Dict, Callable, Union
 
 from ..types.common import OperationType, AtomicMorphism, Channel
+from ..types.timing import LogicalTimestamp, TimestampType, is_same_epoch
 from ..lanes import merge_board_lanes
 from ..types.rwg import RWGWaveformInstruction
 from ..time_utils import cycles_to_us
@@ -18,7 +19,10 @@ from .functions import (
     ttl_config,
     ttl_set,
     wait_us,
-    rwg_initialize_port,
+    wait_master,
+    trig_slave,
+    rwg_init,
+    rwg_set_carrier,
     rwg_rf_switch,
     rwg_load_waveform,
     rwg_play,
@@ -58,8 +62,10 @@ class LogicalEvent:
     """
     Internal representation of a single logical operation on the timeline.
     This dataclass is progressively enriched by the compiler passes.
+    
+    Supports both legacy integer timestamps and new compound logical timestamps.
     """
-    timestamp_cycles: int
+    timestamp_cycles: int  # Legacy field for backward compatibility
     operation: AtomicMorphism
     
     # Populated by Pass 1 (Translation)
@@ -67,10 +73,195 @@ class LogicalEvent:
     
     # Populated by Pass 2 (Cost Analysis)
     cost_cycles: int = 0
+    
+    # New compound timestamp support (optional for migration)
+    logical_timestamp: LogicalTimestamp = field(default=None)
+    
+    def __post_init__(self):
+        # Auto-generate logical timestamp from legacy timestamp if not provided
+        if self.logical_timestamp is None:
+            # Default epoch is 0 for backward compatibility
+            self.logical_timestamp = LogicalTimestamp.from_cycles(0, self.timestamp_cycles)
+    
+    @property
+    def effective_timestamp_cycles(self) -> int:
+        """Get the effective timestamp in cycles, preferring logical timestamp."""
+        return self.logical_timestamp.time_offset_cycles
+    
+    @property  
+    def epoch(self) -> int:
+        """Get the epoch of this event."""
+        return self.logical_timestamp.epoch
+    
+    def is_same_epoch(self, other: "LogicalEvent") -> bool:
+        """Check if this event is in the same epoch as another event."""
+        return self.logical_timestamp.epoch == other.logical_timestamp.epoch
+
+def _detect_epoch_boundaries(events: List[LogicalEvent]) -> List[LogicalEvent]:
+    """
+    Detect synchronization boundaries and assign correct epochs to events.
+    
+    This function scans through events and increments the epoch whenever
+    a complete set of synchronization operations is detected.
+    
+    Args:
+        events: List of LogicalEvent objects with preliminary timestamps
+        
+    Returns:
+        List of LogicalEvent objects with correct logical timestamps including epochs
+    """
+    if not events:
+        return events
+        
+    # Group events by their original timestamp to detect sync points
+    events_by_timestamp: Dict[int, List[LogicalEvent]] = {}
+    for event in events:
+        ts = event.timestamp_cycles
+        if ts not in events_by_timestamp:
+            events_by_timestamp[ts] = []
+        events_by_timestamp[ts].append(event)
+    
+    processed_events = []
+    current_epoch = 0
+    
+    # Process events in chronological order
+    for timestamp in sorted(events_by_timestamp.keys()):
+        timestamp_events = events_by_timestamp[timestamp]
+        
+        # Check if this timestamp contains a complete synchronization set
+        has_sync_master = any(e.operation.operation_type == OperationType.SYNC_MASTER 
+                             for e in timestamp_events)
+        has_sync_slave = any(e.operation.operation_type == OperationType.SYNC_SLAVE 
+                            for e in timestamp_events)
+        
+        # If we have both master and slave sync operations at this timestamp,
+        # this marks the end of an epoch and the beginning of the next one
+        if has_sync_master and has_sync_slave:
+            # Current sync operations complete this epoch
+            for event in timestamp_events:
+                event.logical_timestamp = LogicalTimestamp.from_cycles(current_epoch, timestamp)
+                processed_events.append(event)
+            
+            # Increment epoch for subsequent events
+            current_epoch += 1
+        else:
+            # Regular operations in current epoch
+            for event in timestamp_events:
+                event.logical_timestamp = LogicalTimestamp.from_cycles(current_epoch, timestamp)
+                processed_events.append(event)
+    
+    return processed_events
+
+
+def _check_cross_epoch_violations(events_by_board: Dict[OASMAddress, List[LogicalEvent]]) -> None:
+    """
+    Check for operations that would violate epoch boundaries.
+    
+    This function scans through all events and detects violations such as:
+    1. Operations that depend on timing relationships across different epochs
+    2. Pipelining constraints that span epoch boundaries
+    3. Any timing calculations that would be invalid across sync points
+    
+    Args:
+        events_by_board: Events organized by board, with logical timestamps assigned
+        
+    Raises:
+        ValueError: If cross-epoch timing violations are detected
+    """
+    for board_adr, events in events_by_board.items():
+        if not events:
+            continue
+            
+        # Group events by epoch for analysis
+        events_by_epoch: Dict[int, List[LogicalEvent]] = {}
+        for event in events:
+            epoch = event.logical_timestamp.epoch
+            if epoch not in events_by_epoch:
+                events_by_epoch[epoch] = []
+            events_by_epoch[epoch].append(event)
+        
+        # No violations possible with single epoch
+        if len(events_by_epoch) <= 1:
+            continue
+            
+        print(f"  Board {board_adr.value}: Checking {len(events_by_epoch)} epochs for violations...")
+        
+        # Check for specific violation patterns
+        _check_pipelining_across_epochs(board_adr, events_by_epoch)
+        _check_timing_dependencies_across_epochs(board_adr, events)
+
+
+def _check_pipelining_across_epochs(board_adr: OASMAddress, events_by_epoch: Dict[int, List[LogicalEvent]]) -> None:
+    """
+    Check for pipelining operations that span across epoch boundaries.
+    
+    Pipelining (like RWG load operations scheduled during previous play operations)
+    cannot work across epochs because the time reference system changes.
+    """
+    epochs = sorted(events_by_epoch.keys())
+    
+    for i in range(len(epochs) - 1):
+        current_epoch = epochs[i]
+        next_epoch = epochs[i + 1]
+        
+        current_events = events_by_epoch[current_epoch]
+        next_events = events_by_epoch[next_epoch]
+        
+        # Look for operations in next epoch that might depend on timing from current epoch
+        for next_event in next_events:
+            if next_event.operation.operation_type == OperationType.RWG_LOAD_COEFFS:
+                # Check if this load operation was scheduled based on previous epoch timing
+                # This is detected by checking if the load happens very early in the new epoch
+                # (which would suggest it was scheduled during previous epoch's play operation)
+                if next_event.logical_timestamp.time_offset_cycles < 100:  # Less than 100 cycles = likely pipelined
+                    raise ValueError(
+                        f"Cross-epoch pipelining violation detected on board {board_adr.value}: "
+                        f"RWG_LOAD_COEFFS operation at epoch {next_epoch}, offset {next_event.logical_timestamp.time_offset_cycles} cycles "
+                        f"appears to be pipelined from previous epoch {current_epoch}. "
+                        f"Pipelining across synchronization boundaries is not allowed as it violates "
+                        f"the time reference system boundaries."
+                    )
+
+
+def _check_timing_dependencies_across_epochs(board_adr: OASMAddress, events: List[LogicalEvent]) -> None:
+    """
+    Check for operations that have timing dependencies spanning epochs.
+    
+    This includes operations that were scheduled based on timing calculations
+    that would be invalid across epoch boundaries.
+    """
+    # Sort events by their original timestamp_cycles to detect potential cross-epoch dependencies
+    events_by_original_time = {}
+    for event in events:
+        orig_time = event.timestamp_cycles
+        if orig_time not in events_by_original_time:
+            events_by_original_time[orig_time] = []
+        events_by_original_time[orig_time].append(event)
+    
+    # Look for events that have the same original timestamp but different epochs
+    # This could indicate a timing dependency that spans epochs
+    for orig_time, time_events in events_by_original_time.items():
+        if len(time_events) > 1:
+            epochs_at_time = set(event.logical_timestamp.epoch for event in time_events)
+            if len(epochs_at_time) > 1:
+                # Events with same original timing but different epochs - potential violation
+                epoch_list = sorted(epochs_at_time)
+                event_types = [event.operation.operation_type.name for event in time_events]
+                
+                # This is actually expected for synchronization operations themselves
+                if any(op_type in ['SYNC_MASTER', 'SYNC_SLAVE'] for op_type in event_types):
+                    continue  # Sync operations are expected to span epoch boundaries
+                    
+                raise ValueError(
+                    f"Cross-epoch timing dependency detected on board {board_adr.value}: "
+                    f"Operations {event_types} were scheduled for the same original time {orig_time} cycles "
+                    f"but span across epochs {epoch_list}. This suggests a timing calculation that "
+                    f"illegally crosses synchronization boundaries."
+                )
 
 # --- Main Compiler Entry Point ---
 
-def compile_to_oasm_calls(morphism, assembler_seq=None, _return_internal_events=False) -> List[OASMCall]:
+def compile_to_oasm_calls(morphism, assembler_seq=None, _return_internal_events=False) -> Union[Dict[OASMAddress, List[OASMCall]], Dict[OASMAddress, List[LogicalEvent]]]:
     """Drives the four-pass compilation process.
     
     Args:
@@ -86,11 +277,30 @@ def compile_to_oasm_calls(morphism, assembler_seq=None, _return_internal_events=
     # Pass 1: Translate each logical node's intent into concrete OASM calls.
     _pass1_translate_to_oasm(events_by_board)
     
+    # Pass 1.5: Detect epoch boundaries and assign logical timestamps
+    print("Compiler Pass 1.5: Detecting epoch boundaries and assigning logical timestamps...")
+    for adr, events in events_by_board.items():
+        events_by_board[adr] = _detect_epoch_boundaries(events)
+        epoch_info = {}
+        for event in events:
+            epoch = event.epoch
+            if epoch not in epoch_info:
+                epoch_info[epoch] = 0
+            epoch_info[epoch] += 1
+        if len(epoch_info) > 1:
+            print(f"  Board {adr.value}: Found {len(epoch_info)} epochs: {dict(epoch_info)}")
+        else:
+            print(f"  Board {adr.value}: Single epoch with {sum(epoch_info.values())} events")
+    
     # Pass 2: Analyze the cost of expensive operations using the translated calls.
     _pass2_analyze_costs(events_by_board, assembler_seq)
     
     # Pass 3: Check for timing violations (e.g., pipelining constraints).
     _pass3_check_constraints(events_by_board)
+    
+    # Pass 3.5: Check for cross-epoch violations
+    print("Compiler Pass 3.5: Checking for cross-epoch timing violations...")
+    _check_cross_epoch_violations(events_by_board)
 
     # For testing purposes, allow returning the internal event list
     if _return_internal_events:
@@ -188,11 +398,28 @@ def _pass1_translate_to_oasm(events_by_board: Dict[OASMAddress, List[LogicalEven
                 op = event.operation
                 match op.operation_type:
                     case OperationType.RWG_INIT:
-                        event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_INITIALIZE_PORT, args=(op.channel.local_id, op.end_state.carrier_freq)))
+                        # Board-level initialization - no OASM call generated here
+                        # This is handled in the merged section below
+                        pass
+                    
+                    case OperationType.RWG_SET_CARRIER:
+                        # Channel-level carrier frequency setting
+                        event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_SET_CARRIER, args=(op.channel.local_id, op.end_state.carrier_freq)))
                     
                     case OperationType.RWG_RF_SWITCH:
                         on_mask = (1 << op.channel.local_id) if op.end_state.rf_on else 0
                         event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_RF_SWITCH, args=(on_mask,)))
+
+                    case OperationType.SYNC_MASTER:
+                        # Master synchronization: trigger all slaves after waiting
+                        sync_code = 12345  # Compiler-generated sync code
+                        wait_time_cycles = _calculate_master_wait_time(events_by_board, event.timestamp_cycles)
+                        event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.TRIG_SLAVE, args=(wait_time_cycles, sync_code)))
+                    
+                    case OperationType.SYNC_SLAVE:
+                        # Slave synchronization: wait for master trigger
+                        sync_code = 12345  # Same sync code as master
+                        event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.WAIT_MASTER, args=(sync_code,)))
 
                     case OperationType.RWG_LOAD_COEFFS:
                         # Generate separate OASM calls for each WaveformParams in the instruction
@@ -205,7 +432,24 @@ def _pass1_translate_to_oasm(events_by_board: Dict[OASMAddress, List[LogicalEven
                         # This operation is either a merged operation or doesn't translate to a call.
                         pass
 
-            # Handle many-to-1 (merged) translations
+            # Handle many-to-1 (merged) translations and board-level operations
+            
+            # Handle RWG board-level initialization (only once per board per timestamp)
+            if OperationType.RWG_INIT in ops_by_type:
+                # Add board-level RWG_INIT only once per timestamp
+                for event in ts_events:
+                    if event.operation.operation_type == OperationType.RWG_INIT:
+                        # Check if we already added board init for this timestamp
+                        board_init_added = any(
+                            call.dsl_func == OASMFunction.RWG_INIT 
+                            for other_event in ts_events 
+                            for call in other_event.oasm_calls
+                        )
+                        if not board_init_added:
+                            # Add board-level init to the first RWG_INIT event at this timestamp
+                            event.oasm_calls.insert(0, OASMCall(adr=adr, dsl_func=OASMFunction.RWG_INIT, args=()))
+                        break
+            
             if OperationType.TTL_INIT in ops_by_type:
                 mask, dir_value = 0, 0
                 for op in ops_by_type[OperationType.TTL_INIT]:
@@ -244,14 +488,14 @@ def _pass1_translate_to_oasm(events_by_board: Dict[OASMAddress, List[LogicalEven
 
 def _pass2_analyze_costs(events_by_board: Dict[OASMAddress, List[LogicalEvent]], assembler_seq=None):
     """
-    Pass 2: Annotates events with their execution cost in cycles by analyzing
-    the OASM calls generated in Pass 1.
+    Pass 2: Analyzes execution cost for all operations by generating and analyzing
+    OASM assembly code. This provides precise timing for global synchronization.
     
     Args:
         events_by_board: Events organized by board
         assembler_seq: Pre-initialized OASM assembler sequence. If None, cost analysis is skipped.
     """
-    print("Compiler Pass 2: Analyzing costs via assembly generation...")
+    print("Compiler Pass 2: Analyzing costs for all operations via assembly generation...")
     
     if assembler_seq is None:
         if OASM_AVAILABLE:
@@ -261,42 +505,152 @@ def _pass2_analyze_costs(events_by_board: Dict[OASMAddress, List[LogicalEvent]],
         return
 
     for adr, events in events_by_board.items():
+        print(f"  Analyzing costs for board {adr.value}...")
         for event in events:
-            # We only need to analyze operations that have a non-zero cost,
-            # typically pipelined LOAD operations.
-            if event.operation.operation_type == OperationType.RWG_LOAD_COEFFS:
-                if not event.oasm_calls:
-                    print(f"    - Warning: No OASM calls found for LOAD at {event.timestamp_cycles} on {adr.value}. Cost set to 0.")
-                    event.cost_cycles = 0
-                    continue
-                # Clear assembler state for clean cost analysis
-                assembler_seq.clear()
-                
-                # Execute OASM calls to generate assembly
-                for call in event.oasm_calls:
-                    func = OASM_FUNCTION_MAP.get(call.dsl_func)
-                    if func:
-                        if call.kwargs:
-                            assembler_seq(call.adr.value, func, *call.args, **call.kwargs)
-                        else:
-                            assembler_seq(call.adr.value, func, *call.args)
+            # Analyze cost for all operations that have OASM calls
+            if event.oasm_calls:
+                event.cost_cycles = _analyze_operation_cost(event, adr, assembler_seq)
+                print(f"    - {event.operation.operation_type.name} at t={event.timestamp_cycles}: {event.cost_cycles} cycles")
+            else:
+                event.cost_cycles = 0
+                print(f"    - {event.operation.operation_type.name} at t={event.timestamp_cycles}: 0 cycles (no OASM calls)")
 
-                # Check if assembly was generated (note: OASM uses .asm.multi structure)
-                if adr.value in assembler_seq.asm.multi:
-                    binary_asm = assembler_seq.asm[adr.value]
-                    asm_lines = disassembler(core=C_RWG)(binary_asm)
-                    
-                    cost = _estimate_oasm_cost(asm_lines)
-                    event.cost_cycles = cost
-                    print(f"    - Cost for LOAD at {event.timestamp_cycles} on {adr.value}: {cost} cycles (from assembly)")
+
+def _analyze_operation_cost(event: LogicalEvent, adr: OASMAddress, assembler_seq) -> int:
+    """
+    Analyze the execution cost of a single operation by generating and analyzing
+    its OASM assembly code.
+    
+    Args:
+        event: The logical event to analyze
+        adr: Board address for assembly generation
+        assembler_seq: OASM assembler sequence
+        
+    Returns:
+        Cost in cycles, or 0 if analysis fails
+    """
+    try:
+        # Clear assembler state for clean cost analysis
+        assembler_seq.clear()
+        
+        # Execute all OASM calls for this operation
+        for call in event.oasm_calls:
+            func = OASM_FUNCTION_MAP.get(call.dsl_func)
+            if func:
+                if call.kwargs:
+                    assembler_seq(call.adr.value, func, *call.args, **call.kwargs)
                 else:
-                    event.cost_cycles = 0
-                    print(f"    - Warning: No assembly generated for LOAD at {event.timestamp_cycles} on {adr.value}. Cost set to 0.")
+                    assembler_seq(call.adr.value, func, *call.args)
+
+        # Check if assembly was generated
+        if adr.value in assembler_seq.asm.multi:
+            binary_asm = assembler_seq.asm[adr.value]
+            asm_lines = disassembler(core=C_RWG)(binary_asm)
+            
+            cost = _estimate_oasm_cost(asm_lines)
+            return cost
+        else:
+            return 0
+            
+    except Exception as e:
+        print(f"      Warning: Cost analysis failed for {event.operation.operation_type.name}: {e}")
+        return 0
+
+
+def _calculate_pre_sync_duration_up_to(board_events: List[LogicalEvent], sync_timestamp: int) -> int:
+    """
+    Calculate the total execution time for operations that occur before the sync timestamp.
+    This is used to determine how long the master board should wait before synchronization.
+    
+    Args:
+        board_events: List of logical events for a single board
+        sync_timestamp: The timestamp at which synchronization occurs
+        
+    Returns:
+        Total duration in cycles for all pre-sync operations
+    """
+    # Find the latest timestamp before sync_timestamp
+    max_pre_sync_time = 0
+    for event in board_events:
+        if event.timestamp_cycles < sync_timestamp:
+            # This event happens before sync, include its completion time
+            event_end_time = event.timestamp_cycles + event.cost_cycles
+            max_pre_sync_time = max(max_pre_sync_time, event_end_time)
+    
+    return max_pre_sync_time
+
+
+def _calculate_pre_sync_duration(board_events: List[LogicalEvent]) -> int:
+    """
+    Calculate the total execution time for operations that occur before global sync (t=0).
+    This is used to determine how long the master board should wait before synchronization.
+    
+    Args:
+        board_events: List of logical events for a single board
+        
+    Returns:
+        Total duration in cycles for all pre-sync operations
+    """
+    pre_sync_cost = 0
+    
+    for event in board_events:
+        if event.timestamp_cycles == 0:  # Pre-sync operations occur at t=0
+            pre_sync_cost += event.cost_cycles
+    
+    return pre_sync_cost
+
+
+def _calculate_master_wait_time(events_by_board: Dict[OASMAddress, List[LogicalEvent]], sync_timestamp: int) -> int:
+    """
+    Calculate the time the master board should wait before triggering global sync.
+    This is based on the maximum pre-sync duration across all slave boards.
+    
+    Args:
+        events_by_board: Events organized by board
+        
+    Returns:
+        Wait time in cycles for master board
+    """
+    max_slave_duration = 0
+    
+    print("  Calculating master wait time based on slave board pre-sync operations...")
+    
+    for adr, events in events_by_board.items():
+        if adr != OASMAddress.MAIN:  # Only consider slave boards
+            slave_duration = _calculate_pre_sync_duration_up_to(events, sync_timestamp)
+            max_slave_duration = max(max_slave_duration, slave_duration)
+            print(f"    Slave {adr.value} pre-sync duration: {slave_duration} cycles")
+    
+    # Add safety margin for communication delays and timing uncertainties
+    safety_margin = 100  # cycles, configurable
+    total_wait = max_slave_duration + safety_margin
+    
+    print(f"    Master wait time: {max_slave_duration} + {safety_margin} = {total_wait} cycles")
+    
+    return total_wait
 
 
 def _pass3_check_constraints(events_by_board: Dict[OASMAddress, List[LogicalEvent]]):
-    """Pass 3: Checks for timing violations, such as pipelining."""
+    """Pass 3: Checks for timing violations, including pipelining and global sync constraints."""
     print("Compiler Pass 3: Checking constraints...")
+    
+    # Check RWG_INIT global sync constraints for multi-board scenarios
+    if len(events_by_board) > 1:
+        print("  Multi-board scenario: Checking RWG_INIT global sync constraints...")
+        for adr, events in events_by_board.items():
+            for event in events:
+                if event.operation.operation_type == OperationType.RWG_INIT:
+                    if event.timestamp_cycles != 0:
+                        raise ValueError(
+                            f"Multi-board constraint violation: RWG_INIT operation on board {adr.value} "
+                            f"found at t={event.timestamp_cycles} cycles. In multi-board scenarios, "
+                            f"RWG_INIT operations must occur at t=0 (global sync point) due to their "
+                            f"instantaneous nature and hardware initialization requirements."
+                        )
+                    else:
+                        print(f"    ✓ RWG_INIT on {adr.value} at t=0: OK")
+    
+    # Check pipelining constraints per board  
     for adr, events in events_by_board.items():
         # Group events by channel to check sequences correctly
         events_by_channel: Dict[int, List[LogicalEvent]] = {}
@@ -482,16 +836,24 @@ def _calculate_optimal_schedule(events: List[LogicalEvent], pipeline_pairs: List
     return optimized_events
 
 
-def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEvent]]) -> List[OASMCall]:
+def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEvent]]) -> Dict[OASMAddress, List[OASMCall]]:
     """
     Pass 4: Generates the final scheduled OASM calls from the enriched
     logical events, including intelligent pipeline scheduling optimization.
     """
     print("Compiler Pass 4: Generating and scheduling OASM calls...")
-    all_calls: List[OASMCall] = []
+    calls_by_board: Dict[OASMAddress, List[OASMCall]] = {}
+    
+    # User-managed synchronization: sync operations are explicitly added by user via global_sync()
+    board_addresses = list(events_by_board.keys())
+    print(f"  Processing {len(board_addresses)} board(s): {[adr.value for adr in board_addresses]}")
 
     for adr, events in events_by_board.items():
+        # Initialize the board's call list
+        board_calls: List[OASMCall] = []
+        
         if not events:
+            calls_by_board[adr] = board_calls
             continue
         
         # Step 1: Identify pipeline pairs for optimization
@@ -523,22 +885,27 @@ def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEv
                 raise ValueError(f"Negative wait time calculated at timestamp {timestamp}.")
             
             if wait_cycles > 0:
-                all_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.WAIT_US, args=(cycles_to_us(wait_cycles),)))
+                board_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.WAIT_US, args=(cycles_to_us(wait_cycles),)))
             
             # Append the pre-translated OASM calls for this timestamp
             for event in events_by_ts[timestamp]:
-                all_calls.extend(event.oasm_calls)
+                board_calls.extend(event.oasm_calls)
 
             previous_ts = timestamp
 
-    return all_calls
+        calls_by_board[adr] = board_calls
+
+    return calls_by_board
 
 # Map OASMFunction enum members to actual OASM DSL functions
 OASM_FUNCTION_MAP: Dict[OASMFunction, Callable] = {
     OASMFunction.TTL_CONFIG: ttl_config,
     OASMFunction.TTL_SET: ttl_set,
     OASMFunction.WAIT_US: wait_us,
-    OASMFunction.RWG_INITIALIZE_PORT: rwg_initialize_port,
+    OASMFunction.WAIT_MASTER: wait_master,
+    OASMFunction.TRIG_SLAVE: trig_slave,
+    OASMFunction.RWG_INIT: rwg_init,
+    OASMFunction.RWG_SET_CARRIER: rwg_set_carrier,
     OASMFunction.RWG_RF_SWITCH: rwg_rf_switch,
     OASMFunction.RWG_LOAD_WAVEFORM: rwg_load_waveform,
     OASMFunction.RWG_PLAY: rwg_play,

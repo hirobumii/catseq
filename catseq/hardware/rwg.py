@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from ..morphism import Morphism, MorphismDef, from_atomic
-from ..atomic import rwg_init, rwg_load_coeffs, rwg_update_params
+from ..atomic import rwg_board_init, rwg_set_carrier, rwg_load_coeffs, rwg_update_params
 from ..morphism import identity
 from ..types import (
     Channel,
@@ -40,7 +40,7 @@ class RampTarget:
 
 
 def initialize(carrier_freq: float) -> MorphismDef:
-    """Creates a definition for an RWG initialization morphism."""
+    """Creates a definition for an RWG initialization morphism (composite: board init + carrier set)."""
 
     def generator(channel: Channel, start_state: State) -> Morphism:
         if not isinstance(start_state, RWGUninitialized):
@@ -48,7 +48,8 @@ def initialize(carrier_freq: float) -> MorphismDef:
                 raise TypeError(
                     f"RWG initialize must start from Uninitialized or Ready, got {type(start_state)}"
                 )
-        return rwg_init(channel, carrier_freq)
+        # Composite operation: board initialization followed by carrier setting
+        return rwg_board_init(channel) >> rwg_set_carrier(channel, carrier_freq)
 
     return MorphismDef(generator)
 
@@ -141,7 +142,7 @@ def linear_ramp(targets: List[Optional[RampTarget]], duration_us: float) -> Morp
                 )
             )
             end_waveforms.append(
-                StaticWaveform(sbg_id=sbg_id, freq=target_freq, amp=target_amp, phase=float('nan'))
+                StaticWaveform(sbg_id=sbg_id, freq=target_freq, amp=target_amp, phase=0.0)
             )
 
         load_morphism = rwg_load_coeffs(channel, params, start_state)

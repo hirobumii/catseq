@@ -52,14 +52,25 @@ def ttl_off(channel: Channel) -> Morphism:
     )
     return from_atomic(op)
 
-def rwg_init(channel: Channel, carrier_freq: float) -> Morphism:
-    """Creates an RWG initialization morphism."""
+def rwg_board_init(channel: Channel) -> Morphism:
+    """Creates an RWG board-level initialization morphism (atomic operation)."""
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=RWGUninitialized(),
+        end_state=RWGUninitialized(),  # Still uninitialized until carrier is set
+        duration_cycles=0,  # Instantaneous operation, handled during global sync
+        operation_type=OperationType.RWG_INIT,
+    )
+    return from_atomic(op)
+
+def rwg_set_carrier(channel: Channel, carrier_freq: float) -> Morphism:
+    """Creates an RWG carrier frequency setting morphism (atomic operation).""" 
     op = AtomicMorphism(
         channel=channel,
         start_state=RWGUninitialized(),
         end_state=RWGReady(carrier_freq=carrier_freq, rf_on=False),
-        duration_cycles=2,
-        operation_type=OperationType.RWG_INIT,
+        duration_cycles=0,  # Instantaneous operation, handled during global sync
+        operation_type=OperationType.RWG_SET_CARRIER,
     )
     return from_atomic(op)
 

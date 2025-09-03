@@ -77,10 +77,11 @@ def merge_board_lanes(board: Board, board_lanes: Dict[Channel, Lane]) -> Physica
     for channel, lane in board_lanes.items():
         timestamp = 0
         for op in lane.operations:
-            # Record all operations to preserve the timeline
-            physical_ops.append(PhysicalOperation(op, timestamp))
+            # Skip IDENTITY operations - they are only for timing alignment
+            if op.operation_type != OperationType.IDENTITY:
+                physical_ops.append(PhysicalOperation(op, timestamp))
             
-            # 累积时间戳（所有操作都占用时间）
+            # 累积时间戳（所有操作都占用时间，包括IDENTITY）
             timestamp += op.duration_cycles
     
     # 按时间戳排序

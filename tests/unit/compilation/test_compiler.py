@@ -33,14 +33,19 @@ class TestCompileToOASMCalls:
         )
         
         # Compile to OASM calls
-        oasm_calls = compile_to_oasm_calls(sequence)
+        oasm_calls_by_board = compile_to_oasm_calls(sequence)
+        
+        # Extract calls for single board
+        assert len(oasm_calls_by_board) == 1
+        board_adr = list(oasm_calls_by_board.keys())[0]
+        oasm_calls = oasm_calls_by_board[board_adr]
         
         # Verify structure
         assert len(oasm_calls) >= 4  # At least: config, wait, set_on, wait, set_off
         
         # Check first call is TTL_CONFIG
         assert oasm_calls[0].dsl_func == OASMFunction.TTL_CONFIG
-        assert oasm_calls[0].adr == OASMAddress.RWG0
+        assert oasm_calls[0].adr == board_adr
         assert oasm_calls[0].args == (1, 0)  # mask=1 (ch0), dir=0 (init to OFF)
         
         # Check that we have wait calls
@@ -79,7 +84,12 @@ class TestCompileToOASMCalls:
         parallel_seq = ch0_seq | ch1_seq
         
         # Compile to OASM calls
-        oasm_calls = compile_to_oasm_calls(parallel_seq)
+        oasm_calls_by_board = compile_to_oasm_calls(parallel_seq)
+        
+        # Extract calls for single board
+        assert len(oasm_calls_by_board) == 1
+        board_adr = list(oasm_calls_by_board.keys())[0]
+        oasm_calls = oasm_calls_by_board[board_adr]
         
         # Should have TTL_CONFIG with combined mask
         config_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.TTL_CONFIG]
@@ -105,14 +115,18 @@ class TestCompileToOASMCalls:
         multi_board_seq = seq0 | seq1
         
         # Compile to OASM calls
-        oasm_calls = compile_to_oasm_calls(multi_board_seq)
+        oasm_calls_by_board = compile_to_oasm_calls(multi_board_seq)
         
-        # Should generate calls (implementation may consolidate boards)
-        assert len(oasm_calls) > 0
+        # Should generate calls for multiple boards
+        assert len(oasm_calls_by_board) >= 1
         
-        # Check board addresses - implementation may map differently
-        board_addresses = set(call.adr for call in oasm_calls)
+        # Check board addresses
+        board_addresses = set(oasm_calls_by_board.keys())
         assert len(board_addresses) >= 1  # At least one board should be addressed
+        
+        # Verify each board has calls
+        for board_adr, calls in oasm_calls_by_board.items():
+            assert len(calls) > 0, f"Board {board_adr.value} should have OASM calls"
     
     def test_timing_precision(self):
         """Test that timing values are correctly converted."""
@@ -122,7 +136,12 @@ class TestCompileToOASMCalls:
         # Sequence with specific timing that should generate wait
         sequence = ttl_init(ch0) @ identity(5e-6) @ ttl_on(ch0)  # 5 microseconds
         
-        oasm_calls = compile_to_oasm_calls(sequence)
+        oasm_calls_by_board = compile_to_oasm_calls(sequence)
+        
+        # Extract calls for single board
+        assert len(oasm_calls_by_board) == 1
+        board_adr = list(oasm_calls_by_board.keys())[0]
+        oasm_calls = oasm_calls_by_board[board_adr]
         
         # Should have some calls generated
         assert len(oasm_calls) > 0
@@ -236,8 +255,8 @@ class TestOASMCallStructure:
         """Test OASM function enumeration completeness."""
         # Check that all expected functions are defined
         expected_functions = {
-            'TTL_CONFIG', 'TTL_SET', 'WAIT_US', 'TRIG_SLAVE',
-            'RWG_INITIALIZE_PORT', 'RWG_RF_SWITCH', 'RWG_LOAD_WAVEFORM', 'RWG_PLAY'
+            'TTL_CONFIG', 'TTL_SET', 'WAIT_US', 'WAIT_MASTER', 'TRIG_SLAVE',
+            'RWG_INIT', 'RWG_SET_CARRIER', 'RWG_RF_SWITCH', 'RWG_LOAD_WAVEFORM', 'RWG_PLAY'
         }
         actual_functions = {func.name for func in OASMFunction}
         assert expected_functions.issubset(actual_functions)
@@ -274,7 +293,12 @@ class TestIntegrationCompilerFlow:
         experiment = laser_pulse | detector_gate
         
         # Compile
-        oasm_calls = compile_to_oasm_calls(experiment)
+        oasm_calls_by_board = compile_to_oasm_calls(experiment)
+        
+        # Extract calls for single board
+        assert len(oasm_calls_by_board) == 1
+        board_adr = list(oasm_calls_by_board.keys())[0]
+        oasm_calls = oasm_calls_by_board[board_adr]
         
         # Verify
         assert len(oasm_calls) > 0
@@ -302,14 +326,19 @@ class TestIntegrationCompilerFlow:
         sequence = ttl_init(ch0) @ ttl_on(ch0) @ ttl_off(ch0)
         
         # Compile
-        oasm_calls = compile_to_oasm_calls(sequence)
+        oasm_calls_by_board = compile_to_oasm_calls(sequence)
+        
+        # Flatten calls for execute_oasm_calls (which expects List[OASMCall])
+        all_calls = []
+        for calls in oasm_calls_by_board.values():
+            all_calls.extend(calls)
         
         # Mock seq object
         mock_seq = mocker.MagicMock()
         mock_seq.asm = {'rwg0': ['AMK - TTL 1.0 $01', 'AMK - TTL 1.0 $00']}
         
         # Execute
-        success, returned_seq = execute_oasm_calls(oasm_calls, mock_seq)
+        success, returned_seq = execute_oasm_calls(all_calls, mock_seq)
         
         # Verify
         assert success is True
@@ -330,7 +359,12 @@ class TestIntegrationCompilerFlow:
         
         # Should fallback to RWG0
         sequence = ttl_init(ch0)
-        oasm_calls = compile_to_oasm_calls(sequence)
+        oasm_calls_by_board = compile_to_oasm_calls(sequence)
+        
+        # Extract calls for single board
+        assert len(oasm_calls_by_board) == 1
+        board_adr = list(oasm_calls_by_board.keys())[0]
+        oasm_calls = oasm_calls_by_board[board_adr]
         
         # Should have valid calls even with invalid board name
         assert len(oasm_calls) > 0

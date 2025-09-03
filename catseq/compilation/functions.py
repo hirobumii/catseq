@@ -5,8 +5,9 @@ This module contains the actual OASM DSL functions that will be called
 when executing compiled sequences on the hardware.
 """
 # Import actual OASM functions
-from oasm.rtmq2 import sfs, amk, wait
-from oasm.dev.rwg import fte, rwg, sbg, pdm
+from oasm.rtmq2 import sfs, amk, wait, send_trig_code, wait_rtlk_trig,asm
+from oasm.dev.rwg import fte, rwg, sbg
+
 
 from ..types.rwg import WaveformParams
 from .mask_utils import binary_to_rtmq_mask
@@ -70,26 +71,22 @@ def wait_us(duration):
     t = round(duration * us)
     wait(t)  # 使用转换后的时间单位
 
-def my_wait():
-    """自定义等待操作"""
-    print("OASM: My wait")
+def wait_master(cod=None):
+    wait_rtlk_trig('c', cod or id(asm.intf))
 
-
-def trig_slave(param):
-    """触发从设备
-    
-    Args:
-        param: 触发参数
-    """
-    print(f"OASM: Trigger slave - param={param}")
+def trig_slave(wait_time, cod=None):
+    wait(wait_time)
+    send_trig_code('ib', 0, 0, cod or id(asm.intf))
 
 # --- RWG Placeholder Functions ---
+def rwg_init(sca=(0,0,0,0), mux=(32,32,32,32)):
+    rwg.rsm.on(spi=1)
+    rwg.pdm.source(1, 1, 1, 1)
+    rwg.cds.mux(sca,[((1<<mux[i])-1)<<sum(mux[:i]) for i in range(4)])
+    rwg.rst_cic(0xF)
 
-def rwg_initialize_port(rf_port: int, carrier_mhz: float):
-    """Placeholder to initialize an RF port."""
-    print(f"[DSL Placeholder] rwg_initialize_port(rf_port={rf_port}, carrier_mhz={carrier_mhz})")
-    # User implementation will call rwg.rst_cic() and rwg.carrier()
-    pass
+def rwg_set_carrier(chn: int, carrier_mhz: float):
+    rwg.carrier(1<<chn, carrier_mhz, upd=True)
 
 def rwg_rf_switch(ch_mask: int, state_mask: int):
     """Control RF switch via PDM register.

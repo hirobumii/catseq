@@ -162,15 +162,25 @@ class Morphism:
             # 构建操作序列显示
             ops_display = []
             for op in lane.operations:
-                if op.operation_type == OperationType.TTL_INIT:
-                    ops_display.append("init")
-                elif op.operation_type == OperationType.TTL_ON:
-                    ops_display.append("ON")
-                elif op.operation_type == OperationType.TTL_OFF:
-                    ops_display.append("OFF")
-                elif op.operation_type == OperationType.IDENTITY:
-                    duration_us = cycles_to_us(op.duration_cycles)
-                    ops_display.append(f"identity({duration_us:.1f}μs)")
+                match op.operation_type:
+                    case OperationType.TTL_INIT:
+                        ops_display.append("init")
+                    case OperationType.TTL_ON:
+                        ops_display.append("ON")
+                    case OperationType.TTL_OFF:
+                        ops_display.append("OFF")
+                    case OperationType.IDENTITY:
+                        duration_us = cycles_to_us(op.duration_cycles)
+                        ops_display.append(f"identity({duration_us:.1f}μs)")
+                    case OperationType.RWG_INIT:
+                        ops_display.append("RWG_init")
+                    case OperationType.RWG_LOAD_COEFFS:
+                        ops_display.append("LOAD")
+                    case OperationType.RWG_UPDATE_PARAMS:
+                        duration_us = cycles_to_us(op.duration_cycles)
+                        ops_display.append(f"PLAY({duration_us:.1f}μs)")
+                    case _:  # 如果有未知类型需要处理，可以加上默认分支
+                        pass
             
             line = f"{channel.global_id:<20} │ {' → '.join(ops_display)}"
             lines.append(line)

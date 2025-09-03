@@ -16,6 +16,7 @@ from .types.rwg import (
     RWGUninitialized,
     WaveformParams,
     RWGWaveformInstruction,
+    StaticWaveform,
 )
 
 def ttl_init(channel: Channel, initial_state: TTLState = TTLState.OFF) -> Morphism:
@@ -81,9 +82,19 @@ def rwg_load_coeffs(
     return from_atomic(op)
 
 def rwg_update_params(
-    channel: Channel, duration_us: float, start_state: RWGWaveformInstruction, end_state: RWGActive
+    channel: Channel, 
+    duration_us: float, 
+    start_state: Union[RWGReady, RWGActive], 
+    end_state: Union[RWGReady, RWGActive]
 ) -> Morphism:
-    """Creates a morphism to trigger an RWG parameter update (a ramp)."""
+    """Creates a morphism to trigger an RWG parameter update (a ramp).
+    
+    Args:
+        channel: RWG channel to operate on
+        duration_us: Duration of the waveform playback in microseconds
+        start_state: RWG state at the beginning of playback
+        end_state: RWG state at the end of playback
+    """
     duration_cycles = us_to_cycles(duration_us)
     op = AtomicMorphism(
         channel=channel,

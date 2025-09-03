@@ -9,7 +9,7 @@ architecture to support pipelined operations and timing checks.
 from dataclasses import dataclass, field
 from typing import List, Dict, Callable
 
-from ..types.common import OperationType, AtomicMorphism
+from ..types.common import OperationType, AtomicMorphism, Channel
 from ..lanes import merge_board_lanes
 from ..types.rwg import RWGWaveformInstruction
 from ..time_utils import cycles_to_us
@@ -24,12 +24,10 @@ from .functions import (
     rwg_play,
 )
 
-# Import OASM modules for actual assembly generation
+# Import OASM modules only for disassembly in cost analysis
 try:
-    from oasm.rtmq2 import disassembler, assembler
+    from oasm.rtmq2 import disassembler
     from oasm.dev.rwg import C_RWG
-    from oasm.rtmq2.intf import sim_intf
-    from oasm.dev.main import run_cfg
     OASM_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: OASM modules not available: {e}")
@@ -72,8 +70,15 @@ class LogicalEvent:
 
 # --- Main Compiler Entry Point ---
 
-def compile_to_oasm_calls(morphism, _return_internal_events=False) -> List[OASMCall]:
-    """Drives the four-pass compilation process."""
+def compile_to_oasm_calls(morphism, assembler_seq=None, _return_internal_events=False) -> List[OASMCall]:
+    """Drives the four-pass compilation process.
+    
+    Args:
+        morphism: The morphism to compile
+        assembler_seq: Pre-initialized OASM assembler sequence for cost analysis.
+                      If None, cost analysis will be skipped when OASM is not available.
+        _return_internal_events: For testing, return internal events instead of calls
+    """
     
     # Pass 0: Decompose the Morphism into a flat list of logical "nodes".
     events_by_board = _pass0_extract_events(morphism)
@@ -82,7 +87,7 @@ def compile_to_oasm_calls(morphism, _return_internal_events=False) -> List[OASMC
     _pass1_translate_to_oasm(events_by_board)
     
     # Pass 2: Analyze the cost of expensive operations using the translated calls.
-    _pass2_analyze_costs(events_by_board)
+    _pass2_analyze_costs(events_by_board, assembler_seq)
     
     # Pass 3: Check for timing violations (e.g., pipelining constraints).
     _pass3_check_constraints(events_by_board)
@@ -190,10 +195,11 @@ def _pass1_translate_to_oasm(events_by_board: Dict[OASMAddress, List[LogicalEven
                         event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_RF_SWITCH, args=(on_mask,)))
 
                     case OperationType.RWG_LOAD_COEFFS:
-                        # This operation maps to a single OASM call that takes the entire
-                        # parameter object. The OASM DSL function is responsible for
-                        # unpacking the parameters and generating the detailed assembly.
-                        event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_LOAD_WAVEFORM, args=(op.end_state,)))
+                        # Generate separate OASM calls for each WaveformParams in the instruction
+                        # The OASM DSL function expects individual WaveformParams, not the entire instruction
+                        if isinstance(op.end_state, RWGWaveformInstruction):
+                            for waveform_params in op.end_state.params:
+                                event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_LOAD_WAVEFORM, args=(waveform_params,)))
                     
                     case _:
                         # This operation is either a merged operation or doesn't translate to a call.
@@ -232,18 +238,26 @@ def _pass1_translate_to_oasm(events_by_board: Dict[OASMAddress, List[LogicalEven
                 
                 for event in ts_events:
                     if event.operation.operation_type == OperationType.RWG_UPDATE_PARAMS:
-                        event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_PLAY, args=(duration_us, pud_mask, iou_mask)))
+                        event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_PLAY, args=(pud_mask, iou_mask)))
                         break # Store the single merged call in the first relevant event
 
 
-def _pass2_analyze_costs(events_by_board: Dict[OASMAddress, List[LogicalEvent]]):
+def _pass2_analyze_costs(events_by_board: Dict[OASMAddress, List[LogicalEvent]], assembler_seq=None):
     """
     Pass 2: Annotates events with their execution cost in cycles by analyzing
     the OASM calls generated in Pass 1.
+    
+    Args:
+        events_by_board: Events organized by board
+        assembler_seq: Pre-initialized OASM assembler sequence. If None, cost analysis is skipped.
     """
     print("Compiler Pass 2: Analyzing costs via assembly generation...")
-    if not OASM_AVAILABLE:
-        print("Warning: OASM modules not available. Skipping cost analysis.")
+    
+    if assembler_seq is None:
+        if OASM_AVAILABLE:
+            print("Warning: No assembler provided. Cost analysis will be skipped.")
+        else:
+            print("Warning: OASM modules not available. Skipping cost analysis.")
         return
 
     for adr, events in events_by_board.items():
@@ -255,16 +269,21 @@ def _pass2_analyze_costs(events_by_board: Dict[OASMAddress, List[LogicalEvent]])
                     print(f"    - Warning: No OASM calls found for LOAD at {event.timestamp_cycles} on {adr.value}. Cost set to 0.")
                     event.cost_cycles = 0
                     continue
-
-                temp_seq = assembler(run_cfg=None, board_cfgs=[(adr.value, C_RWG)])
+                # Clear assembler state for clean cost analysis
+                assembler_seq.clear()
                 
+                # Execute OASM calls to generate assembly
                 for call in event.oasm_calls:
                     func = OASM_FUNCTION_MAP.get(call.dsl_func)
                     if func:
-                        temp_seq(call.adr.value, func, *call.args, **call.kwargs)
+                        if call.kwargs:
+                            assembler_seq(call.adr.value, func, *call.args, **call.kwargs)
+                        else:
+                            assembler_seq(call.adr.value, func, *call.args)
 
-                if adr.value in temp_seq.asm:
-                    binary_asm = temp_seq.asm[adr.value]
+                # Check if assembly was generated (note: OASM uses .asm.multi structure)
+                if adr.value in assembler_seq.asm.multi:
+                    binary_asm = assembler_seq.asm[adr.value]
                     asm_lines = disassembler(core=C_RWG)(binary_asm)
                     
                     cost = _estimate_oasm_cost(asm_lines)
@@ -312,10 +331,161 @@ def _pass3_check_constraints(events_by_board: Dict[OASMAddress, List[LogicalEven
                                 )
                             print(f"  - OK: Play at {event.timestamp_cycles} ({play_duration}c) >= Load at {next_load_event.timestamp_cycles} ({load_cost}c)")
 
+@dataclass(frozen=True)
+class PipelinePair:
+    """A LOAD-PLAY operation pair for pipelining optimization."""
+    load_event: 'LogicalEvent'
+    play_event: 'LogicalEvent'
+    
+    @property
+    def channel(self) -> Channel:
+        """The channel this pair operates on."""
+        return self.load_event.operation.channel
+    
+    @property
+    def load_cost_cycles(self) -> int:
+        """Cost in cycles for the LOAD operation."""
+        return self.load_event.cost_cycles
+    
+    @property
+    def play_start_time(self) -> int:
+        """Start time for the PLAY operation."""
+        return self.play_event.timestamp_cycles
+
+
+def _identify_pipeline_pairs(events: List[LogicalEvent]) -> List[PipelinePair]:
+    """
+    Identify pipeline pairs (LOAD → PLAY sequences) for optimization.
+    
+    A pipeline pair consists of:
+    1. A LOAD event (RWG_LOAD_COEFFS)
+    2. The next PLAY event (RWG_UPDATE_PARAMS) on the same channel
+    
+    Args:
+        events: List of LogicalEvent sorted by timestamp
+        
+    Returns:
+        List of PipelinePair objects representing LOAD→PLAY sequences
+    """
+    pairs = []
+    
+    # Group events by channel for efficient lookup
+    events_by_channel: Dict[Channel, List[LogicalEvent]] = {}
+    for event in events:
+        channel = event.operation.channel
+        if channel not in events_by_channel:
+            events_by_channel[channel] = []
+        events_by_channel[channel].append(event)
+    
+    # For each channel, find LOAD→PLAY pairs
+    for channel, channel_events in events_by_channel.items():
+        # Sort by timestamp to ensure proper ordering
+        channel_events.sort(key=lambda e: e.timestamp_cycles)
+        
+        for i, event in enumerate(channel_events):
+            if event.operation.operation_type == OperationType.RWG_LOAD_COEFFS:
+                # Look for the next UPDATE_PARAMS on the same channel
+                for j in range(i + 1, len(channel_events)):
+                    next_event = channel_events[j]
+                    if next_event.operation.operation_type == OperationType.RWG_UPDATE_PARAMS:
+                        # Found the corresponding PLAY event
+                        pair = PipelinePair(load_event=event, play_event=next_event)
+                        pairs.append(pair)
+                        print(f"    Found pipeline pair: LOAD@{event.timestamp_cycles}c → PLAY@{next_event.timestamp_cycles}c on {channel.global_id}")
+                        break
+    
+    return pairs
+
+
+def _calculate_optimal_schedule(events: List[LogicalEvent], pipeline_pairs: List[PipelinePair]) -> List[LogicalEvent]:
+    """
+    Calculate optimal scheduling for pipeline pairs to minimize wait times.
+    
+    This function implements cross-channel pipelining optimization:
+    - LOAD operations can be rescheduled to execute during other channels' PLAY operations
+    - Each LOAD must complete before its corresponding PLAY starts
+    - Serial LOAD constraint: LOAD operations on the same board must not overlap
+    
+    Args:
+        events: Original list of LogicalEvent objects
+        pipeline_pairs: List of identified LOAD→PLAY pairs
+        
+    Returns:
+        List of LogicalEvent objects with optimized timestamps
+    """
+    if not pipeline_pairs:
+        return events  # No optimization needed
+    
+    print("    Calculating optimal schedule for pipeline pairs...")
+    
+    # Create a copy of events to avoid modifying the original
+    optimized_events = []
+    events_to_reschedule = {}  # {original_event_id: new_timestamp}
+    
+    # Sort pairs by their original PLAY start time for scheduling
+    sorted_pairs = sorted(pipeline_pairs, key=lambda p: p.play_start_time)
+    
+    # Track when LOAD operations can start (considering serial constraint)
+    last_load_end_time = 0
+    
+    for pair in sorted_pairs:
+        load_event = pair.load_event
+        play_start_time = pair.play_start_time
+        load_cost = pair.load_cost_cycles
+        
+        # Calculate the latest possible start time for the LOAD
+        # (LOAD must complete before PLAY starts)
+        latest_load_start = play_start_time - load_cost
+        
+        # Calculate the earliest possible start time for the LOAD
+        # (Cannot overlap with previous LOAD operations)
+        earliest_load_start = max(0, last_load_end_time)
+        
+        if earliest_load_start <= latest_load_start:
+            # Optimization: Schedule LOAD as late as possible while meeting constraints
+            optimal_load_start = latest_load_start
+            events_to_reschedule[id(load_event)] = optimal_load_start
+            last_load_end_time = optimal_load_start + load_cost
+            
+            print(f"      Optimized LOAD on {pair.channel.global_id}: {load_event.timestamp_cycles}c → {optimal_load_start}c (saved {load_event.timestamp_cycles - optimal_load_start}c)")
+        else:
+            # Cannot optimize: would violate serial LOAD constraint
+            # Keep original timing but update last_load_end_time
+            original_load_start = load_event.timestamp_cycles
+            if original_load_start < last_load_end_time:
+                # Need to delay this LOAD to avoid overlap
+                adjusted_load_start = last_load_end_time
+                events_to_reschedule[id(load_event)] = adjusted_load_start
+                last_load_end_time = adjusted_load_start + load_cost
+                print(f"      Delayed LOAD on {pair.channel.global_id}: {original_load_start}c → {adjusted_load_start}c (serial constraint)")
+            else:
+                last_load_end_time = original_load_start + load_cost
+                print(f"      Kept LOAD on {pair.channel.global_id} at {original_load_start}c (no optimization possible)")
+    
+    # Apply rescheduling to create optimized event list
+    for event in events:
+        event_id = id(event)
+        if event_id in events_to_reschedule:
+            # Create new event with updated timestamp
+            new_timestamp = events_to_reschedule[event_id]
+            optimized_event = LogicalEvent(
+                timestamp_cycles=new_timestamp,
+                operation=event.operation,
+                oasm_calls=event.oasm_calls,
+                cost_cycles=event.cost_cycles
+            )
+            optimized_events.append(optimized_event)
+        else:
+            # Keep original event
+            optimized_events.append(event)
+    
+    return optimized_events
+
+
 def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEvent]]) -> List[OASMCall]:
     """
     Pass 4: Generates the final scheduled OASM calls from the enriched
-    logical events, including calculated wait times.
+    logical events, including intelligent pipeline scheduling optimization.
     """
     print("Compiler Pass 4: Generating and scheduling OASM calls...")
     all_calls: List[OASMCall] = []
@@ -323,24 +493,31 @@ def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEv
     for adr, events in events_by_board.items():
         if not events:
             continue
+        
+        # Step 1: Identify pipeline pairs for optimization
+        pipeline_pairs = _identify_pipeline_pairs(events)
+        print(f"  Board {adr.value}: Found {len(pipeline_pairs)} pipeline pairs")
+        
+        # Step 2: Calculate optimal scheduling for pipeline pairs
+        optimized_events = _calculate_optimal_schedule(events, pipeline_pairs)
+        print(f"  Board {adr.value}: Applied optimization to {len(optimized_events)} events")
 
         previous_ts = 0
-        pipelined_load_cost = 0 # This will be handled by pipelining logic
 
-        # We need a sorted list of all unique timestamps
-        sorted_timestamps = sorted(list(set(e.timestamp_cycles for e in events)))
+        # Use optimized events for final scheduling
+        # Sort by new timestamps and group by timestamp
+        optimized_events.sort(key=lambda e: e.timestamp_cycles)
+        sorted_timestamps = sorted(list(set(e.timestamp_cycles for e in optimized_events)))
         
         events_by_ts: Dict[int, List[LogicalEvent]] = {}
-        for event in events:
+        for event in optimized_events:
             if event.timestamp_cycles not in events_by_ts:
                 events_by_ts[event.timestamp_cycles] = []
             events_by_ts[event.timestamp_cycles].append(event)
 
         for i, timestamp in enumerate(sorted_timestamps):
-            # Adjust wait time for any pipelined loads from the previous segment
+            # Calculate wait time to next timestamp
             wait_cycles = timestamp - previous_ts
-            # TODO: Pipelining logic needs to be re-integrated here.
-            # For now, we assume no pipelining for simplicity.
             
             if wait_cycles < 0:
                 raise ValueError(f"Negative wait time calculated at timestamp {timestamp}.")
@@ -348,7 +525,7 @@ def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEv
             if wait_cycles > 0:
                 all_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.WAIT_US, args=(cycles_to_us(wait_cycles),)))
             
-            # Append the pre-translated OASM calls
+            # Append the pre-translated OASM calls for this timestamp
             for event in events_by_ts[timestamp]:
                 all_calls.extend(event.oasm_calls)
 
@@ -367,51 +544,62 @@ OASM_FUNCTION_MAP: Dict[OASMFunction, Callable] = {
     OASMFunction.RWG_PLAY: rwg_play,
 }
 
-def execute_oasm_calls(calls: List[OASMCall], seq=None):
-    """执行 OASM 调用序列并生成实际的 RTMQ 汇编代码"""
+def execute_oasm_calls(calls: List[OASMCall], assembler_seq=None):
+    """执行 OASM 调用序列并生成实际的 RTMQ 汇编代码
+    
+    Args:
+        calls: List of OASM calls to execute
+        assembler_seq: Pre-initialized OASM assembler sequence. If None, falls back to mock execution.
+    """
     print("\n--- Executing OASM Calls ---")
     if not calls:
         print("No OASM calls to execute.")
-        return True, seq
+        return True, assembler_seq
     
-    if seq is not None and OASM_AVAILABLE:
+    if assembler_seq is not None and OASM_AVAILABLE:
         print("🔧 Generating actual RTMQ assembly...")
         try:
             for i, call in enumerate(calls):
                 func = OASM_FUNCTION_MAP.get(call.dsl_func)
                 if func is None:
                     print(f"Error: OASM function '{call.dsl_func.name}' not found in map.")
-                    return False, seq
+                    return False, assembler_seq
                 
                 args_str = ", ".join(map(str, call.args))
-                kwargs_str = ", ".join(f"{k}={v}" for k, v in call.kwargs.items())
+                kwargs_str = ", ".join(f"{k}={v}" for k, v in call.kwargs.items()) if call.kwargs else ""
                 params_str = ", ".join(filter(None, [args_str, kwargs_str]))
                 print(f"[{i+1:02d}] Board '{call.adr.value}': Calling {func.__name__}({params_str})")
                 
-                seq(call.adr.value, func, *call.args, **call.kwargs)
+                if call.kwargs:
+                    assembler_seq(call.adr.value, func, *call.args, **call.kwargs)
+                else:
+                    assembler_seq(call.adr.value, func, *call.args)
             
             board_names = set(call.adr.value for call in calls)
             for board_name in board_names:
                 print(f"\n📋 Generated RTMQ assembly for {board_name}:")
                 try:
-                    asm_lines = disassembler(core=C_RWG)(seq.asm[board_name])
-                    for line in asm_lines:
-                        print(f"   {line}")
+                    if OASM_AVAILABLE:
+                        asm_lines = disassembler(core=C_RWG)(assembler_seq.asm[board_name])
+                        for line in asm_lines:
+                            print(f"   {line}")
+                    else:
+                        print(f"   OASM not available for disassembly")
                 except KeyError:
                     print(f"   No assembly generated for {board_name}")
                 except Exception as e:
                     print(f"   Assembly generation failed: {e}")
             
             print("\n--- OASM Execution Finished ---")
-            return True, seq
+            return True, assembler_seq
             
         except Exception as e:
             import traceback
-            print(f"❌ OASM execution with seq failed: {e}")
+            print(f"❌ OASM execution with assembler_seq failed: {e}")
             traceback.print_exc()
-            return False, seq
+            return False, assembler_seq
     else:
-        print("⚠️  OASM modules not available or no seq object provided, falling back to mock execution...")
+        print("⚠️  OASM modules not available or no assembler_seq provided, falling back to mock execution...")
         success = _execute_oasm_calls_mock(calls)
         return success, None
 
@@ -425,11 +613,14 @@ def _execute_oasm_calls_mock(calls: List[OASMCall]) -> bool:
                 return False
             
             args_str = ", ".join(map(str, call.args))
-            kwargs_str = ", ".join(f"{k}={v}" for k, v in call.kwargs.items())
+            kwargs_str = ", ".join(f"{k}={v}" for k, v in call.kwargs.items()) if call.kwargs else ""
             params_str = ", ".join(filter(None, [args_str, kwargs_str]))
             print(f"[{i+1:02d}] Board '{call.adr.value}': Calling {func.__name__}({params_str})")
             
-            func(*call.args, **call.kwargs)
+            if call.kwargs:
+                func(*call.args, **call.kwargs)
+            else:
+                func(*call.args)
             
         return True
     except Exception as e:

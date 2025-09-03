@@ -6,7 +6,7 @@ when executing compiled sequences on the hardware.
 """
 # Import actual OASM functions
 from oasm.rtmq2 import sfs, amk, wait
-from oasm.dev.rwg import fte, rwg
+from oasm.dev.rwg import fte, rwg, sbg, pdm
 
 from ..types.rwg import WaveformParams
 from .mask_utils import binary_to_rtmq_mask
@@ -91,23 +91,38 @@ def rwg_initialize_port(rf_port: int, carrier_mhz: float):
     # User implementation will call rwg.rst_cic() and rwg.carrier()
     pass
 
-def rwg_rf_switch(rf_mask: int, on: bool):
-    """Placeholder to control the RF switch."""
-    print(f"[DSL Placeholder] rwg_rf_switch(rf_mask={rf_mask:04b}, on={on})")
-    # User implementation will call pdm.source()
-    pass
+def rwg_rf_switch(ch_mask: int, state_mask: int):
+    """Control RF switch via PDM register.
+    
+    Args:
+        ch_mask: Channel mask indicating which RF ports to affect (binary format, e.g., 0b0101)
+        state_mask: State mask indicating RF switch states for selected channels (binary format, e.g., 0b0001)
+                   0 = RF enabled (from SBGs), 1 = RF disabled (tied to 0)
+    """
+    # Generate one AMK instruction per affected RF port
+    for rf_port in range(4):  # RF0 to RF3
+        if ch_mask & (1 << rf_port):  # This RF port is affected
+            rf_state = 1 if (state_mask & (1 << rf_port)) else 0
+            
+            # Each RF port uses 3-bit field in PDM register: RF0=bits 2:0, RF1=bits 6:4, etc.
+            # Use 7 (0b111) to mask the complete 3-bit field
+            rtmq_mask = f"7.{rf_port * 2}"      # 7.0, 7.2, 7.4, 7.6
+            rtmq_value = f"{rf_state}.{rf_port * 2}"  # rf_state at same position
+            
+            amk('PDM', rtmq_mask, rtmq_value)
+            
+    print(f"RF_SWITCH - ch_mask=0b{ch_mask:04b}, state_mask=0b{state_mask:04b}")
+    print(f"  -> Affected RF ports: {[i for i in range(4) if ch_mask & (1 << i)]}")
 
 def rwg_load_waveform(params: WaveformParams):
-    """Placeholder to load waveform parameters for a single SBG."""
-    print(f"[DSL Placeholder] rwg_load_waveform(params={params})")
+    """Load waveform parameters for a single SBG."""
     # User implementation will call rwg.frq() and rwg.amp()
     pha_rld: int = 1 if params.phase_reset else 0
-    fte.cfg(params.sbg_id, 0, 0, pha_rld)
+    fte.cfg(params.sbg_id, 0, 0, pha_rld=pha_rld)
     rwg.frq(None, params.freq_coeffs, params.initial_phase)
     rwg.amp(None, params.amp_coeffs)
 
-def rwg_play(duration_us: float, pud_mask: int, iou_mask: int):
-    """Placeholder to trigger the waveform playback."""
-    print(f"[DSL Placeholder] rwg_play(duration_us={duration_us}, pud_mask={pud_mask:04b}, iou_mask={iou_mask:04b})")
-    # User implementation will call rwg.play()
-    pass
+def rwg_play(pud_mask: int, iou_mask: int):
+    """Trigger the waveform playback."""
+    sbg.ctrl(iou=iou_mask, pud=pud_mask, mrk=0)
+

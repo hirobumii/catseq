@@ -640,15 +640,15 @@ def _pass3_check_constraints(events_by_board: Dict[OASMAddress, List[LogicalEven
         for adr, events in events_by_board.items():
             for event in events:
                 if event.operation.operation_type == OperationType.RWG_INIT:
-                    if event.timestamp_cycles != 0:
+                    # In a multi-board context, RWG_INIT must occur within epoch 0.
+                    if event.logical_timestamp.epoch != 0:
                         raise ValueError(
                             f"Multi-board constraint violation: RWG_INIT operation on board {adr.value} "
-                            f"found at t={event.timestamp_cycles} cycles. In multi-board scenarios, "
-                            f"RWG_INIT operations must occur at t=0 (global sync point) due to their "
-                            f"instantaneous nature and hardware initialization requirements."
+                            f"found in epoch {event.logical_timestamp.epoch}. "
+                            f"RWG_INIT is only permitted before the first global sync (in epoch=0)."
                         )
                     else:
-                        print(f"    ✓ RWG_INIT on {adr.value} at t=0: OK")
+                        print(f"    ✓ RWG_INIT on {adr.value} in epoch 0: OK")
     
     # Check pipelining constraints per board  
     for adr, events in events_by_board.items():

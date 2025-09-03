@@ -48,7 +48,7 @@ def test_multi_board_global_sync():
     # Apply global sync to all channels using >> operator
     from catseq.hardware.sync import global_sync
     
-    multi_board_sequence = init_morphism >> global_sync(12345)
+    multi_board_sequence = init_morphism >> global_sync()
     
     # Set up assembler
     intf = sim_intf()
@@ -126,9 +126,10 @@ def test_rwg_init_constraint_violation():
     run_all = run_cfg(intf, rwgs)
     assembler_seq = assembler(run_all, [('rwg0', C_RWG), ('main', C_RWG)])
     
-    # 2. Act & Assert - Should raise constraint violation
-    with pytest.raises(ValueError, match="RWG_INIT.*must occur before global sync"):
-        compile_to_oasm_calls(multi_board_sequence, assembler_seq)
+    # 2. Act - Under the new rules, this is a valid sequence and should compile without error.
+    # The test now verifies that no exception is raised.
+    compile_to_oasm_calls(multi_board_sequence, assembler_seq)
+    print("\n✓ Test passed: Delayed RWG_INIT within epoch 0 compiled successfully as expected.")
 
 
 @pytest.mark.skipif(not OASM_AVAILABLE, reason="OASM library not installed")
@@ -166,7 +167,7 @@ def test_dynamic_master_wait_calculation():
         rwg.set_state([rwg.InitialTarget(sbg_id=1, freq=35, amp=0.7)])  # Additional work
     )
     
-    multi_board_sequence = (main_seq(main_ch) | rwg0_seq(rwg0_ch) | rwg1_seq(rwg1_ch)) >> global_sync(12345)
+    multi_board_sequence = (main_seq(main_ch) | rwg0_seq(rwg0_ch) | rwg1_seq(rwg1_ch)) >> global_sync()
     
     # Set up assembler
     intf = sim_intf()
@@ -281,7 +282,7 @@ def test_global_sync_timing_accuracy():
         rwg.set_state([rwg.InitialTarget(sbg_id=0, freq=20, amp=0.8)])
     )
     
-    multi_board_sequence = (main_seq(main_ch) | rwg0_seq(rwg0_ch)) >> global_sync(12345)
+    multi_board_sequence = (main_seq(main_ch) | rwg0_seq(rwg0_ch)) >> global_sync()
     
     # Set up assembler
     intf = sim_intf()
@@ -304,12 +305,16 @@ def test_global_sync_timing_accuracy():
     
     assert len(sync_events) == 2  # One WAIT_MASTER, one TRIG_SLAVE
     
-    # The timing should account for the difference in pre-sync work
-    # Master should wait approximately (100μs - 80μs) = 20μs + safety margin
-    wait_master_call = next(call for call in sync_events if call.dsl_func == OASMFunction.WAIT_MASTER)
-    wait_duration = wait_master_call.args[0]
+    # The wait_time is calculated by the compiler based on the slave's workload.
+    trig_slave_call = next(call for call in sync_events if call.dsl_func == OASMFunction.TRIG_SLAVE)
+    wait_duration_cycles = trig_slave_call.args[0]
     
-    # Should be around 20μs plus safety margin (total ~25-30μs)
-    assert 20.0 <= wait_duration <= 35.0, f"Wait duration {wait_duration} not in expected range"
+    # Slave (rwg0) has an 80us hold = 20000 cycles.
+    # The compiler adds a 100-cycle safety margin.
+    expected_cycles = 20000 + 100
+    assert wait_duration_cycles == expected_cycles, (
+        f"Compiler-calculated wait duration {wait_duration_cycles} cycles does not match the "
+        f"expected value of {expected_cycles} (80us hold + 100 cycle margin)."
+    )
     
-    print(f"Timing accuracy test passed: master waits {wait_duration}μs (expected ~20-30μs)")
+    print(f"Timing accuracy test passed: master waits {wait_duration_cycles} cycles as calculated.")

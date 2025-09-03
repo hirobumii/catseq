@@ -30,22 +30,22 @@ def ttl_init(channel: Channel, initial_state: TTLState = TTLState.OFF) -> Morphi
     )
     return from_atomic(op)
 
-def ttl_on(channel: Channel) -> Morphism:
+def ttl_on(channel: Channel, start_state: State = TTLState.OFF) -> Morphism:
     """Creates a TTL ON morphism."""
     op = AtomicMorphism(
         channel=channel,
-        start_state=TTLState.OFF,
+        start_state=start_state,
         end_state=TTLState.ON,
         duration_cycles=1,
         operation_type=OperationType.TTL_ON
     )
     return from_atomic(op)
 
-def ttl_off(channel: Channel) -> Morphism:
+def ttl_off(channel: Channel, start_state: State = TTLState.ON) -> Morphism:
     """Creates a TTL OFF morphism."""
     op = AtomicMorphism(
         channel=channel,
-        start_state=TTLState.ON,
+        start_state=start_state,
         end_state=TTLState.OFF,
         duration_cycles=1,
         operation_type=OperationType.TTL_OFF

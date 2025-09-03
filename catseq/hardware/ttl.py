@@ -5,10 +5,9 @@ This module provides TTL-specific hardware abstractions and utilities
 for working with TTL devices in the CatSeq framework.
 """
 
-from ..types.common import Channel
+from ..types.common import Channel, State
 from ..atomic import ttl_init, ttl_on, ttl_off
-from ..morphism import identity
-from ..morphism import Morphism
+from ..morphism import identity, Morphism, MorphismDef
 from ..time_utils import us_to_cycles, cycles_to_us
 
 
@@ -74,13 +73,32 @@ def set_low(channel: Channel) -> Morphism:
     return ttl_off(channel)
 
 
-def hold(duration_us: float) -> Morphism:
-    """创建等待操作
-    
-    Args:
-        duration_us: 等待时长（微秒）
-        
-    Returns:
-        等待 Morphism
+def hold(duration_us: float) -> MorphismDef:
+    """Creates a definition for a hold (wait) operation."""
+
+    def generator(channel: Channel, start_state: State) -> Morphism:
+        return identity(duration_us)
+
+    return MorphismDef(generator)
+
+
+def on() -> MorphismDef:
+    """Creates a TTL ON morphism definition.
+    The start state will be inferred during composition.
     """
-    return identity(duration_us)
+    def generator(channel: Channel, start_state: State) -> Morphism:
+        # This generator will be executed later.
+        # It calls the low-level atomic function, passing the inferred start_state.
+        return ttl_on(channel, start_state=start_state)
+    return MorphismDef(generator)
+
+
+def off() -> MorphismDef:
+    """Creates a TTL OFF morphism definition.
+    The start state will be inferred during composition.
+    """
+    def generator(channel: Channel, start_state: State) -> Morphism:
+        # This generator will be executed later.
+        # It calls the low-level atomic function, passing the inferred start_state.
+        return ttl_off(channel, start_state=start_state)
+    return MorphismDef(generator)

@@ -8,9 +8,10 @@ from catseq.types.common import (
     Channel,
     ChannelType,
     OperationType,
+    State,
 )
 from catseq.types.ttl import TTLState
-from catseq.atomic import ttl_on, ttl_off
+from catseq.hardware import ttl
 from catseq.morphism import identity
 
 # Define boards and channels for testing
@@ -24,8 +25,8 @@ def test_sequential_composition_with_identity():
     operation to all lanes of a morphism.
     """
     # Arrange
-    m1 = ttl_on(CH0)
-    id_morphism = identity(10) # 10us wait
+    m1 = ttl.on()(CH0, start_state=TTLState.OFF)
+    id_morphism = identity(10)  # 10us wait
 
     # Act
     m2 = m1 >> id_morphism
@@ -41,7 +42,7 @@ def test_sequential_composition_with_identity():
     last_op = m2.lanes[CH0].operations[1]
     assert last_op.operation_type == OperationType.IDENTITY
     assert last_op.duration_cycles == identity_duration
-    assert last_op.start_state == TTLState.ON # State is correctly inferred
+    assert last_op.start_state == TTLState.ON  # State is correctly inferred
     assert last_op.end_state == TTLState.ON
 
 def test_parallel_composition_pads_shorter_morphism():
@@ -50,15 +51,18 @@ def test_parallel_composition_pads_shorter_morphism():
     an identity operation to match the length of the longer one.
     """
     # Arrange
-    m_short = ttl_on(CH0) # duration is very short
-    m_long = ttl_on(CH1) >> identity(20) # duration is much longer
+    m_short = ttl.on()(CH0, start_state=TTLState.OFF)
+    m_long = ttl.on()(CH1, start_state=TTLState.OFF) >> identity(20)
 
     # Act
     m_parallel = m_short | m_long
 
     # Assert
     # 1. Check that durations are now equal
-    assert m_parallel.lanes[CH0].total_duration_cycles == m_parallel.lanes[CH1].total_duration_cycles
+    assert (
+        m_parallel.lanes[CH0].total_duration_cycles
+        == m_parallel.lanes[CH1].total_duration_cycles
+    )
     assert m_parallel.total_duration_cycles == m_long.total_duration_cycles
 
     # 2. Check that the shorter lane was padded
@@ -66,7 +70,7 @@ def test_parallel_composition_pads_shorter_morphism():
     assert len(ch0_lane.operations) == 2
     padding_op = ch0_lane.operations[1]
     assert padding_op.operation_type == OperationType.IDENTITY
-    assert padding_op.start_state == TTLState.ON # State inherited from ttl_on
+    assert padding_op.start_state == TTLState.ON  # State inherited from ttl_on
 
 def test_complex_composition_scenario_as_specified_by_user():
     """
@@ -79,7 +83,11 @@ def test_complex_composition_scenario_as_specified_by_user():
     # A local helper function for creating a clear pulse definition for this test
     def pulse(channel: Channel, duration_us: float) -> Morphism:
         """A simple pulse defined as ON -> identity(duration) -> OFF."""
-        return ttl_on(channel) >> identity(duration_us) >> ttl_off(channel)
+        return (
+            ttl.on()(channel, start_state=TTLState.OFF)
+            >> identity(duration_us)
+            >> ttl.off()(channel, start_state=TTLState.ON)
+        )
 
     # Part 1: Parallel pulses of different lengths.
     # The '|' operator will align them by padding the shorter pulse (CH0).
@@ -111,7 +119,7 @@ def test_complex_composition_scenario_as_specified_by_user():
     # CH0 lane: [on, id(10), off, pad(5)] >> id(10) @ [on, id(15), off]
     # Expected ops: 4 + 1 + 3 = 8
     assert len(m_final.lanes[CH0].operations) == 8
-    
+
     # CH1 lane: [on, id(15), off] >> id(10) @ [on, id(15), off]
     # Expected ops: 3 + 1 + 3 = 7
     assert len(m_final.lanes[CH1].operations) == 7
@@ -139,7 +147,7 @@ def test_strict_composition_raises_error_on_state_mismatch(mocker):
 
     # Morphism 2, starting in state OFF (which is a mismatch)
     mock_op2 = mocker.Mock(spec=AtomicMorphism)
-    mock_op2.operation_type = OperationType.TTL_ON # Type doesn't matter
+    mock_op2.operation_type = OperationType.TTL_ON  # Type doesn't matter
     mock_op2.start_state = TTLState.OFF
     mock_op2.duration_cycles = 1
     lane2 = Lane(operations=(mock_op2,))
@@ -148,3 +156,48 @@ def test_strict_composition_raises_error_on_state_mismatch(mocker):
     # Act & Assert
     with pytest.raises(ValueError, match="State mismatch for channel"):
         _ = m1 @ m2
+
+def test_morphism_sequence_state_propagation():
+    """
+    Tests that state is correctly propagated through a chained sequence
+    of MorphismDefs (op1 >> op2 >> op3). This specifically tests the
+    state inference logic within MorphismSequence.
+    """
+    # 1. Arrange
+    # Define a sequence of operations that will clearly show state changes.
+    # The sequence is OFF -> ON -> OFF -> ON.
+    op1 = ttl.on()
+    op2 = ttl.off()
+    op3 = ttl.on()
+    sequence = op1 >> op2 >> op3
+
+    # 2. Act
+    # Apply the sequence to a channel starting in the OFF state.
+    morphism = sequence(CH0, start_state=TTLState.OFF)
+
+    # 3. Assert
+    # Check the lane to ensure each atomic operation has the correct
+    # start and end states, proving that the state was propagated correctly
+    # from one step to the next.
+    ops = morphism.lanes[CH0].operations
+
+    # There should be 3 operations in the sequence.
+    assert len(ops) == 3, "The final morphism should contain 3 operations."
+
+    # Check op1: ttl_on()
+    # Should transition from the initial state OFF to ON.
+    assert ops[0].operation_type == OperationType.TTL_ON
+    assert ops[0].start_state == TTLState.OFF, "Op1 should start OFF"
+    assert ops[0].end_state == TTLState.ON, "Op1 should end ON"
+
+    # Check op2: ttl_off()
+    # Should transition from op1's end state (ON) to OFF.
+    assert ops[1].operation_type == OperationType.TTL_OFF
+    assert ops[1].start_state == TTLState.ON, "Op2 should start ON"
+    assert ops[1].end_state == TTLState.OFF, "Op2 should end OFF"
+
+    # Check op3: ttl_on()
+    # Should transition from op2's end state (OFF) to ON.
+    assert ops[2].operation_type == OperationType.TTL_ON
+    assert ops[2].start_state == TTLState.OFF, "Op3 should start OFF"
+    assert ops[2].end_state == TTLState.ON, "Op3 should end ON"

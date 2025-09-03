@@ -329,6 +329,11 @@ def _pass0_extract_events(morphism) -> Dict[OASMAddress, List[LogicalEvent]]:
 
         physical_lane = merge_board_lanes(board, board_lanes)
         for pop in physical_lane.operations:
+            # Identity operations are purely for timing shifts during morphism
+            # composition. They do not translate to physical events.
+            if pop.operation.operation_type == OperationType.IDENTITY:
+                continue
+
             event = LogicalEvent(
                 timestamp_cycles=pop.timestamp_cycles,
                 operation=pop.operation
@@ -559,7 +564,7 @@ def _analyze_operation_cost(event: LogicalEvent, adr: OASMAddress, assembler_seq
 
 def _calculate_pre_sync_duration_up_to(board_events: List[LogicalEvent], sync_timestamp: int) -> int:
     """
-    Calculate the total execution time for operations that occur before the sync timestamp.
+    Calculate the total execution time for operations that occur at or before the sync timestamp.
     This is used to determine how long the master board should wait before synchronization.
     
     Args:
@@ -569,12 +574,12 @@ def _calculate_pre_sync_duration_up_to(board_events: List[LogicalEvent], sync_ti
     Returns:
         Total duration in cycles for all pre-sync operations
     """
-    # Find the latest timestamp before sync_timestamp
+    # Find the completion time of the latest event that starts at or before sync_timestamp
     max_pre_sync_time = 0
     for event in board_events:
-        if event.timestamp_cycles < sync_timestamp:
-            # This event happens before sync, include its completion time
-            event_end_time = event.timestamp_cycles + event.cost_cycles
+        if event.timestamp_cycles <= sync_timestamp:
+            # This event is part of the pre-sync sequence, include its completion time
+            event_end_time = event.timestamp_cycles + event.operation.duration_cycles
             max_pre_sync_time = max(max_pre_sync_time, event_end_time)
     
     return max_pre_sync_time
@@ -617,6 +622,13 @@ def _calculate_master_wait_time(events_by_board: Dict[OASMAddress, List[LogicalE
     
     for adr, events in events_by_board.items():
         if adr != OASMAddress.MAIN:  # Only consider slave boards
+            # --- DEBUGGING START ---
+            print(f"--- Events for slave board {adr.value} before duration calculation (sync_ts={sync_timestamp}): ---")
+            for i, event in enumerate(events):
+                if event.timestamp_cycles <= sync_timestamp:
+                    print(f"  - Event {i}: ts={event.timestamp_cycles}, op={event.operation.operation_type.name}, dur={event.operation.duration_cycles}")
+            print("--- End of event list ---")
+            # --- DEBUGGING END ---
             slave_duration = _calculate_pre_sync_duration_up_to(events, sync_timestamp)
             max_slave_duration = max(max_slave_duration, slave_duration)
             print(f"    Slave {adr.value} pre-sync duration: {slave_duration} cycles")
@@ -864,34 +876,35 @@ def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEv
         optimized_events = _calculate_optimal_schedule(events, pipeline_pairs)
         print(f"  Board {adr.value}: Applied optimization to {len(optimized_events)} events")
 
-        previous_ts = 0
-
-        # Use optimized events for final scheduling
-        # Sort by new timestamps and group by timestamp
-        optimized_events.sort(key=lambda e: e.timestamp_cycles)
-        sorted_timestamps = sorted(list(set(e.timestamp_cycles for e in optimized_events)))
+        # Sort all events by their start time to build a linear timeline.
+        sorted_events = sorted(optimized_events, key=lambda e: e.timestamp_cycles)
         
-        events_by_ts: Dict[int, List[LogicalEvent]] = {}
-        for event in optimized_events:
-            if event.timestamp_cycles not in events_by_ts:
-                events_by_ts[event.timestamp_cycles] = []
-            events_by_ts[event.timestamp_cycles].append(event)
-
-        for i, timestamp in enumerate(sorted_timestamps):
-            # Calculate wait time to next timestamp
-            wait_cycles = timestamp - previous_ts
-            
+        last_op_end_time = 0
+        for event in sorted_events:
+            # 1. Calculate wait time needed BEFORE this operation starts.
+            wait_cycles = event.timestamp_cycles - last_op_end_time
             if wait_cycles < 0:
-                raise ValueError(f"Negative wait time calculated at timestamp {timestamp}.")
-            
+                # This can happen if optimizations reschedule events to overlap.
+                # The scheduler should prevent this, but we add a safeguard.
+                print(f"Warning: Negative wait time ({wait_cycles}c) calculated for event "
+                      f"{event.operation.operation_type.name} at {event.timestamp_cycles}c. "
+                      f"This may indicate an issue in the pipelining optimization logic.")
+                wait_cycles = 0
+
             if wait_cycles > 0:
                 board_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.WAIT_US, args=(cycles_to_us(wait_cycles),)))
             
-            # Append the pre-translated OASM calls for this timestamp
-            for event in events_by_ts[timestamp]:
-                board_calls.extend(event.oasm_calls)
-
-            previous_ts = timestamp
+            # 2. Add the event's own OASM calls.
+            board_calls.extend(event.oasm_calls)
+            
+            # 3. Update the "wall clock" for the next iteration.
+            # The wall clock advances to the time when the OASM commands for this event
+            # have finished executing.
+            current_op_finish_time = event.timestamp_cycles + event.cost_cycles
+            
+            # The next operation's wait can only start after the command processor is free
+            # from the latest-finishing concurrent command.
+            last_op_end_time = max(last_op_end_time, current_op_finish_time)
 
         calls_by_board[adr] = board_calls
 

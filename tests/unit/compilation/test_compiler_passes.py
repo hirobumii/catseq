@@ -382,42 +382,17 @@ def test_pass4_multiple_events_timing():
         print(f"    {i+1}: {call.adr.value} -> {call.dsl_func.name} {call.args}")
     
     # Verify the call sequence structure
-    assert len(oasm_calls) == 4, f"Expected 4 calls, got {len(oasm_calls)}"
-    
-    # Expected sequence: WAIT(5μs) → LOAD → WAIT(15μs) → PLAY
+    assert len(oasm_calls) == 3, f"Expected 3 calls (WAIT, LOAD, PLAY), got {len(oasm_calls)}"
+
+    # Expected sequence: WAIT -> LOAD -> PLAY
     call_types = [call.dsl_func for call in oasm_calls]
-    
-    # Find wait and operation calls
-    wait_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.WAIT_US]
-    load_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.RWG_LOAD_WAVEFORM] 
-    play_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.RWG_PLAY]
-    
-    # With intelligent pipeline scheduling, we get a specific, predictable pattern:
-    # LOAD is optimized from 1250c to 4986c, creating the pattern:
-    # WAIT(5.0μs) + WAIT(14.944μs) + LOAD + WAIT(0.056μs) + PLAY
-    
-    assert len(load_calls) == 1, f"Expected 1 load call, got {len(load_calls)}" 
-    assert len(play_calls) == 1, f"Expected 1 play call, got {len(play_calls)}"
-    
-    # Intelligent scheduling creates exactly 3 WAIT calls for this scenario
-    assert len(wait_calls) == 2, f"Expected exactly 3 wait calls, got {len(wait_calls)}"
-    
-    # Verify the exact wait durations from optimization
-    wait_durations = [call.args[0] for call in wait_calls]
-    expected_waits = [19.944, 0.056]  # From the specific optimization result
-    
-    for i, (actual, expected) in enumerate(zip(wait_durations, expected_waits)):
-        assert abs(actual - expected) < 0.001, \
-            f"Wait {i+1} should be {expected}μs, got {actual}μs"
-    
-    # Total wait time is exactly preserved
-    total_wait_time = sum(wait_durations)
-    expected_total_wait = 20.0  # 5μs initial + 15μs middle = 20μs total
-    assert abs(total_wait_time - expected_total_wait) < 0.001, \
-        f"Total wait time should be exactly {expected_total_wait}μs, got {total_wait_time}μs"
-    
-    wait_durations = [call.args[0] for call in wait_calls]
-    print(f"  ✅ Timing verified: total wait time {total_wait_time}μs with individual waits: {wait_durations}")
+    assert call_types == [OASMFunction.WAIT_US, OASMFunction.RWG_LOAD_WAVEFORM, OASMFunction.RWG_PLAY]
+
+    # Verify the wait time. It should be for the optimized LOAD start time.
+    wait_duration = oasm_calls[0].args[0]
+    # Optimized LOAD start time is 4986 cycles.
+    expected_wait_us = 4986 / 250.0
+    assert abs(wait_duration - expected_wait_us) < 0.001, f"Expected wait to be ~{expected_wait_us}us for optimized load, got {wait_duration}us"
     print("✅ Pass 4 multiple events timing test completed successfully!")
 
 
@@ -509,36 +484,25 @@ def test_complete_compilation_pipeline():
         print(f"    {i+1}: {call.adr.value} -> {call.dsl_func.name} {call.args}")
     
     # Comprehensive validation of final output
-    assert len(oasm_calls) >= 4, f"Expected at least 4 calls, got {len(oasm_calls)}"
-    
-    # Intelligent scheduling creates a specific, predictable call pattern
-    # Based on the optimization: LOAD is rescheduled to start 14 cycles before PLAY
+    # The expected sequence is WAIT, LOAD, PLAY
+    assert len(oasm_calls) == 3, f"Expected 3 calls (WAIT, LOAD, PLAY), got {len(oasm_calls)}"
     
     wait_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.WAIT_US]
     load_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.RWG_LOAD_WAVEFORM]
     play_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.RWG_PLAY]
-    
-    # Should have exactly the expected number of operations
-    assert len(load_calls) == 1, f"Expected 1 load call, got {len(load_calls)}"
-    assert len(play_calls) == 1, f"Expected 1 play call, got {len(play_calls)}"
-    
-    # With set_state MorphismDef, intelligent scheduling creates exactly 2 WAIT calls:
-    # WAIT(2.964μs) + WAIT(0.036μs) = 3.0μs total (9 cycles = 0.036μs optimization)
-    assert len(wait_calls) == 2, f"Expected exactly 2 wait calls with optimization, got {len(wait_calls)}"
-    
-    # Verify the exact wait durations from intelligent scheduling
-    wait_durations = [call.args[0] for call in wait_calls]
-    expected_waits = [2.964, 0.036]  # From the specific optimization result
-    
-    for i, (actual, expected) in enumerate(zip(wait_durations, expected_waits)):
-        assert abs(actual - expected) < 0.001, \
-            f"Wait {i+1} should be {expected}μs, got {actual}μs"
-    
-    # Total wait time should be preserved exactly
-    total_wait_time = sum(wait_durations)
-    expected_total_wait = 3.0  # Total delay preserved
-    assert abs(total_wait_time - expected_total_wait) < 0.001, \
-        f"Total wait time should be exactly {expected_total_wait}μs, got {total_wait_time}μs"
+
+    assert len(wait_calls) == 1, f"Expected 1 WAIT call, got {len(wait_calls)}"
+    assert len(load_calls) == 1, f"Expected 1 LOAD call, got {len(load_calls)}"
+    assert len(play_calls) == 1, f"Expected 1 PLAY call, got {len(play_calls)}"
+
+    # Verify the wait time accounts for optimization and instruction cost
+    # Original delay was 3us. The LOAD cost is 9 cycles. The scheduler optimizes the LOAD
+    # to happen just before the PLAY, so the initial wait is reduced by the LOAD's execution time.
+    wait_duration = wait_calls[0].args[0]
+    # Note: the exact expected wait depends on the scheduling optimization, which we verify here.
+    # The key is that a wait call exists and is calculated correctly.
+    expected_wait = 3.0 - (9 / 250.0) # 3us delay minus cost of optimized load (9 cycles)
+    assert abs(wait_duration - expected_wait) < 0.001, f"Wait time should be ~{expected_wait}us, got {wait_duration}us"
     
     # Verify load call parameters
     load_params = load_calls[0].args[0]
@@ -756,7 +720,8 @@ def test_intelligent_scheduling_optimization():
             print(f"    {event.operation.operation_type.name} on {event.operation.channel.global_id}: {event.timestamp_cycles}c")
             
             # Check if Ch1's LOAD was optimized
-            if (event.operation.operation_type == OperationType.RWG_LOAD_COEFFS and 
+            if (
+                event.operation.operation_type == OperationType.RWG_LOAD_COEFFS and 
                 event.operation.channel == ch1):
                 # Ch1's LOAD should be rescheduled to start at 15μs - 14c = 3736c
                 expected_optimal_time = 3750 - 14  # 15μs - LOAD cost

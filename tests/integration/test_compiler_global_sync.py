@@ -266,9 +266,10 @@ def test_global_sync_timing_accuracy():
     trig_slave_call = next(call for call in sync_events if call.dsl_func == OASMFunction.TRIG_SLAVE)
     wait_duration_cycles = trig_slave_call.args[0]
     
-    # The longest lane is on the main board (100us), so the sync happens at t=100us.
-    # The slave board's lane is padded to 100us, so its pre-sync duration is 100us (25000 cycles).
-    expected_cycles = 25000 + 100
+    # The longest lane is on the main board (100us). The slave board's operations
+    # extend to 25250 cycles before padding. The master must wait for this duration.
+    # Adding the 100-cycle safety margin gives the expected total wait time.
+    expected_cycles = 25250 + 100
     assert wait_duration_cycles == expected_cycles, (
         f"Compiler-calculated wait duration {wait_duration_cycles} cycles does not match the "
         f"expected value of {expected_cycles} (100us sequence + 100 cycle margin)."

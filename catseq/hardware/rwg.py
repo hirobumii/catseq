@@ -49,7 +49,7 @@ def initialize(carrier_freq: float) -> MorphismDef:
                     f"RWG initialize must start from Uninitialized or Ready, got {type(start_state)}"
                 )
         # Composite operation: board initialization followed by carrier setting
-        return rwg_board_init(channel) >> rwg_set_carrier(channel, carrier_freq)
+        return rwg_board_init(channel) >> identity(1.0) >> rwg_set_carrier(channel, carrier_freq)
 
     return MorphismDef(generator)
 

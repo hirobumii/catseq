@@ -411,8 +411,10 @@ def _pass1_translate_to_oasm(events_by_board: Dict[OASMAddress, List[LogicalEven
                         event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_SET_CARRIER, args=(op.channel.local_id, op.end_state.carrier_freq)))
                     
                     case OperationType.RWG_RF_SWITCH:
-                        on_mask = (1 << op.channel.local_id) if op.end_state.rf_on else 0
-                        event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_RF_SWITCH, args=(on_mask,)))
+                        ch_mask = (1 << op.channel.local_id)
+                        # state_mask: 0 = RF enabled, 1 = RF disabled.
+                        state_mask = 0 if op.end_state.rf_on else ch_mask
+                        event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_RF_SWITCH, args=(ch_mask, state_mask)))
 
                     case OperationType.SYNC_MASTER:
                         # Master synchronization: trigger all slaves after waiting

@@ -84,9 +84,8 @@ def set_state(targets: List[InitialTarget]) -> MorphismDef:
             StaticWaveform(sbg_id=t.sbg_id, freq=t.freq, amp=t.amp, phase=0.0)
             for t in targets
         ]
-        rf_should_be_on = any(abs(t.amp) > 1e-9 for t in targets)
         end_state = RWGActive(
-            carrier_freq=start_state.carrier_freq, rf_on=rf_should_be_on, waveforms=tuple(end_waveforms)
+            carrier_freq=start_state.carrier_freq, rf_on=start_state.rf_on, waveforms=tuple(end_waveforms)
         )
 
         update_morphism = rwg_update_params(channel, 0.0, instruction_state, end_state)
@@ -178,10 +177,6 @@ def _create_rf_switch_morphism(on: bool) -> MorphismDef:
     def generator(channel: Channel, start_state: State) -> Morphism:
         if not isinstance(start_state, (RWGReady, RWGActive)):
             raise TypeError(f"RF switch control must start from RWGReady or RWGActive, not {type(start_state)}")
-
-        if start_state.rf_on == on:
-            # If the state is already correct, do nothing (return identity)
-            return identity(0)
 
         # Reconstruct the end state with the toggled rf_on flag
         if isinstance(start_state, RWGReady):

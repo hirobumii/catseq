@@ -75,6 +75,10 @@ class Morphism:
 
         特殊处理无通道的 IdentityMorphism，将其追加到所有 lane。
         """
+        # Allow composing with raw AtomicMorphisms for convenience
+        if isinstance(other, AtomicMorphism):
+            other = from_atomic(other)
+
         # Case 1: Morphism >> channelless IdentityMorphism
         if isinstance(other, Morphism) and not other.lanes and other.total_duration_cycles > 0:
             if not self.lanes:

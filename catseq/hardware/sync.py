@@ -6,12 +6,9 @@ from ..morphism import MorphismDef, from_atomic
 from ..types import Channel, State, AtomicMorphism, OperationType
 
 
-def global_sync(sync_code: int) -> MorphismDef:
+def global_sync() -> MorphismDef:
     """创建全局同步操作，根据板卡类型自动选择 master/slave 角色
     
-    Args:
-        sync_code: 同步代码，用于识别同步组
-        
     Returns:
         MorphismDef: 可以应用到单个或多个通道的同步操作定义
     """

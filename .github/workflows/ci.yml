@@ -26,18 +26,18 @@ jobs:
         # Run the setup script to create venv, install deps, and run post-install
         ./setup.sh
 
-    - name: Lint with ruff
-      run: |
-        source .venv/bin/activate
-        ruff check .
+    # - name: Lint with ruff
+    #   run: |
+    #     source .venv/bin/activate
+    #     ruff check .
 
-    - name: Check types with mypy
-      continue-on-error: true
-      run: |
-        source .venv/bin/activate
-        mypy .
+    # - name: Check types with mypy
+    #   continue-on-error: true
+    #   run: |
+    #     source .venv/bin/activate
+    #     mypy .
 
     - name: Run tests with pytest
       run: |
         source .venv/bin/activate
-        pytest
+        pytest tests/

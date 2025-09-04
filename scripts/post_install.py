@@ -26,7 +26,7 @@ def find_catseq_extensions() -> Optional[Path]:
     """Find the oasm_extensions directory in the project."""
     # This script assumes it is run from the project root
     project_root = Path(__file__).parent.parent
-    extensions_path = project_root / "catseq" / "oasm_extensions"
+    extensions_path = project_root / "oasm_extensions"
     
     if extensions_path.exists():
         return extensions_path

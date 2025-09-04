@@ -26,6 +26,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "numpy" },
+    { name = "oasm-dev" },
 ]
 
 [package.optional-dependencies]
@@ -46,6 +47,7 @@ dev = [
 requires-dist = [
     { name = "mypy", marker = "extra == 'dev'" },
     { name = "numpy" },
+    { name = "oasm-dev" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-mock", marker = "extra == 'dev'" },
     { name = "ruff", marker = "extra == 'dev'" },
@@ -378,6 +380,40 @@ wheels = [
 ]
 
 [[package]]
+name = "oasm"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1b/3e/9c281dea005c91c9adc1c74644344077d43204903868634e8a7e143af68d/oasm-0.1.1.tar.gz", hash = "sha256:3d843b06e488e6ff301a9ce427a4de0161153599caf8f9c43691c3a40099b34f", size = 6858, upload-time = "2025-08-21T16:40:22.9Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3a/44/b7dd668aa2ce694201ea324272a13677cd185dcd6e7a535980ebd322f8df/oasm-0.1.1-py3-none-any.whl", hash = "sha256:3bab19af71c28b5071d6ff5aedc71e324c75f8ba7cef80f9bda4aced627b2913", size = 6416, upload-time = "2025-08-21T16:40:21.689Z" },
+]
+
+[[package]]
+name = "oasm-dev"
+version = "0.1.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "oasm-rtmq2" },
+    { name = "pyserial" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7b/72/1bfc2ce08df867c76099a0d7ca3fe7f2a9adf68b6957840a4730fd293932/oasm_dev-0.1.8.tar.gz", hash = "sha256:9f476e9a206d38c0aca23cb6a8f2db9707e7b6c257055e6094ec58fee4523a1a", size = 6640, upload-time = "2025-08-26T06:29:55.231Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/03/17/e6985c3914ef5438aa25dc17be9bfe4f064e106d8c356cf747f7dd35c4df/oasm_dev-0.1.8-py3-none-any.whl", hash = "sha256:bc15444ce8ee47b2d059ed9b69e7b80c9a8a86b17250ae88a3e7fc4f543a2c42", size = 6542, upload-time = "2025-08-26T06:29:54.297Z" },
+]
+
+[[package]]
+name = "oasm-rtmq2"
+version = "0.1.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "oasm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/00/cb/932f717459e86f988fd0f16051710534cda143f145be96baec7a06754bab/oasm_rtmq2-0.1.5.tar.gz", hash = "sha256:d7e0ab6ce6c3a20a207ef543590bdd241fad4c02d58a6f72e34799c3c9724a53", size = 22026, upload-time = "2025-08-25T08:07:40.3Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1e/da/d891ab6dd75bf35116248a249a6321dc768970d7b05781f04bf47aa50e54/oasm_rtmq2-0.1.5-py3-none-any.whl", hash = "sha256:fd54321b93cbf2ed164721d8266c53f580181328a27aca29374cfbb46e95df3b", size = 22356, upload-time = "2025-08-25T08:07:39.002Z" },
+]
+
+[[package]]
 name = "packaging"
 version = "25.0"
 source = { registry = "https://pypi.org/simple" }
@@ -495,6 +531,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/b0/77/a5b8c569bf593b0140bde72ea885a803b82086995367bf2037de0159d924/pygments-2.19.2.tar.gz", hash = "sha256:636cb2477cec7f8952536970bc533bc43743542f70392ae026374600add5b887", size = 4968631, upload-time = "2025-06-21T13:39:12.283Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/21/705964c7812476f378728bdf590ca4b771ec72385c533964653c68e86bdc/pygments-2.19.2-py3-none-any.whl", hash = "sha256:86540386c03d588bb81d44bc3928634ff26449851e99741617ecb9037ee5ec0b", size = 1225217, upload-time = "2025-06-21T13:39:07.939Z" },
+]
+
+[[package]]
+name = "pyserial"
+version = "3.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/7d/ae3f0a63f41e4d2f6cb66a5b57197850f919f59e558159a4dd3a818f5082/pyserial-3.5.tar.gz", hash = "sha256:3c77e014170dfffbd816e6ffc205e9842efb10be9f58ec16d3e8675b4925cddb", size = 159125, upload-time = "2020-11-23T03:59:15.045Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/bc/587a445451b253b285629263eb51c2d8e9bcea4fc97826266d186f96f558/pyserial-3.5-py2.py3-none-any.whl", hash = "sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0", size = 90585, upload-time = "2020-11-23T03:59:13.41Z" },
 ]
 
 [[package]]

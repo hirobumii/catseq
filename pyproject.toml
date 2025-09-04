@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "A Categorical Framework for Hardware Sequence Control"
 requires-python = ">=3.12"
 dependencies = [
-    "numpy"
+    "numpy",
+    "oasm.dev"
 ]
 
 [project.optional-dependencies]
@@ -15,9 +16,7 @@ dev = [
     "mypy"
 ]
 
-[project.scripts]
-catseq-setup = "catseq.setup:post_install"
-catseq-verify = "catseq.setup:verify_installation"
+
 
 [tool.setuptools]
 packages = ["catseq"]

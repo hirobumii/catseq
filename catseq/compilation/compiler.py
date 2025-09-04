@@ -924,39 +924,50 @@ OASM_FUNCTION_MAP: Dict[OASMFunction, Callable] = {
     OASMFunction.RWG_PLAY: rwg_play,
 }
 
-def execute_oasm_calls(calls: List[OASMCall], assembler_seq=None):
+def execute_oasm_calls(calls_by_board: Dict[OASMAddress, List[OASMCall]], assembler_seq=None):
     """执行 OASM 调用序列并生成实际的 RTMQ 汇编代码
     
     Args:
-        calls: List of OASM calls to execute
+        calls_by_board: Dict mapping board addresses to their OASM call lists
         assembler_seq: Pre-initialized OASM assembler sequence. If None, falls back to mock execution.
     """
     print("\n--- Executing OASM Calls ---")
-    if not calls:
+    if not calls_by_board:
         print("No OASM calls to execute.")
         return True, assembler_seq
+    
+    # Count total calls across all boards
+    total_calls = sum(len(calls) for calls in calls_by_board.values())
+    print(f"Processing {total_calls} OASM calls across {len(calls_by_board)} boards")
     
     if assembler_seq is not None and OASM_AVAILABLE:
         print("🔧 Generating actual RTMQ assembly...")
         try:
-            for i, call in enumerate(calls):
-                func = OASM_FUNCTION_MAP.get(call.dsl_func)
-                if func is None:
-                    print(f"Error: OASM function '{call.dsl_func.name}' not found in map.")
-                    return False, assembler_seq
+            call_counter = 0
+            # Process each board separately
+            for board_adr, board_calls in calls_by_board.items():
+                print(f"\n📋 Processing {len(board_calls)} calls for board '{board_adr.value}':")
                 
-                args_str = ", ".join(map(str, call.args))
-                kwargs_str = ", ".join(f"{k}={v}" for k, v in call.kwargs.items()) if call.kwargs else ""
-                params_str = ", ".join(filter(None, [args_str, kwargs_str]))
-                print(f"[{i+1:02d}] Board '{call.adr.value}': Calling {func.__name__}({params_str})")
-                
-                if call.kwargs:
-                    assembler_seq(call.adr.value, func, *call.args, **call.kwargs)
-                else:
-                    assembler_seq(call.adr.value, func, *call.args)
+                for call in board_calls:
+                    call_counter += 1
+                    func = OASM_FUNCTION_MAP.get(call.dsl_func)
+                    if func is None:
+                        print(f"Error: OASM function '{call.dsl_func.name}' not found in map.")
+                        return False, assembler_seq
+                    
+                    args_str = ", ".join(map(str, call.args))
+                    kwargs_str = ", ".join(f"{k}={v}" for k, v in call.kwargs.items()) if call.kwargs else ""
+                    params_str = ", ".join(filter(None, [args_str, kwargs_str]))
+                    print(f"  [{call_counter:02d}] {func.__name__}({params_str})")
+                    
+                    if call.kwargs:
+                        assembler_seq(call.adr.value, func, *call.args, **call.kwargs)
+                    else:
+                        assembler_seq(call.adr.value, func, *call.args)
             
-            board_names = set(call.adr.value for call in calls)
-            for board_name in board_names:
+            # Generate assembly for each board
+            for board_adr in calls_by_board.keys():
+                board_name = board_adr.value
                 print(f"\n📋 Generated RTMQ assembly for {board_name}:")
                 try:
                     if OASM_AVAILABLE:
@@ -980,27 +991,34 @@ def execute_oasm_calls(calls: List[OASMCall], assembler_seq=None):
             return False, assembler_seq
     else:
         print("⚠️  OASM modules not available or no assembler_seq provided, falling back to mock execution...")
-        success = _execute_oasm_calls_mock(calls)
+        success = _execute_oasm_calls_mock(calls_by_board)
         return success, None
 
-def _execute_oasm_calls_mock(calls: List[OASMCall]) -> bool:
+def _execute_oasm_calls_mock(calls_by_board: Dict[OASMAddress, List[OASMCall]]) -> bool:
     """Mock execution fallback when OASM is not available"""
     try:
-        for i, call in enumerate(calls):
-            func = OASM_FUNCTION_MAP.get(call.dsl_func)
-            if func is None:
-                print(f"Error: OASM function '{call.dsl_func.name}' not found in map.")
-                return False
+        call_counter = 0
+        # Process each board separately
+        for board_adr, board_calls in calls_by_board.items():
+            print(f"\n📋 Mock execution for board '{board_adr.value}' ({len(board_calls)} calls):")
             
-            args_str = ", ".join(map(str, call.args))
-            kwargs_str = ", ".join(f"{k}={v}" for k, v in call.kwargs.items()) if call.kwargs else ""
-            params_str = ", ".join(filter(None, [args_str, kwargs_str]))
-            print(f"[{i+1:02d}] Board '{call.adr.value}': Calling {func.__name__}({params_str})")
-            
-            if call.kwargs:
-                func(*call.args, **call.kwargs)
-            else:
-                func(*call.args)
+            for call in board_calls:
+                call_counter += 1
+                func = OASM_FUNCTION_MAP.get(call.dsl_func)
+                if func is None:
+                    print(f"Error: OASM function '{call.dsl_func.name}' not found in map.")
+                    return False
+                
+                args_str = ", ".join(map(str, call.args))
+                kwargs_str = ", ".join(f"{k}={v}" for k, v in call.kwargs.items()) if call.kwargs else ""
+                params_str = ", ".join(filter(None, [args_str, kwargs_str]))
+                print(f"  [{call_counter:02d}] {func.__name__}({params_str})")
+                
+                # Execute the mock function call
+                if call.kwargs:
+                    func(*call.args, **call.kwargs)
+                else:
+                    func(*call.args)
             
         return True
     except Exception as e:

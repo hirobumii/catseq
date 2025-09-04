@@ -1,4 +1,4 @@
-from hardware_map import (
+from examples.hardware_map import (
     mot_cooling,
     mot_repump,
     global_imaging,

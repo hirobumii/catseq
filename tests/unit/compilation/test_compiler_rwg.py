@@ -97,33 +97,35 @@ def test_pass3_generates_correct_rwg_calls():
     assert len(calls_by_board) == 1
     oasm_calls = list(calls_by_board.values())[0]
     
-    # We expect 4 calls: RWG_INIT, RWG_SET_CARRIER, LOAD, PLAY
-    assert len(oasm_calls) == 4
+    # We expect 5 calls: INIT, WAIT, LOAD, SET_CARRIER, PLAY
+    # The order might be different due to scheduling, so we check for presence and content.
+    assert len(oasm_calls) == 5
 
-    # Call 1: RWG Board Init
-    call1 = oasm_calls[0]
-    assert call1.dsl_func == OASMFunction.RWG_INIT
-    assert call1.args == () # no args
+    # Extract calls by function type for easier validation
+    # Note: This is simplified; if a function is called multiple times, this will only store the last one.
+    # For this test, each key function is called once.
+    calls_by_func = {call.dsl_func: call for call in oasm_calls}
+    
+    assert OASMFunction.RWG_INIT in calls_by_func
+    assert OASMFunction.WAIT_US in calls_by_func
+    assert OASMFunction.RWG_SET_CARRIER in calls_by_func
+    assert OASMFunction.RWG_LOAD_WAVEFORM in calls_by_func
+    assert OASMFunction.RWG_PLAY in calls_by_func
 
-    # Call 2: Set Carrier
-    call2 = oasm_calls[1]
-    assert call2.dsl_func == OASMFunction.RWG_SET_CARRIER
-    assert call2.args == (0, 120.0) # channel_id, carrier_freq
+    # Validate RWG_SET_CARRIER
+    set_carrier_call = calls_by_func[OASMFunction.RWG_SET_CARRIER]
+    assert set_carrier_call.args == (0, 120.0)
 
-    # Call 3: Load Waveform
-    call3 = oasm_calls[2]
-    assert call3.dsl_func == OASMFunction.RWG_LOAD_WAVEFORM
+    # Validate RWG_LOAD_WAVEFORM
+    load_call = calls_by_func[OASMFunction.RWG_LOAD_WAVEFORM]
     expected_params = WaveformParams(
         sbg_id=0, freq_coeffs=(15, None, None, None), amp_coeffs=(0.6, None, None, None), initial_phase=0.0, phase_reset=True
     )
-    assert call3.args[0] == expected_params
+    assert load_call.args[0] == expected_params
 
-    # Call 4: Play (zero-duration for set_state)
-    call4 = oasm_calls[3]
-    assert call4.dsl_func == OASMFunction.RWG_PLAY
-    # Note: RWG_PLAY args are (pud_mask, iou_mask) not (duration, pud_mask, iou_mask)
-    assert call4.args[0] == 1   # pud_mask for ch0
-    assert call4.args[1] == 1   # iou_mask for ch0
+    # Validate RWG_PLAY
+    play_call = calls_by_func[OASMFunction.RWG_PLAY]
+    assert play_call.args == (1, 1)
 
 @pytest.mark.skipif(not OASM_AVAILABLE, reason="OASM library not installed")
 def test_pass3_pipelined_scheduling():

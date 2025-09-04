@@ -305,7 +305,6 @@ def compile_to_oasm_calls(morphism, assembler_seq=None, _return_internal_events=
     # For testing purposes, allow returning the internal event list
     if _return_internal_events:
         return events_by_board
-    
     # Pass 4: Generate the final, scheduled OASM calls including waits.
     oasm_calls = _pass4_generate_oasm_calls(events_by_board)
     
@@ -767,10 +766,9 @@ def _calculate_optimal_schedule(events: List[LogicalEvent], pipeline_pairs: List
     """
     Calculate optimal scheduling for pipeline pairs to minimize wait times.
     
-    This function implements cross-channel pipelining optimization:
-    - LOAD operations can be rescheduled to execute during other channels' PLAY operations
-    - Each LOAD must complete before its corresponding PLAY starts
-    - Serial LOAD constraint: LOAD operations on the same board must not overlap
+    This function implements cross-channel pipelining optimization by scheduling
+    LOAD operations backwards from their corresponding PLAY operations.
+    It assumes all LOAD operations on a board are serial.
     
     Args:
         events: Original list of LogicalEvent objects
@@ -780,71 +778,57 @@ def _calculate_optimal_schedule(events: List[LogicalEvent], pipeline_pairs: List
         List of LogicalEvent objects with optimized timestamps
     """
     if not pipeline_pairs:
-        return events  # No optimization needed
-    
+        return events
+
     print("    Calculating optimal schedule for pipeline pairs...")
-    
-    # Create a copy of events to avoid modifying the original
-    optimized_events = []
-    events_to_reschedule = {}  # {original_event_id: new_timestamp}
-    
-    # Sort pairs by their original PLAY start time for scheduling
-    sorted_pairs = sorted(pipeline_pairs, key=lambda p: p.play_start_time)
-    
-    # Track when LOAD operations can start (considering serial constraint)
-    last_load_end_time = 0
-    
+
+    events_to_reschedule = {}
+
+    # Sort pairs by PLAY start time, DESCENDING, to schedule later operations first.
+    # A secondary sort key on channel id makes the scheduling deterministic.
+    sorted_pairs = sorted(pipeline_pairs, key=lambda p: (p.play_start_time, p.channel.global_id), reverse=True)
+
+    # Tracks the start time of the previously scheduled LOAD.
+    # Since we are scheduling backwards, this is the time the *next* load must finish by.
+    next_load_available_ts = float('inf')
+
     for pair in sorted_pairs:
         load_event = pair.load_event
         play_start_time = pair.play_start_time
         load_cost = pair.load_cost_cycles
+
+        # The load must complete before its own play starts, and before the next (later) load starts.
+        finish_by = min(play_start_time, next_load_available_ts)
         
-        # Calculate the latest possible start time for the LOAD
-        # (LOAD must complete before PLAY starts)
-        latest_load_start = play_start_time - load_cost
+        new_load_ts = finish_by - load_cost
+
+        events_to_reschedule[id(load_event)] = new_load_ts
         
-        # Calculate the earliest possible start time for the LOAD
-        # (Cannot overlap with previous LOAD operations)
-        earliest_load_start = max(0, last_load_end_time)
-        
-        if earliest_load_start <= latest_load_start:
-            # Optimization: Schedule LOAD as late as possible while meeting constraints
-            optimal_load_start = latest_load_start
-            events_to_reschedule[id(load_event)] = optimal_load_start
-            last_load_end_time = optimal_load_start + load_cost
-            
-            print(f"      Optimized LOAD on {pair.channel.global_id}: {load_event.timestamp_cycles}c → {optimal_load_start}c (saved {load_event.timestamp_cycles - optimal_load_start}c)")
-        else:
-            # Cannot optimize: would violate serial LOAD constraint
-            # Keep original timing but update last_load_end_time
-            original_load_start = load_event.timestamp_cycles
-            if original_load_start < last_load_end_time:
-                # Need to delay this LOAD to avoid overlap
-                adjusted_load_start = last_load_end_time
-                events_to_reschedule[id(load_event)] = adjusted_load_start
-                last_load_end_time = adjusted_load_start + load_cost
-                print(f"      Delayed LOAD on {pair.channel.global_id}: {original_load_start}c → {adjusted_load_start}c (serial constraint)")
-            else:
-                last_load_end_time = original_load_start + load_cost
-                print(f"      Kept LOAD on {pair.channel.global_id} at {original_load_start}c (no optimization possible)")
-    
-    # Apply rescheduling to create optimized event list
+        # The next load we schedule (which happens earlier in time) must finish before this one starts.
+        next_load_available_ts = new_load_ts
+
+        print(f"      Scheduling LOAD on {pair.channel.global_id}: {load_event.timestamp_cycles}c → {new_load_ts}c")
+
+    # Apply rescheduling to create a new list of events
+    optimized_events = []
     for event in events:
         event_id = id(event)
         if event_id in events_to_reschedule:
-            # Create new event with updated timestamp
             new_timestamp = events_to_reschedule[event_id]
+            # Create a new event with the updated timestamp
+            # Also update the logical_timestamp to be consistent
             optimized_event = LogicalEvent(
                 timestamp_cycles=new_timestamp,
                 operation=event.operation,
                 oasm_calls=event.oasm_calls,
-                cost_cycles=event.cost_cycles
+                cost_cycles=event.cost_cycles,
+                logical_timestamp=LogicalTimestamp.from_cycles(event.epoch, new_timestamp)
             )
             optimized_events.append(optimized_event)
         else:
             # Keep original event
             optimized_events.append(event)
-    
+            
     return optimized_events
 
 
@@ -871,40 +855,54 @@ def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEv
         # Step 1: Identify pipeline pairs for optimization
         pipeline_pairs = _identify_pipeline_pairs(events)
         print(f"  Board {adr.value}: Found {len(pipeline_pairs)} pipeline pairs")
-        
         # Step 2: Calculate optimal scheduling for pipeline pairs
         optimized_events = _calculate_optimal_schedule(events, pipeline_pairs)
         print(f"  Board {adr.value}: Applied optimization to {len(optimized_events)} events")
-
-        # Sort all events by their start time to build a linear timeline.
-        sorted_events = sorted(optimized_events, key=lambda e: e.timestamp_cycles)
+        # Sort events to create a deterministic timeline.
+        # Priority: 1. Timestamp, 2. RWG_INIT operations first, 3. Channel ID.
+        sorted_events = sorted(
+            optimized_events,
+            key=lambda e: (
+                e.timestamp_cycles,
+                0 if e.operation.operation_type == OperationType.RWG_INIT else 1,
+                e.operation.channel.global_id if e.operation.channel else ""
+            )
+        )
         
-        last_op_end_time = 0
+        # Group events by timestamp to process them in concurrent blocks.
+        events_by_ts: Dict[int, List[LogicalEvent]] = {}
         for event in sorted_events:
-            # 1. Calculate wait time needed BEFORE this operation starts.
-            wait_cycles = event.timestamp_cycles - last_op_end_time
+            ts = event.timestamp_cycles
+            if ts not in events_by_ts:
+                events_by_ts[ts] = []
+            events_by_ts[ts].append(event)
+
+        last_op_end_time = 0
+        # Process events chronologically, block by block.
+        for ts in sorted(events_by_ts.keys()):
+            ts_events = events_by_ts[ts]
+            
+            # Calculate a single wait time for the entire concurrent block.
+            wait_cycles = ts - last_op_end_time
             if wait_cycles < 0:
-                # This can happen if optimizations reschedule events to overlap.
-                # The scheduler should prevent this, but we add a safeguard.
-                print(f"Warning: Negative wait time ({wait_cycles}c) calculated for event "
-                      f"{event.operation.operation_type.name} at {event.timestamp_cycles}c. "
+                # This warning should no longer appear with the improved scheduling,
+                # but we keep it as a safeguard.
+                print(f"Warning: Negative wait time ({wait_cycles}c) calculated for timestamp {ts}c. "
                       f"This may indicate an issue in the pipelining optimization logic.")
                 wait_cycles = 0
-
+            
             if wait_cycles > 0:
                 board_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.WAIT_US, args=(cycles_to_us(wait_cycles),)))
-            
-            # 2. Add the event's own OASM calls.
-            board_calls.extend(event.oasm_calls)
-            
-            # 3. Update the "wall clock" for the next iteration.
-            # The wall clock advances to the time when the OASM commands for this event
-            # have finished executing.
-            current_op_finish_time = event.timestamp_cycles + event.cost_cycles
-            
-            # The next operation's wait can only start after the command processor is free
-            # from the latest-finishing concurrent command.
-            last_op_end_time = max(last_op_end_time, current_op_finish_time)
+
+            # Issue all OASM calls for this block without further waits.
+            # Find the cost of the longest operation in the block to advance the clock correctly.
+            max_cost_at_ts = 0
+            for event in ts_events:
+                board_calls.extend(event.oasm_calls)
+                max_cost_at_ts = max(max_cost_at_ts, event.cost_cycles)
+
+            # The next block can only start after the longest operation in this block has finished.
+            last_op_end_time = ts + max_cost_at_ts
 
         calls_by_board[adr] = board_calls
 
@@ -944,6 +942,7 @@ def execute_oasm_calls(calls_by_board: Dict[OASMAddress, List[OASMCall]], assemb
         print("🔧 Generating actual RTMQ assembly...")
         try:
             call_counter = 0
+            assembler_seq.clear()
             # Process each board separately
             for board_adr, board_calls in calls_by_board.items():
                 print(f"\n📋 Processing {len(board_calls)} calls for board '{board_adr.value}':")

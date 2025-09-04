@@ -168,14 +168,16 @@ class TestExecuteOASMCalls:
         mocker.patch('catseq.compilation.functions.amk')
         mocker.patch('catseq.compilation.functions.wait')
         
-        calls = [
-            OASMCall(OASMAddress.RWG0, OASMFunction.TTL_CONFIG, (1, 0)),
-            OASMCall(OASMAddress.RWG0, OASMFunction.TTL_SET, (1, 1)),
-            OASMCall(OASMAddress.RWG0, OASMFunction.TTL_SET, (1, 0)),
-        ]
+        calls_by_board = {
+            OASMAddress.RWG0: [
+                OASMCall(OASMAddress.RWG0, OASMFunction.TTL_CONFIG, (1, 0)),
+                OASMCall(OASMAddress.RWG0, OASMFunction.TTL_SET, (1, 1)),
+                OASMCall(OASMAddress.RWG0, OASMFunction.TTL_SET, (1, 0)),
+            ]
+        }
         
         # Execute without seq object (should use mock)
-        success, seq = execute_oasm_calls(calls)
+        success, seq = execute_oasm_calls(calls_by_board)
         
         assert success is True
         assert seq is None  # No seq object returned in mock mode
@@ -189,13 +191,15 @@ class TestExecuteOASMCalls:
         mock_seq = mocker.Mock()
         mock_seq.asm = {'rwg0': []}
         
-        calls = [
-            OASMCall(OASMAddress.RWG0, OASMFunction.TTL_CONFIG, (1, 0)),
-            OASMCall(OASMAddress.RWG0, OASMFunction.TTL_SET, (1, 1)),
-        ]
+        calls_by_board = {
+            OASMAddress.RWG0: [
+                OASMCall(OASMAddress.RWG0, OASMFunction.TTL_CONFIG, (1, 0)),
+                OASMCall(OASMAddress.RWG0, OASMFunction.TTL_SET, (1, 1)),
+            ]
+        }
         
         # Execute with seq object
-        success, returned_seq = execute_oasm_calls(calls, mock_seq)
+        success, returned_seq = execute_oasm_calls(calls_by_board, mock_seq)
         
         assert success is True
         assert returned_seq is mock_seq  # Should return the same seq object
@@ -208,11 +212,13 @@ class TestExecuteOASMCalls:
         mocker.patch('catseq.compilation.functions.amk')
         mocker.patch('catseq.compilation.functions.wait')
         
-        calls = [
-            OASMCall(OASMAddress.RWG0, OASMFunction.TTL_CONFIG, (1, 0)),
-        ]
+        calls_by_board = {
+            OASMAddress.RWG0: [
+                OASMCall(OASMAddress.RWG0, OASMFunction.TTL_CONFIG, (1, 0)),
+            ]
+        }
         
-        success, seq = execute_oasm_calls(calls)
+        success, seq = execute_oasm_calls(calls_by_board)
         
         assert success is True
         assert seq is None
@@ -328,17 +334,12 @@ class TestIntegrationCompilerFlow:
         # Compile
         oasm_calls_by_board = compile_to_oasm_calls(sequence)
         
-        # Flatten calls for execute_oasm_calls (which expects List[OASMCall])
-        all_calls = []
-        for calls in oasm_calls_by_board.values():
-            all_calls.extend(calls)
-        
         # Mock seq object
         mock_seq = mocker.MagicMock()
         mock_seq.asm = {'rwg0': ['AMK - TTL 1.0 $01', 'AMK - TTL 1.0 $00']}
         
         # Execute
-        success, returned_seq = execute_oasm_calls(all_calls, mock_seq)
+        success, returned_seq = execute_oasm_calls(oasm_calls_by_board, mock_seq)
         
         # Verify
         assert success is True

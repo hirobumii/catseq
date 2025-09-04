@@ -93,7 +93,24 @@ def install_oasm_extensions() -> bool:
         except Exception as e:
             print(f"  ✗ Failed to install hdl directory: {e}")
             
-    # 3. Install veri.py to site-packages root with lib path correction
+    # 3. Install ftd3xx directory to site-packages root
+    ftd3xx_dir = extensions_path / "ftd3xx"
+    if ftd3xx_dir.exists() and ftd3xx_dir.is_dir():
+        target_ftd3xx = site_packages / "ftd3xx"
+        total_files += 1
+        try:
+            if target_ftd3xx.exists():
+                print(f"Removing existing ftd3xx directory at {target_ftd3xx}...")
+                shutil.rmtree(target_ftd3xx)
+            
+            print(f"Copying ftd3xx directory to {target_ftd3xx}...")
+            shutil.copytree(ftd3xx_dir, target_ftd3xx)
+            print(f"  ✓ Installed ftd3xx directory to {target_ftd3xx}")
+            success_count += 1
+        except Exception as e:
+            print(f"  ✗ Failed to install ftd3xx directory: {e}")
+    
+    # 4. Install veri.py to site-packages root with lib path correction
     veri_file = extensions_path / "veri.py"
     if veri_file.exists():
         target_veri = site_packages / "veri.py"

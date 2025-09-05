@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Version](https://img.shields.io/badge/version-0.1.0-orange.svg)
+![Version](https://img.shields.io/badge/version-0.2.0-orange.svg)
 ![Tests](https://img.shields.io/badge/tests-49%20passed-brightgreen.svg)
 
 > **一个基于范畴论的量子实验序列控制框架** - 为量子物理实验提供数学严谨的硬件时序编程抽象

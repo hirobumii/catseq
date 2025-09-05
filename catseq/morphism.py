@@ -172,21 +172,25 @@ class Morphism:
             for op in lane.operations:
                 match op.operation_type:
                     case OperationType.TTL_INIT:
-                        ops_display.append("init")
+                        ops_display.append("TTL_init")
                     case OperationType.TTL_ON:
-                        ops_display.append("ON")
+                        ops_display.append("TTL_ON")
                     case OperationType.TTL_OFF:
-                        ops_display.append("OFF")
+                        ops_display.append("TTL_OFF")
                     case OperationType.IDENTITY:
                         duration_us = cycles_to_us(op.duration_cycles)
                         ops_display.append(f"identity({duration_us:.1f}μs)")
                     case OperationType.RWG_INIT:
                         ops_display.append("RWG_init")
+                    case OperationType.RWG_SET_CARRIER:
+                        ops_display.append(f"RWG_set_carrier({op.end_state.carrier_freq})")
                     case OperationType.RWG_LOAD_COEFFS:
                         ops_display.append("LOAD")
                     case OperationType.RWG_UPDATE_PARAMS:
                         duration_us = cycles_to_us(op.duration_cycles)
                         ops_display.append(f"PLAY({duration_us:.1f}μs)")
+                    case OperationType.RWG_RF_SWITCH:
+                        ops_display.append("RWG_rf_switch")
                     case _:  # 如果有未知类型需要处理，可以加上默认分支
                         pass
             

@@ -1,4 +1,4 @@
-from examples.hardware_map import (
+from hardware_map import (
     mot_cooling,
     mot_repump,
     global_imaging,
@@ -7,12 +7,13 @@ from examples.hardware_map import (
     uv_led
 )
 
+from catseq.hardware.sync import global_sync
 from catseq.hardware.ttl import pulse
-from catseq.hardware.rwg import initialize, set_state, identity,InitialTarget
+from catseq.hardware.rwg import initialize, set_state, identity, rf_on, rf_off, InitialTarget
 from catseq.compilation.compiler import compile_to_oasm_calls, execute_oasm_calls
 from catseq.morphism import Morphism
 from catseq.types.common import Channel, State
-from oasm.rtmq2.intf import sim_intf
+from oasm.rtmq2.intf import sim_intf, ft601_intf
 from oasm.rtmq2 import assembler
 from oasm.dev.main import run_cfg, C_MAIN
 from oasm.dev.rwg import C_RWG
@@ -68,10 +69,22 @@ para_init = set_state([cooling_target])(mot_cooling, get_end_state(laser_init, m
     | set_state([global_imaging_target])(global_imaging, get_end_state(laser_init, global_imaging)) \
     | set_state([global_repump_target])(global_repump, get_end_state(laser_init, global_repump))
 
-morphism = laser_init >> para_init
-# init_morphism = (rwg0_init @ cooling_car) | repump_car
+morphism = laser_init >> para_init >> identity(100.0)
 
-intf_usb = sim_intf()
+rf_all_on = rf_on()(mot_cooling, get_end_state(morphism, mot_cooling)) \
+    | rf_on()(mot_repump, get_end_state(morphism, mot_repump))
+    # | rf_on()(global_imaging, get_end_state(morphism, global_imaging)) \
+    # | rf_on()(global_repump, get_end_state(morphism, global_repump))
+
+rf_all_off = rf_off()(mot_cooling, get_end_state(morphism, mot_cooling)) \
+    | rf_off()(mot_repump, get_end_state(morphism, mot_repump)) \
+    | rf_off()(global_imaging, get_end_state(morphism, global_imaging)) \
+    | rf_off()(global_repump, get_end_state(morphism, global_repump))
+
+morphism = morphism >> global_sync() >> identity(10.0) >> rf_all_off
+
+# intf_usb = sim_intf()
+intf_usb = ft601_intf("IONCV2PROT")#;intf_usb.__enter__()
 intf_usb.nod_adr = 0
 intf_usb.loc_chn = 1
 
@@ -80,5 +93,4 @@ run_all = run_cfg(intf_usb, rwgs+[0])
 seq = assembler(run_all,[(f'rwg{i}', C_RWG) for i in range(len(rwgs))]+[('main',C_MAIN)])
 
 oasm_calls = compile_to_oasm_calls(morphism, seq)
-
 a,b = execute_oasm_calls(oasm_calls, seq)

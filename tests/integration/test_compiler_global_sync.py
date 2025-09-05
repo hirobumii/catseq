@@ -267,9 +267,10 @@ def test_global_sync_timing_accuracy():
     wait_duration_cycles = trig_slave_call.args[0]
     
     # The longest lane is on the main board (100us). The slave board's operations
-    # extend to 25250 cycles before padding. The master must wait for this duration.
-    # Adding the 100-cycle safety margin gives the expected total wait time.
-    expected_cycles = 25250 + 100
+    # extend to 25250 cycles before padding. However, we must also account for the
+    # execution cost of the SYNC_MASTER operation itself (16 cycles).
+    # Total: max_end_time (25250 + 16) + 100-cycle safety margin = 25366
+    expected_cycles = 25250 + 16 + 100
     assert wait_duration_cycles == expected_cycles, (
         f"Compiler-calculated wait duration {wait_duration_cycles} cycles does not match the "
         f"expected value of {expected_cycles} (100us sequence + 100 cycle margin)."

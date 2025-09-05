@@ -59,7 +59,7 @@ Before you begin, ensure you have the following software installed in your devel
 
 **Option 1: Using the provided setup script (Recommended)**
 ```bash
-git clone (https://github.com/hirobumii/catseq.git
+git clone https://github.com/hirobumii/catseq.git
 cd catseq
 chmod +x setup.sh
 ./setup.sh

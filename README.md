@@ -59,7 +59,7 @@ Before you begin, ensure you have the following software installed in your devel
 
 **Option 1: Using the provided setup script (Recommended)**
 ```bash
-git clone [https://github.com/hirobumii/catseq.git](https://github.com/hirobumii/catseq.git)
+git clone (https://github.com/hirobumii/catseq.git
 cd catseq
 chmod +x setup.sh
 ./setup.sh
@@ -68,11 +68,11 @@ chmod +x setup.sh
 **Option 2: Manual Installation**
 ```bash
 # 1. Clone the repository
-git clone [https://github.com/hirobumii/catseq.git](https://github.com/hirobumii/catseq.git)
+git clone https://github.com/hirobumii/catseq.git
 cd catseq
 
 # 2. Install uv (if not already installed)
-curl -LsSf [https://astral.sh/uv/install.sh](https://astral.sh/uv/install.sh) | sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 3. Create a virtual environment and install dependencies
 uv venv --python 3.12

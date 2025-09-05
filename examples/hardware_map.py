@@ -17,4 +17,4 @@ global_imaging = Channel(board=rwg0, local_id=2, channel_type=ChannelType.RWG)
 global_repump = Channel(board=rwg0, local_id=3, channel_type=ChannelType.RWG)
 
 uv_led = Channel(board=rwg0, local_id=0, channel_type=ChannelType.TTL)
-
+sync = Channel(board=main, local_id=0, channel_type=ChannelType.TTL)

@@ -152,7 +152,6 @@ def _detect_epoch_boundaries(events: List[LogicalEvent]) -> List[LogicalEvent]:
     
     return processed_events
 
-
 def _check_cross_epoch_violations(events_by_board: Dict[OASMAddress, List[LogicalEvent]]) -> None:
     """
     Check for operations that would violate epoch boundaries.
@@ -190,7 +189,6 @@ def _check_cross_epoch_violations(events_by_board: Dict[OASMAddress, List[Logica
         _check_pipelining_across_epochs(board_adr, events_by_epoch)
         _check_timing_dependencies_across_epochs(board_adr, events)
 
-
 def _check_pipelining_across_epochs(board_adr: OASMAddress, events_by_epoch: Dict[int, List[LogicalEvent]]) -> None:
     """
     Check for pipelining operations that span across epoch boundaries.
@@ -221,7 +219,6 @@ def _check_pipelining_across_epochs(board_adr: OASMAddress, events_by_epoch: Dic
                         f"Pipelining across synchronization boundaries is not allowed as it violates "
                         f"the time reference system boundaries."
                     )
-
 
 def _check_timing_dependencies_across_epochs(board_adr: OASMAddress, events: List[LogicalEvent]) -> None:
     """
@@ -423,9 +420,8 @@ def _pass1_translate_to_oasm(events_by_board: Dict[OASMAddress, List[LogicalEven
                         event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.TRIG_SLAVE, args=(wait_time_cycles, sync_code)))
                     
                     case OperationType.SYNC_SLAVE:
-                        # Slave synchronization: wait for master trigger
-                        sync_code = 12345  # Same sync code as master
-                        event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.WAIT_MASTER, args=(sync_code,)))
+                        # This is now handled as a merged operation to avoid multiple wait_master calls
+                        pass
 
                     case OperationType.RWG_LOAD_COEFFS:
                         # Generate separate OASM calls for each WaveformParams in the instruction
@@ -455,6 +451,15 @@ def _pass1_translate_to_oasm(events_by_board: Dict[OASMAddress, List[LogicalEven
                             # Add board-level init to the first RWG_INIT event at this timestamp
                             event.oasm_calls.insert(0, OASMCall(adr=adr, dsl_func=OASMFunction.RWG_INIT, args=()))
                         break
+
+            if OperationType.SYNC_SLAVE in ops_by_type:
+                # Find the first SYNC_SLAVE event to attach the single WAIT_MASTER call to.
+                for event in ts_events:
+                    if event.operation.operation_type == OperationType.SYNC_SLAVE:
+                        # This check is implicit: we only add it once and then break.
+                        sync_code = 12345  # Same sync code as master
+                        event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.WAIT_MASTER, args=(sync_code,)))
+                        break # Ensure only one WAIT_MASTER is added per board per timestamp
             
             if OperationType.TTL_INIT in ops_by_type:
                 mask, dir_value = 0, 0
@@ -521,7 +526,6 @@ def _pass2_analyze_costs(events_by_board: Dict[OASMAddress, List[LogicalEvent]],
                 event.cost_cycles = 0
                 print(f"    - {event.operation.operation_type.name} at t={event.timestamp_cycles}: 0 cycles (no OASM calls)")
 
-
 def _analyze_operation_cost(event: LogicalEvent, adr: OASMAddress, assembler_seq) -> int:
     """
     Analyze the execution cost of a single operation by generating and analyzing
@@ -562,7 +566,6 @@ def _analyze_operation_cost(event: LogicalEvent, adr: OASMAddress, assembler_seq
         print(f"      Warning: Cost analysis failed for {event.operation.operation_type.name}: {e}")
         return 0
 
-
 def _calculate_pre_sync_duration_up_to(board_events: List[LogicalEvent], sync_timestamp: int) -> int:
     """
     Calculate the total execution time for operations that occur at or before the sync timestamp.
@@ -585,7 +588,6 @@ def _calculate_pre_sync_duration_up_to(board_events: List[LogicalEvent], sync_ti
     
     return max_pre_sync_time
 
-
 def _calculate_pre_sync_duration(board_events: List[LogicalEvent]) -> int:
     """
     Calculate the total execution time for operations that occur before global sync (t=0).
@@ -604,7 +606,6 @@ def _calculate_pre_sync_duration(board_events: List[LogicalEvent]) -> int:
             pre_sync_cost += event.cost_cycles
     
     return pre_sync_cost
-
 
 def _calculate_master_wait_time(events_by_board: Dict[OASMAddress, List[LogicalEvent]], sync_timestamp: int) -> int:
     """
@@ -641,7 +642,6 @@ def _calculate_master_wait_time(events_by_board: Dict[OASMAddress, List[LogicalE
     print(f"    Master wait time: {max_slave_duration} + {safety_margin} = {total_wait} cycles")
     
     return total_wait
-
 
 def _pass3_check_constraints(events_by_board: Dict[OASMAddress, List[LogicalEvent]]):
     """Pass 3: Checks for timing violations, including pipelining and global sync constraints."""
@@ -718,7 +718,6 @@ class PipelinePair:
     def play_start_time(self) -> int:
         """Start time for the PLAY operation."""
         return self.play_event.timestamp_cycles
-
 
 def _identify_pipeline_pairs(events: List[LogicalEvent]) -> List[PipelinePair]:
     """
@@ -864,11 +863,12 @@ def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEv
         # Priority: 1. Timestamp, 2. RWG_INIT operations first, 3. Channel ID.
         sorted_events = sorted(
             optimized_events,
-            key=lambda e: (
-                e.timestamp_cycles,
-                0 if e.operation.operation_type == OperationType.RWG_INIT else 1,
-                e.operation.channel.global_id if e.operation.channel else ""
-            )
+            key=lambda e:
+                (
+                    e.timestamp_cycles,
+                    0 if e.operation.operation_type == OperationType.RWG_INIT else 1,
+                    e.operation.channel.global_id if e.operation.channel else ""
+                )
         )
         
         # Group events by timestamp to process them in concurrent blocks.

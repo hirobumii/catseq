@@ -4,11 +4,12 @@ from hardware_map import (
     global_imaging,
     global_repump,
     cooling_lock,
-    uv_led
+    uv_led,
+    sync
 )
 
 from catseq.hardware.sync import global_sync
-from catseq.hardware.ttl import pulse
+from catseq.hardware.ttl import pulse, initialize_channel
 from catseq.hardware.rwg import initialize, set_state, identity, rf_on, rf_off, InitialTarget
 from catseq.compilation.compiler import compile_to_oasm_calls, execute_oasm_calls
 from catseq.morphism import Morphism
@@ -20,6 +21,7 @@ from oasm.dev.rwg import C_RWG
 
 
 trig_uv_led = pulse(uv_led, 5.0)
+sync_init = initialize_channel(sync)
 
 # rwg0_init = rwg_board_init(mot_cooling)
 
@@ -36,7 +38,7 @@ mot_repump_init = initialize(71)(mot_repump)
 global_imaging_init = initialize(95)(global_imaging)
 global_repump_init = initialize(71)(global_repump)
 
-laser_init = mot_cooling_init | mot_repump_init | global_imaging_init | global_repump_init
+laser_init = sync_init | mot_cooling_init | mot_repump_init | global_imaging_init | global_repump_init
 laser_init = laser_init >> identity(10.0)
 
 cooling_target = InitialTarget(

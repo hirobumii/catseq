@@ -5,97 +5,98 @@
 ![Version](https://img.shields.io/badge/version-0.2.0-orange.svg)
 ![Tests](https://img.shields.io/badge/tests-49%20passed-brightgreen.svg)
 
-> **一个基于范畴论的量子实验序列控制框架** - 为量子物理实验提供数学严谨的硬件时序编程抽象
+> **A Category Theory-based framework for quantum experiment sequencing** - A mathematically rigorous abstraction for hardware timing in quantum physics experiments.
 
 <p align="center">
-  <a href="docs/user/01_quickstart.md"><strong>快速开始</strong></a> ·
-  <a href="docs/user/02_core_concepts.md"><strong>核心概念</strong></a> ·
-  <a href="docs/dev/compiler_notes.md">开发者文档</a> ·
-  <a href="https://github.com/hirobumii/catseq/issues">报告 Bug</a>
+  <a href="docs/user/01_quickstart.md"><strong>Quickstart</strong></a> ·
+  <a href="docs/user/02_core_concepts.md"><strong>Core Concepts</strong></a> ·
+  <a href="docs/dev/compiler_notes.md">Developer Docs</a> ·
+  <a href="https://github.com/hirobumii/catseq/issues">Report a Bug</a>
 </p>
 
 ---
 
-## 目录
+## Table of Contents
 
-- [项目简介](#项目简介)
-- [核心功能](#核心功能)
-- [快速开始](#快速开始)
-  - [先决条件](#先决条件)
-  - [安装](#安装)
-  - [基本用法](#基本用法)
-- [设计理念](#设计理念)
-- [项目路线图](#项目路线图)
-- [如何贡献](#如何贡献)
-- [许可证](#许可证)
+- [Introduction](#introduction)
+- [Core Features](#core-features)
+- [Quickstart](#quickstart)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+  - [Basic Usage](#basic-usage)
+- [Design Philosophy](#design-philosophy)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+- [Acknowledgements](#acknowledgements)
 
-## 项目简介
+## Introduction
 
-**CatSeq** (Category Theory-based Quantum Experiment Sequencing) 是一个专为量子物理实验设计的硬件控制框架。它基于 **Monoidal Category** 数学理论，为复杂的量子控制序列提供严格的数学基础和直观的编程抽象。
+**CatSeq** (Category Theory-based Quantum Experiment Sequencing) is a hardware control framework designed specifically for quantum physics experiments. It is built upon the mathematical principles of **Monoidal Categories** to provide a rigorous foundation and an intuitive programming abstraction for complex quantum control sequences.
 
-在传统的量子实验控制中，复杂的时序协调、状态管理和并行操作往往导致代码难以理解和维护。CatSeq 通过范畴论的**组合性**和**类型安全**，将这些复杂性抽象为可预测、可验证的数学对象，使得量子实验的编程变得直观而强大。
+In traditional quantum experiment control, coordinating complex timing, managing state, and handling parallel operations often leads to code that is difficult to understand and maintain. CatSeq abstracts these complexities into predictable and verifiable mathematical objects by leveraging the **compositionality** and **type safety** of category theory, making quantum experiment programming both intuitive and powerful.
 
-该框架特别适合需要**精确时序控制**（ns级精度）、**多通道协调**和**复杂波形合成**的量子物理研究团队使用。
+This framework is particularly well-suited for quantum physics research teams that require **precise timing control** (nanosecond-level precision), **multi-channel coordination**, and **complex waveform synthesis**.
 
-## 核心功能
+## Core Features
 
-* **🧮 数学严谨性**: 基于 Monoidal Category 理论，提供可证明正确的操作组合
-* **⚡ 精确时序**: 支持 250MHz 时钟精度（4ns），满足量子实验的严格时序要求  
-* **🔀 灵活组合**: 通过 `@`（串行）和 `|`（并行）操作符实现直观的序列组合
-* **🎛️ 多硬件支持**: 统一控制 TTL 开关、RWG 波形发生器等量子实验硬件
-* **🔧 类型安全**: 编译时状态验证，避免硬件配置错误和时序冲突
-* **⚙️ OASM 编译**: 直接编译为 RTMQ 硬件指令，无需手写底层汇编代码
+* **🧮 Mathematical Rigor**: Based on Monoidal Category theory, providing provably correct operational compositions.
+* **⚡ Precise Timing**: Supports 250MHz clock resolution (4ns), meeting the strict timing requirements of quantum experiments.
+* **🔀 Flexible Composition**: Intuitive sequence composition using the `@` (serial) and `|` (parallel) operators.
+* **🎛️ Multi-Hardware Support**: Unified control over various quantum experiment hardware, such as TTL switches and AWG waveform generators.
+* **🔧 Type Safety**: Compile-time state verification to prevent hardware configuration errors and timing conflicts.
+* **⚙️ OASM Compilation**: Directly compiles to RTMQ hardware instructions, eliminating the need to write low-level assembly code by hand.
 
-## 快速开始
+## Quickstart
 
-### 先决条件
+### Prerequisites
 
-在开始之前，请确保你的开发环境中安装了以下软件：
-* [Python](https://python.org/) (版本 >= 3.12)
-* [uv](https://docs.astral.sh/uv/) 现代 Python 包管理器
+Before you begin, ensure you have the following software installed in your development environment:
+* [Python](https://python.org/) (version >= 3.12)
+* [uv](https://docs.astral.sh/uv/) A modern Python package manager
 
-### 安装
+### Installation
 
-**方式一：使用提供的安装脚本（推荐）**
+**Option 1: Using the provided setup script (Recommended)**
 ```bash
-git clone https://github.com/hirobumii/catseq.git
+git clone [https://github.com/hirobumii/catseq.git](https://github.com/hirobumii/catseq.git)
 cd catseq
 chmod +x setup.sh
 ./setup.sh
 ```
 
-**方式二：手动安装**
+**Option 2: Manual Installation**
 ```bash
-# 1. 克隆仓库
-git clone https://github.com/hirobumii/catseq.git
+# 1. Clone the repository
+git clone [https://github.com/hirobumii/catseq.git](https://github.com/hirobumii/catseq.git)
 cd catseq
 
-# 2. 安装 uv（如果尚未安装）
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# 2. Install uv (if not already installed)
+curl -LsSf [https://astral.sh/uv/install.sh](https://astral.sh/uv/install.sh) | sh
 
-# 3. 创建虚拟环境并安装依赖
+# 3. Create a virtual environment and install dependencies
 uv venv --python 3.12
 source .venv/bin/activate
 uv pip install -e .[dev]
 
-# 4. 验证安装
+# 4. Verify the installation
 .venv/bin/pytest tests/ -v
 ```
 
-### 基本用法
+### Basic Usage
 
-以下是一个创建 TTL 脉冲序列的基础示例：
+Here is a basic example of creating a TTL pulse sequence:
 
 ```python
 from catseq import ttl_init, ttl_on, ttl_off, identity
 from catseq.types.common import Board, Channel, ChannelType
 from catseq.compilation import compile_to_oasm_calls
 
-# 定义硬件通道
+# Define hardware channels
 board = Board("RWG_0")
 ttl_ch = Channel(board, 0, ChannelType.TTL)
 
-# 构建序列：初始化 → 开启10μs → 关闭
+# Build the sequence: initialize -> on for 10μs -> off
 pulse_sequence = (
     ttl_init(ttl_ch) @ 
     ttl_on(ttl_ch) @ 
@@ -103,103 +104,102 @@ pulse_sequence = (
     ttl_off(ttl_ch)
 )
 
-# 编译为硬件指令
+# Compile to hardware instructions
 oasm_calls = compile_to_oasm_calls(pulse_sequence)
 
-# 执行序列（需要 RTMQ 硬件环境）
+# Execute the sequence (requires RTMQ hardware environment)
 # execute_oasm_calls(oasm_calls)
 ```
 
-**并行操作示例**：
+**Example of parallel operations**:
 ```python
-# 创建两个不同通道的脉冲
+# Create pulses on two different channels
 ch1_pulse = ttl_on(ch1) @ identity(ch1, 5e-6) @ ttl_off(ch1)
 ch2_pulse = ttl_on(ch2) @ identity(ch2, 8e-6) @ ttl_off(ch2)
 
-# 并行执行（自动时间对齐）
-parallel_sequence = ch1_pulse | ch2_pulse  # 总时长为 8μs
+# Execute in parallel (time is automatically aligned)
+parallel_sequence = ch1_pulse | ch2_pulse  # Total duration will be 8μs
 ```
 
-如需了解更高级的用法和 RWG 波形控制，请参阅我们的 [快速开始文档](docs/user/01_quickstart.md)。
+For more advanced usage and AWG waveform control, please refer to our [Quickstart Guide](docs/user/01_quickstart.md).
 
-## 设计理念
+## Design Philosophy
 
-CatSeq 的设计基于以下核心原则：
+The design of CatSeq is based on the following core principles:
 
-### 🧮 范畴论基础
-- **Objects**: 完整的系统状态（所有通道的状态映射）
-- **Morphisms**: 物理过程（随时间演化的状态转换）  
-- **Composition**: 严格的函数复合，保证状态连续性
+### 🧮 Category Theory Foundation
+- **Objects**: The complete state of the system (a mapping of all channel states).
+- **Morphisms**: Physical processes (state transitions that evolve over time).
+- **Composition**: Strict function composition that guarantees state continuity.
 
-### 🔒 类型安全优先
-- 编译时状态验证，防止非法状态转换
-- 强类型通道管理，避免硬件地址错误
-- 自动推导状态转换，减少手动错误
+### 🔒 Type Safety First
+- Compile-time state verification to prevent illegal state transitions.
+- Strongly-typed channel management to avoid hardware address errors.
+- Automatic inference of state transitions to reduce manual errors.
 
-### 🎯 用户友好性
-- 直观的操作符：`@` 表示时序连接，`|` 表示并行执行
-- 声明式编程风格，专注于"做什么"而非"怎么做"  
-- 丰富的错误提示和调试信息
+### 🎯 User-Friendliness
+- Intuitive operators: `@` for sequential composition and `|` for parallel execution.
+- A declarative programming style that focuses on "what to do" rather than "how to do it."
+- Rich error messages and debugging information.
 
-## 项目路线图
+## Roadmap
 
-我们对 CatSeq 的未来发展有清晰的规划：
+We have a clear plan for the future development of CatSeq:
 
-**v0.2.0** (2025 Q2)
-- [ ] **可视化工具**: 时序图生成和交互式调试界面
-- [ ] **更多硬件支持**: 支持更多量子实验设备类型
-- [ ] **性能优化**: 大规模序列的编译优化
+**v0.2.0** (Q2 2025)
+- [ ] **Visualization Tools**: Timing diagram generation and an interactive debugging interface.
+- [ ] **Broader Hardware Support**: Support for more types of quantum experiment devices.
+- [ ] **Performance Optimization**: Compilation optimizations for large-scale sequences.
 
-**v0.3.0** (2025 Q3)  
-- [ ] **云端编译**: 支持远程硬件的实时控制
-- [ ] **机器学习集成**: 自动化参数优化和序列学习
-- [ ] **标准库扩展**: 常用量子实验操作的预定义库
+**v0.3.0** (Q3 2025)
+- [ ] **Cloud Compilation**: Support for real-time control of remote hardware.
+- [ ] **Machine Learning Integration**: Automated parameter optimization and sequence learning.
+- [ ] **Standard Library Expansion**: A pre-defined library of common quantum experiment operations.
 
-欢迎查看我们的 [Issues](https://github.com/hirobumii/catseq/issues) 页面，了解更多详情并参与讨论。
+Feel free to check out our [Issues](https://github.com/hirobumii/catseq/issues) page for more details and to join the discussion.
 
-## 如何贡献
+## Contributing
 
-我们非常欢迎社区的贡献！如果你希望参与进来，请遵循以下步骤：
+We welcome contributions from the community! If you'd like to get involved, please follow these steps:
 
-1. Fork 本仓库
-2. 创建你的功能分支 (`git checkout -b feature/AmazingFeature`)
-3. 运行测试确保代码质量 (`.venv/bin/pytest tests/ -v`)
-4. 提交你的更改 (`git commit -m 'Add some AmazingFeature'`)
-5. 推送到分支 (`git push origin feature/AmazingFeature`)
-6. 创建一个 Pull Request
+1.  Fork the repository
+2.  Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3.  Run tests to ensure code quality (`.venv/bin/pytest tests/ -v`)
+4.  Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+5.  Push to the branch (`git push origin feature/AmazingFeature`)
+6.  Open a Pull Request
 
-**开发环境设置**：
+**Development Environment Setup**:
 ```bash
-# 使用脚本快速设置
+# Use the script for a quick setup
 ./setup.sh
 
-# 或手动设置
+# Or set up manually
 source .venv/bin/activate
 uv pip install -e .[dev]
 
-# 运行测试套件
+# Run the test suite
 .venv/bin/pytest tests/ -v
 
-# 代码格式检查
+# Check code formatting and types
 ruff check catseq/
 mypy catseq/
 ```
+Before contributing, please be sure to run the test suite to ensure all 49 tests are passing.
 
-在贡献之前，请务必运行测试套件确保所有 49 个测试都通过。
+## License
 
-## 许可证
+This project is distributed under the **MIT** License. See the `LICENSE` file for more information.
 
-本项目基于 **MIT** 许可证进行分发。详情请见 `LICENSE` 文件。
+## Acknowledgements
 
-## 致谢
-
-- **范畴论理论基础**: 感谢数学家们在 Monoidal Category 理论上的贡献
-- **RTMQ 硬件平台**: 为量子实验控制提供了强大的硬件基础
-- **Python 生态系统**: NumPy, pytest, uv 等优秀工具让开发变得高效
-- **uv 包管理器**: 为项目提供了快速可靠的依赖管理
+- **Foundations of Category Theory**: Our thanks to the mathematicians whose work on Monoidal Category theory made this possible.
+- **RTMQ Hardware Platform**: For providing a powerful hardware foundation for quantum experiment control.
+- **The Python Ecosystem**: Excellent tools like NumPy, pytest, and uv make development efficient.
+- **uv Package Manager**: For providing fast and reliable dependency management for the project.
 
 ---
 
 <p align="center">
-  <strong>CatSeq - 让量子实验控制回归数学之美</strong>
+  <strong>CatSeq - Bringing mathematical elegance to quantum experiment control.</strong>
 </p>

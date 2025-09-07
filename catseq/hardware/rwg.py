@@ -210,3 +210,49 @@ def rf_on() -> MorphismDef:
 def rf_off() -> MorphismDef:
     """Creates a definition to turn the RF switch off."""
     return _create_rf_switch_morphism(on=False)
+
+
+def rf_pulse(duration_us: float) -> MorphismDef:
+    """Creates a definition for an RF pulse: rf_on → wait → rf_off.
+    
+    This is a composite operation that temporarily turns on the RF switch
+    for the specified duration, then turns it off. The operation appears
+    externally as RWGActive(rf_on=False) → RWGActive(rf_on=False).
+    
+    Args:
+        duration_us: Duration of the RF pulse in microseconds
+        
+    Returns:
+        MorphismDef that generates the RF pulse sequence
+    """
+    
+    def generator(channel: Channel, start_state: State) -> Morphism:
+        if not isinstance(start_state, RWGActive):
+            raise TypeError(f"RF pulse requires RWGActive state, got {type(start_state)}")
+        if start_state.rf_on:
+            raise ValueError("RF pulse requires rf_on=False as starting state")
+        
+        # Create the component operations
+        rf_on_def = rf_on()
+        rf_off_def = rf_off()
+        
+        # Generate rf_on operation
+        rf_on_morphism = rf_on_def(channel, start_state)
+        
+        # Calculate intermediate state after rf_on
+        intermediate_state = RWGActive(
+            carrier_freq=start_state.carrier_freq,
+            rf_on=True,
+            waveforms=start_state.waveforms
+        )
+        
+        # Create wait operation with user's specified duration
+        wait_morphism = identity(duration_us)
+        
+        # Generate rf_off operation  
+        rf_off_morphism = rf_off_def(channel, intermediate_state)
+        
+        # Compose the sequence: rf_on → wait → rf_off
+        return rf_on_morphism >> wait_morphism >> rf_off_morphism
+        
+    return MorphismDef(generator)

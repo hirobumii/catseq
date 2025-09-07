@@ -11,13 +11,15 @@ from catseq.types.common import (
     State,
 )
 from catseq.types.ttl import TTLState
-from catseq.hardware import ttl
+from catseq.types.rwg import RWGActive, StaticWaveform
+from catseq.hardware import ttl, rwg
 from catseq.morphism import identity
 
 # Define boards and channels for testing
 RWG0 = Board("RWG0")
 CH0 = Channel(RWG0, 0, ChannelType.TTL)
 CH1 = Channel(RWG0, 1, ChannelType.TTL)
+RWG_CH0 = Channel(RWG0, 0, ChannelType.RWG)
 
 def test_sequential_composition_with_identity():
     """
@@ -201,3 +203,81 @@ def test_morphism_sequence_state_propagation():
     assert ops[2].operation_type == OperationType.TTL_ON
     assert ops[2].start_state == TTLState.OFF, "Op3 should start OFF"
     assert ops[2].end_state == TTLState.ON, "Op3 should end ON"
+
+
+def test_rwg_rf_pulse_composite_operation():
+    """
+    Tests that rf_pulse creates the correct composite operation:
+    rf_on → wait → rf_off, with proper state transitions.
+    """
+    # Arrange
+    waveforms = (StaticWaveform(sbg_id=0, freq=10.0, amp=0.5, phase=0.0),)
+    start_state = RWGActive(
+        carrier_freq=1000.0,
+        rf_on=False,  # Must start with RF off
+        waveforms=waveforms
+    )
+    
+    pulse_duration_us = 50.0
+    rf_pulse_def = rwg.rf_pulse(pulse_duration_us)
+    
+    # Act
+    morphism = rf_pulse_def(RWG_CH0, start_state)
+    
+    # Assert
+    # 1. Check that we have exactly one lane for our channel
+    assert len(morphism.lanes) == 1
+    assert RWG_CH0 in morphism.lanes
+    
+    # 2. Check that the composite operation has 3 atomic operations
+    ops = morphism.lanes[RWG_CH0].operations
+    assert len(ops) == 3, "RF pulse should contain exactly 3 operations"
+    
+    # 3. Check operation sequence and states
+    # Operation 1: RF ON
+    assert ops[0].operation_type == OperationType.RWG_RF_SWITCH
+    assert ops[0].start_state.rf_on == False, "RF should start OFF"
+    assert ops[0].end_state.rf_on == True, "RF should be ON after first op"
+    
+    # Operation 2: IDENTITY (wait)
+    assert ops[1].operation_type == OperationType.IDENTITY
+    # Check that wait duration matches user specification (converted to cycles)
+    expected_wait_cycles = int(pulse_duration_us * 250)  # 250 MHz clock
+    assert ops[1].duration_cycles == expected_wait_cycles
+    
+    # Operation 3: RF OFF
+    assert ops[2].operation_type == OperationType.RWG_RF_SWITCH
+    assert ops[2].start_state.rf_on == True, "RF should start ON for OFF operation"
+    assert ops[2].end_state.rf_on == False, "RF should be OFF after final op"
+    
+    # 4. Check domain and codomain (external view)
+    first_op_start = ops[0].start_state
+    last_op_end = ops[2].end_state
+    assert first_op_start.rf_on == False, "Domain should have rf_on=False"
+    assert last_op_end.rf_on == False, "Codomain should have rf_on=False"
+    
+    # 5. Verify that waveforms and carrier_freq are preserved
+    assert first_op_start.carrier_freq == last_op_end.carrier_freq
+    assert first_op_start.waveforms == last_op_end.waveforms
+
+
+def test_rwg_rf_pulse_invalid_start_state():
+    """
+    Tests that rf_pulse raises appropriate errors for invalid start states.
+    """
+    # Test 1: Non-RWGActive state
+    with pytest.raises(TypeError, match="RF pulse requires RWGActive state"):
+        pulse_def = rwg.rf_pulse(50.0)
+        pulse_def(RWG_CH0, TTLState.OFF)  # Wrong state type
+    
+    # Test 2: RWGActive but with rf_on=True
+    waveforms = (StaticWaveform(sbg_id=0, freq=10.0, amp=0.5, phase=0.0),)
+    invalid_state = RWGActive(
+        carrier_freq=1000.0,
+        rf_on=True,  # Invalid: RF already on
+        waveforms=waveforms
+    )
+    
+    with pytest.raises(ValueError, match="RF pulse requires rf_on=False"):
+        pulse_def = rwg.rf_pulse(50.0)
+        pulse_def(RWG_CH0, invalid_state)

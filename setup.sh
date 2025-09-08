@@ -14,7 +14,8 @@ if ! command -v uv &> /dev/null; then
     echo "📦 Installing uv package manager..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
     # This line might need adjustment depending on the shell config file (.bashrc, .zshrc, etc.)
-    export PATH="$HOME/.cargo/bin:$PATH"
+    # Source the environment file to make uv available in the current session
+    source "$HOME/.cargo/env"
 fi
 
 echo "🐍 Setting up Python virtual environment with uv..."
@@ -26,13 +27,20 @@ uv venv --python 3.12 --seed
 # Activate virtual environment
 source .venv/bin/activate
 
-echo "📋 Step 1/3: Installing oasm.dev to enable extension patching..."
-uv pip install oasm.dev
+echo "📋 Step 1/4: Installing oasm.dev to enable extension patching..."
+uv pip install oasm.dev h5py scipy numpy
 
-echo "📋 Step 2/3: Running script to patch oasm.dev with extensions..."
+# --- NEW STEP ADDED HERE ---
+echo "📋 Step 2/4: Installing sipyco from GitHub and locking version..."
+# We install directly from a specific git commit hash to "lock" the version.
+# This ensures that everyone gets the exact same dependency, making builds reproducible.
+uv pip install git+https://github.com/m-labs/sipyco@96fcefb
+# --- END OF NEW STEP ---
+
+echo "📋 Step 3/4: Running script to patch oasm.dev with extensions..."
 python scripts/post_install.py
 
-echo "📋 Step 3/3: Installing catseq and all dev dependencies..."
+echo "📋 Step 4/4: Installing catseq and all dev dependencies..."
 uv pip install -e .[dev]
 
 echo "✅ Development environment setup complete!"
@@ -58,3 +66,4 @@ echo "   ruff format .   # Format code"
 echo ""
 
 echo "🎯 Environment is ready for CatSeq development!"
+

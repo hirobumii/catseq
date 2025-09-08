@@ -88,8 +88,21 @@ def demo_functional_visualization():
         print(f"  {pattern['type']}: {ch} - {pattern['duration']:.1f}μs at t={pattern['start_time']:.1f}μs")
     print()
     
-    # Demo 8: Universal interface
-    print("8. Universal Interface Examples:")
+    # Demo 8: Adaptive time scaling demonstration
+    print("8. Adaptive Time Scaling:")
+    
+    # Create extreme time scale differences
+    quick_start = ttl.pulse(ttl_ch0, 0.5)    # 0.5μs - very short
+    long_gap = identity(200.0)               # 200μs - long wait  
+    quick_end = ttl.pulse(ttl_ch1, 1.0)      # 1μs - short
+    
+    adaptive_demo = quick_start >> long_gap >> quick_end
+    print("Sequence with extreme time differences:")
+    print(text_timeline(adaptive_demo, style='compact'))
+    print()
+    
+    # Demo 9: Universal interface
+    print("9. Universal Interface Examples:")
     
     # Text mode
     text_result = visualize_morphism(simple_pulse, mode='text', style='compact')
@@ -113,6 +126,7 @@ def demo_functional_visualization():
     print("✅ Pulse pattern recognition - intelligent operation grouping")
     print("✅ Sync detection - automatic synchronization analysis")
     print("✅ Multiple output formats - text and matplotlib plots")
+    print("✅ Adaptive time scaling - ensures all operations are visible")
     print("✅ Scalable design - handles large time spans efficiently")
 
 

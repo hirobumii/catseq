@@ -592,17 +592,17 @@ def _setup_plot_aesthetics(ax: plt.Axes, total_duration_us: float):
 
 
 def _generate_compact_text(physical_lanes: Dict[Board, PhysicalLane], max_width: int) -> str:
-    """生成紧凑文本时间轴 - 显示自适应时间信息"""
+    """生成紧凑文本时间轴 - 使用Lane级别的脉冲检测"""
     lines = []
     
-    # 计算自适应时间映射
+    # 计算自适应时间映射  
     sync_points = _collect_all_sync_points(physical_lanes)
     time_mapping = _create_adaptive_time_mapping(sync_points)
     
     lines.append(f"Timeline View (Adaptive Scale):")
     lines.append("=" * min(max_width, 80))
     
-    # 显示时间轴信息
+    # 显示关键时间点范围
     if len(sync_points) > 1:
         time_info = f"Time points: {sync_points[0]:.1f}μs"
         if len(sync_points) > 2:
@@ -612,42 +612,109 @@ def _generate_compact_text(physical_lanes: Dict[Board, PhysicalLane], max_width:
         lines.append(time_info)
         lines.append("")
     
+    # 按通道显示，但使用Lane级别的脉冲检测
+    all_channels = set()
     for board, physical_lane in physical_lanes.items():
-        channel_ops = _group_by_channel(physical_lane.operations)
-        
-        for channel, ops in channel_ops.items():
-            # 检测脉冲模式
-            patterns = _detect_channel_pulses(channel, ops)
-            
-            if patterns:
-                # 显示脉冲模式与时间信息
-                pattern_strs = []
-                for pattern in patterns:
-                    start_t = pattern['start_time']
-                    duration = pattern['duration']
-                    
-                    if pattern['type'] == 'TTL_PULSE':
-                        pattern_strs.append(f"🔲 TTL[t={start_t:.1f}μs]({duration:.1f}μs)")
-                    elif pattern['type'] == 'RF_PULSE':
-                        pattern_strs.append(f"📡 RF[t={start_t:.1f}μs]({duration:.1f}μs)")
-                
-                timeline = " → ".join(pattern_strs)
-            else:
-                # 显示详细操作与时间戳
-                op_strs = []
-                for pop in ops:
-                    op_name = _format_operation_name(pop.operation.operation_type)
-                    op_strs.append(f"t={pop.timestamp_us:.1f}:{op_name}")
-                timeline = " → ".join(op_strs)
-            
-            lines.append(f"{channel.global_id:<12} │ {timeline}")
+        for pop in physical_lane.operations:
+            all_channels.add(pop.operation.channel)
     
-    # 显示时间尺度压缩信息
+    # 排序通道
+    sorted_channels = sorted(all_channels, key=lambda ch: (ch.board.id, ch.channel_type.name, ch.local_id))
+    
+    for channel in sorted_channels:
+        # 收集这个通道的所有物理操作
+        channel_ops = []
+        for board, physical_lane in physical_lanes.items():
+            for pop in physical_lane.operations:
+                if pop.operation.channel == channel:
+                    channel_ops.append(pop)
+        
+        # 按时间戳排序
+        channel_ops.sort(key=lambda x: x.timestamp_us)
+        
+        if not channel_ops:
+            continue
+        
+        # 尝试基于原始Lane逻辑的脉冲检测
+        pulse_patterns = _detect_pulse_patterns_from_physical_ops(channel_ops)
+        
+        if pulse_patterns:
+            pattern_strs = []
+            for pattern in pulse_patterns:
+                if pattern['type'] == 'TTL_PULSE':
+                    pattern_strs.append(f"🔲 TTL[t={pattern['start_time']:.1f}μs]({pattern['duration']:.1f}μs)")
+                elif pattern['type'] == 'RF_PULSE':
+                    pattern_strs.append(f"📡 RF[t={pattern['start_time']:.1f}μs]({pattern['duration']:.1f}μs)")
+            timeline = " → ".join(pattern_strs)
+        else:
+            # 显示原始操作序列
+            op_strs = []
+            for pop in channel_ops:
+                op_name = _format_operation_name(pop.operation.operation_type)
+                op_strs.append(f"t={pop.timestamp_us:.1f}:{op_name}")
+            timeline = " → ".join(op_strs)
+        
+        lines.append(f"{channel.global_id:<12} │ {timeline}")
+    
+    # 显示自适应时间尺度提示
     if len(sync_points) > 2:
         lines.append("")
         lines.append("📏 Time scale: adaptive (short intervals expanded, long intervals compressed)")
     
     return "\n".join(lines)
+
+
+def _detect_pulse_patterns_from_physical_ops(ops: List[PhysicalOperation]) -> List[Dict[str, Any]]:
+    """从物理操作序列中检测脉冲模式，支持直接相邻的ON/OFF操作"""
+    patterns = []
+    i = 0
+    
+    while i < len(ops) - 1:  # 至少需要2个操作
+        op1, op2 = ops[i], ops[i + 1]
+        
+        # TTL脉冲：ON → OFF (直接相邻)
+        if (op1.operation.operation_type == OperationType.TTL_ON and 
+            op2.operation.operation_type == OperationType.TTL_OFF):
+            
+            start_time = op1.timestamp_us
+            end_time = op2.timestamp_us  
+            duration = end_time - start_time
+            
+            patterns.append({
+                'type': 'TTL_PULSE',
+                'start_time': start_time, 
+                'duration': duration,
+                'operation_indices': [i, i+1]
+            })
+            i += 2
+            continue
+        
+        # RF脉冲：RF_SWITCH(ON) → RF_SWITCH(OFF) (直接相邻)
+        if (op1.operation.operation_type == OperationType.RWG_RF_SWITCH and
+            op2.operation.operation_type == OperationType.RWG_RF_SWITCH):
+            
+            # 检查是否是ON→OFF转换
+            if (hasattr(op1.operation.end_state, 'rf_on') and 
+                hasattr(op2.operation.end_state, 'rf_on') and
+                op1.operation.end_state.rf_on and 
+                not op2.operation.end_state.rf_on):
+                
+                start_time = op1.timestamp_us
+                end_time = op2.timestamp_us
+                duration = end_time - start_time
+                
+                patterns.append({
+                    'type': 'RF_PULSE',
+                    'start_time': start_time,
+                    'duration': duration, 
+                    'operation_indices': [i, i+1]
+                })
+                i += 2
+                continue
+        
+        i += 1
+    
+    return patterns
 
 
 def _generate_proportional_text(physical_lanes: Dict[Board, PhysicalLane], max_width: int) -> str:

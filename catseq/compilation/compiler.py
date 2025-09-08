@@ -422,10 +422,18 @@ def _pass2_cost_and_epoch_analysis(events_by_board: Dict[OASMAddress, List[Logic
     """Pass 2: Cost analysis and epoch detection (Plan 3)"""
     print("Compiler Pass 2: Cost analysis and epoch detection...")
     
-    # Step 1: Detect epoch boundaries and assign logical timestamps (original Pass 1.5 logic)
+    # Step 1: Detect epoch boundaries GLOBALLY and assign logical timestamps
     print("  Detecting epoch boundaries and assigning logical timestamps...")
+    
+    # Create a flat list of all events from all boards for global epoch detection
+    all_events = [event for events in events_by_board.values() for event in events]
+    
+    # The _detect_epoch_boundaries function will modify the events in place,
+    # which are shared with the original events_by_board dictionary.
+    _detect_epoch_boundaries(all_events)
+
+    # Print summary of epochs found on each board
     for adr, events in events_by_board.items():
-        events_by_board[adr] = _detect_epoch_boundaries(events)
         epoch_info = {}
         for event in events:
             epoch = event.epoch
@@ -433,10 +441,10 @@ def _pass2_cost_and_epoch_analysis(events_by_board: Dict[OASMAddress, List[Logic
                 epoch_info[epoch] = 0
             epoch_info[epoch] += 1
         if len(epoch_info) > 1:
-            print(f"    Board {adr.value}: Found {len(epoch_info)} epochs: {dict(epoch_info)}")
+            print(f"    Board {adr.value}: Found {len(epoch_info)} epochs: {dict(sorted(epoch_info.items()))}")
         else:
             print(f"    Board {adr.value}: Single epoch with {sum(epoch_info.values())} events")
-    
+
     # Step 2: Analyze costs for all operations (original Pass 2 logic)
     print("  Analyzing costs for all operations via assembly generation...")
     

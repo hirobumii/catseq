@@ -10,6 +10,7 @@ dependencies = [
     "sipyco",
     "h5py",
     "scipy"
+    "matplotlib>=3.10.6",
 ]
 
 [project.optional-dependencies]

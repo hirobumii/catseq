@@ -38,9 +38,9 @@ def ttl_config(mask, dir):
     sfs('dio', 'dir')
     amk('dio', rtmq_mask, dir_reg)
     
-    print("SFS - DIO DIR")
-    print(f"AMK - DIO {rtmq_mask} {dir_reg}")
-    print(f"  -> mask=0b{mask:08b}, dir=0b{dir:08b}")
+    # print("SFS - DIO DIR")
+    # print(f"AMK - DIO {rtmq_mask} {dir_reg}")
+    # print(f"  -> mask=0b{mask:08b}, dir=0b{dir:08b}")
 
 
 def ttl_set(mask, state):

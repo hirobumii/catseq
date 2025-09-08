@@ -5,7 +5,8 @@ from hardware_map import (
     global_repump,
     cooling_lock,
     uv_led,
-    sync
+    sync,
+    trig_artiq
 )
 
 from catseq.hardware.sync import global_sync

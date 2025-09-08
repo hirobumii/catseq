@@ -9,7 +9,7 @@ dependencies = [
     "ipykernel",
     "sipyco",
     "h5py",
-    "scipy"
+    "scipy",
     "matplotlib>=3.10.6",
 ]
 

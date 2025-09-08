@@ -167,37 +167,282 @@ class Morphism:
         for channel in sorted_channels:
             lane = self.lanes[channel]
             
-            # 构建操作序列显示
-            ops_display = []
-            for op in lane.operations:
-                match op.operation_type:
-                    case OperationType.TTL_INIT:
-                        ops_display.append("TTL_init")
-                    case OperationType.TTL_ON:
-                        ops_display.append("TTL_ON")
-                    case OperationType.TTL_OFF:
-                        ops_display.append("TTL_OFF")
-                    case OperationType.IDENTITY:
-                        duration_us = cycles_to_us(op.duration_cycles)
-                        ops_display.append(f"identity({duration_us:.1f}μs)")
-                    case OperationType.RWG_INIT:
-                        ops_display.append("RWG_init")
-                    case OperationType.RWG_SET_CARRIER:
-                        ops_display.append(f"RWG_set_carrier({op.end_state.carrier_freq})")
-                    case OperationType.RWG_LOAD_COEFFS:
-                        ops_display.append("LOAD")
-                    case OperationType.RWG_UPDATE_PARAMS:
-                        duration_us = cycles_to_us(op.duration_cycles)
-                        ops_display.append(f"PLAY({duration_us:.1f}μs)")
-                    case OperationType.RWG_RF_SWITCH:
-                        ops_display.append("RWG_rf_switch")
-                    case _:  # 如果有未知类型需要处理，可以加上默认分支
-                        pass
+            # 尝试识别脉冲模式
+            pulse_pattern = self._detect_pulse_pattern(lane)
+            if pulse_pattern:
+                line = f"{channel.global_id:<20} │ {pulse_pattern}"
+            else:
+                # 详细模式：显示所有操作和状态
+                ops_display = []
+                for i, op in enumerate(lane.operations):
+                    op_str = self._format_operation_with_state(op, show_state=(i == 0 or i == len(lane.operations) - 1))
+                    ops_display.append(op_str)
+                
+                line = f"{channel.global_id:<20} │ {' → '.join(ops_display)}"
             
-            line = f"{channel.global_id:<20} │ {' → '.join(ops_display)}"
             lines.append(line)
         
         return "\n".join(lines)
+    
+    def _detect_pulse_pattern(self, lane: "Lane") -> str | None:
+        """检测常见的脉冲模式"""
+        ops = lane.operations
+        
+        # TTL pulse: ttl_on → wait → ttl_off
+        if (len(ops) == 3 and 
+            ops[0].operation_type == OperationType.TTL_ON and
+            ops[1].operation_type == OperationType.IDENTITY and
+            ops[2].operation_type == OperationType.TTL_OFF):
+            duration = cycles_to_us(ops[1].duration_cycles)
+            return f"🔲 TTL_pulse({duration:.1f}μs)"
+        
+        # RF pulse: rf_switch(on) → wait → rf_switch(off)
+        if (len(ops) == 3 and 
+            ops[0].operation_type == OperationType.RWG_RF_SWITCH and
+            ops[1].operation_type == OperationType.IDENTITY and
+            ops[2].operation_type == OperationType.RWG_RF_SWITCH):
+            # 检查是否是 False → True → False 的 RF 状态变化
+            if (hasattr(ops[0].start_state, 'rf_on') and hasattr(ops[0].end_state, 'rf_on') and
+                hasattr(ops[2].start_state, 'rf_on') and hasattr(ops[2].end_state, 'rf_on')):
+                if (ops[0].start_state.rf_on == False and ops[0].end_state.rf_on == True and
+                    ops[2].start_state.rf_on == True and ops[2].end_state.rf_on == False):
+                    duration = cycles_to_us(ops[1].duration_cycles)
+                    return f"📡 RF_pulse({duration:.1f}μs)"
+        
+        return None
+    
+    def _format_operation_with_state(self, op: "AtomicMorphism", show_state: bool = False) -> str:
+        """格式化操作显示，可选地显示状态信息"""
+        from .time_utils import cycles_to_us
+        
+        duration_us = cycles_to_us(op.duration_cycles)
+        op_name = {
+            OperationType.TTL_INIT: "init",
+            OperationType.TTL_ON: "ON", 
+            OperationType.TTL_OFF: "OFF",
+            OperationType.RWG_INIT: "init",
+            OperationType.RWG_SET_CARRIER: "set_carrier",
+            OperationType.RWG_LOAD_COEFFS: "load",
+            OperationType.RWG_UPDATE_PARAMS: "play",
+            OperationType.RWG_RF_SWITCH: "rf_switch",
+            OperationType.IDENTITY: "wait",
+            OperationType.SYNC_MASTER: "sync_master",
+            OperationType.SYNC_SLAVE: "sync_slave",
+        }.get(op.operation_type, str(op.operation_type))
+        
+        if duration_us > 0:
+            op_display = f"{op_name}({duration_us:.1f}μs)"
+        else:
+            op_display = op_name
+        
+        # 添加状态信息（如果需要且可用）
+        if show_state and hasattr(op.end_state, 'rf_on'):
+            rf_status = "RF_ON" if op.end_state.rf_on else "RF_OFF"
+            op_display += f"[{rf_status}]"
+        elif show_state and op.end_state and hasattr(op.end_state, 'name'):
+            op_display += f"[{op.end_state.name}]"
+        
+        return op_display
+
+    def timeline_view(self, compact: bool = True) -> str:
+        """生成时间轴视图，显示并行操作的时序关系
+        
+        Args:
+            compact: 是否使用紧凑模式（不按比例显示等待时间）
+        """
+        if not self.lanes:
+            if self.total_duration_cycles > 0:
+                return f"Identity Morphism ({self.total_duration_us:.1f}μs)"
+            return "Empty Morphism"
+        
+        lines = []
+        lines.append(f"Timeline View ({self.total_duration_us:.1f}μs):")
+        lines.append("=" * 80)
+        
+        if compact:
+            return self._generate_compact_timeline(lines)
+        else:
+            return self._generate_proportional_timeline(lines)
+    
+    def _generate_compact_timeline(self, lines: list) -> str:
+        """生成紧凑时间轴：事件驱动，不按比例显示等待"""
+        # 收集所有时间点事件
+        events = []
+        sorted_channels = sorted(self.lanes.keys(), key=lambda ch: (ch.board.id, ch.local_id))
+        
+        for channel in sorted_channels:
+            lane = self.lanes[channel]
+            current_time = 0.0
+            
+            for op in lane.operations:
+                if op.operation_type != OperationType.IDENTITY:
+                    # 记录非等待操作
+                    events.append({
+                        'time': current_time,
+                        'channel': channel,
+                        'operation': op,
+                        'type': 'instant'
+                    })
+                else:
+                    # 记录等待区间
+                    wait_duration = cycles_to_us(op.duration_cycles)
+                    events.append({
+                        'time': current_time,
+                        'channel': channel,
+                        'operation': op,
+                        'duration': wait_duration,
+                        'type': 'wait'
+                    })
+                
+                current_time += cycles_to_us(op.duration_cycles)
+        
+        # 按时间排序事件
+        events.sort(key=lambda e: (e['time'], e['channel'].global_id))
+        
+        # 生成时间点标记
+        unique_times = sorted(set(e['time'] for e in events))
+        time_markers = []
+        for t in unique_times[:10]:  # 最多显示10个时间点
+            time_markers.append(self._format_time(t))
+        
+        lines.append("Events: " + " → ".join(time_markers))
+        lines.append("")
+        
+        # 为每个通道生成事件序列
+        for channel in sorted_channels:
+            channel_events = [e for e in events if e['channel'] == channel]
+            timeline_parts = []
+            
+            for event in channel_events:
+                if event['type'] == 'instant':
+                    # 瞬时操作
+                    symbol = self._get_operation_symbol(event['operation'])
+                    timeline_parts.append(f"t={self._format_time(event['time'])}:{symbol}")
+                else:
+                    # 等待操作，显示为压缩形式
+                    duration = event['duration']
+                    if duration > 0.1:  # 只显示有意义的等待
+                        timeline_parts.append(f"⏳({self._format_time(duration)})")
+            
+            if timeline_parts:
+                timeline = " → ".join(timeline_parts)
+                lines.append(f"{channel.global_id:<9} │ {timeline}")
+        
+        return "\n".join(lines)
+    
+    def _generate_proportional_timeline(self, lines: list) -> str:
+        """生成按比例的时间轴（传统方式，但有合理限制）"""
+        total_us = self.total_duration_us
+        max_chars = 100
+        
+        # 自适应分辨率
+        if total_us <= 100:  # < 100μs
+            resolution_us = 1.0
+            chars_per_us = min(1, max_chars / total_us)
+        elif total_us <= 1000:  # < 1ms
+            resolution_us = 10.0
+            chars_per_us = 0.1
+        else:  # >= 1ms，使用压缩显示
+            resolution_us = total_us / max_chars
+            chars_per_us = 1.0 / resolution_us
+        
+        # 生成时间标尺
+        time_steps = int(total_us / resolution_us)
+        if time_steps > max_chars:
+            return self._generate_compact_timeline(lines)
+        
+        time_markers = []
+        for i in range(0, min(time_steps, 10)):
+            marker_time = i * resolution_us
+            time_markers.append(self._format_time(marker_time))
+        
+        lines.append("Time: " + " ".join(f"{marker:>8}" for marker in time_markers))
+        lines.append(" " * 6 + "─" * min(time_steps, max_chars))
+        
+        # 生成通道时间线
+        sorted_channels = sorted(self.lanes.keys(), key=lambda ch: (ch.board.id, ch.local_id))
+        
+        for channel in sorted_channels:
+            lane = self.lanes[channel]
+            timeline = self._generate_channel_timeline_proportional(
+                lane, total_us, resolution_us, max_chars
+            )
+            lines.append(f"{channel.global_id:<9} │{timeline}")
+        
+        return "\n".join(lines)
+    
+    def _get_operation_symbol(self, op: "AtomicMorphism") -> str:
+        """获取操作的符号表示"""
+        symbol_map = {
+            OperationType.TTL_ON: "▲",
+            OperationType.TTL_OFF: "▼",  
+            OperationType.TTL_INIT: "◇",
+            OperationType.RWG_INIT: "◆",
+            OperationType.RWG_SET_CARRIER: "🔶",
+            OperationType.RWG_LOAD_COEFFS: "📥",
+            OperationType.RWG_UPDATE_PARAMS: "▶️",
+            OperationType.SYNC_MASTER: "🔄",
+            OperationType.SYNC_SLAVE: "🔃",
+        }
+        
+        if op.operation_type == OperationType.RWG_RF_SWITCH:
+            if hasattr(op.end_state, 'rf_on') and op.end_state.rf_on:
+                return "📡"  # RF ON
+            else:
+                return "📴"  # RF OFF
+        
+        return symbol_map.get(op.operation_type, "●")
+    
+    def _format_time(self, time_us: float) -> str:
+        """格式化时间显示"""
+        if time_us < 1:
+            return f"{time_us:.1f}μs"
+        elif time_us < 1000:
+            return f"{time_us:.0f}μs"
+        elif time_us < 1000000:
+            return f"{time_us/1000:.1f}ms"
+        else:
+            return f"{time_us/1000000:.1f}s"
+    
+    def _generate_channel_timeline(self, lane: "Lane", total_us: float, resolution_us: float) -> str:
+        """为单个通道生成时间线字符串"""
+        timeline_length = max(1, int(total_us / resolution_us)) * 8  # 8 chars per time step
+        timeline = [' '] * timeline_length
+        
+        current_time_us = 0.0
+        for op in lane.operations:
+            op_duration_us = cycles_to_us(op.duration_cycles)
+            start_pos = int(current_time_us / resolution_us) * 8
+            end_pos = int((current_time_us + op_duration_us) / resolution_us) * 8
+            
+            # 选择表示符号
+            if op.operation_type == OperationType.TTL_ON:
+                symbol = '▲'
+            elif op.operation_type == OperationType.TTL_OFF:
+                symbol = '▼'
+            elif op.operation_type == OperationType.RWG_RF_SWITCH:
+                if hasattr(op.end_state, 'rf_on') and op.end_state.rf_on:
+                    symbol = '◆'  # RF ON
+                else:
+                    symbol = '◇'  # RF OFF
+            elif op.operation_type == OperationType.IDENTITY:
+                symbol = '─'
+            else:
+                symbol = '●'
+            
+            # 填充时间线
+            if op.operation_type == OperationType.IDENTITY:
+                # 等待操作显示为连续线
+                for pos in range(start_pos, min(end_pos, timeline_length)):
+                    timeline[pos] = symbol
+            else:
+                # 瞬时操作显示为单个符号
+                if start_pos < timeline_length:
+                    timeline[start_pos] = symbol
+            
+            current_time_us += op_duration_us
+        
+        return ''.join(timeline)
 
 
 def from_atomic(op: AtomicMorphism) -> Morphism:

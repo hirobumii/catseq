@@ -14,7 +14,7 @@ from hardware_map import (
 
 from catseq.hardware.sync import global_sync
 from catseq.hardware.ttl import pulse, initialize_channel, set_high, set_low
-from catseq.hardware.rwg import initialize, set_state, identity, rf_on, rf_off, rf_pulse, InitialTarget
+from catseq.hardware.rwg import initialize, set_state, identity, rf_on, rf_off, rf_pulse, linear_ramp, InitialTarget, RampTarget
 from catseq.compilation.compiler import compile_to_oasm_calls, execute_oasm_calls
 from catseq.morphism import Morphism
 from catseq.types.common import Channel, State
@@ -83,9 +83,22 @@ cooling_locking_target = InitialTarget(
     0.1
 )
 
+molasses_locking_target = RampTarget(
+    # cooling_lock.local_id<<5,
+    -1.09,
+    0.1
+)
+
+molasses_cooling_target = RampTarget(
+    # mot_cooling.local_id<<5,
+    0.0,
+    0.1089
+ )
+
 locking_morphism = initialize(204.96)(cooling_lock) >> identity(10.0) 
 locking_morphism = locking_morphism >> set_state([cooling_locking_target])(cooling_lock, get_end_state(locking_morphism, cooling_lock))
 locking_morphism = locking_morphism >> rf_on()(cooling_lock, get_end_state(locking_morphism, cooling_lock))
+
 
 
 para_init = set_state([cooling_target])(mot_cooling, get_end_state(laser_init, mot_cooling)) \
@@ -94,6 +107,7 @@ para_init = set_state([cooling_target])(mot_cooling, get_end_state(laser_init, m
     | set_state([global_repump_target])(global_repump, get_end_state(laser_init, global_repump))
 
 init_morphism = all_init >> para_init >> identity(100.0)
+init_morphism = init_morphism | locking_morphism
 
 mot_laser_on = rf_on()(mot_cooling, get_end_state(init_morphism, mot_cooling)) \
     | rf_on()(mot_repump, get_end_state(init_morphism, mot_repump))
@@ -111,9 +125,15 @@ rf_all_off = rf_off()(mot_cooling, get_end_state(init_morphism, mot_cooling)) \
 mot_on = (mot_laser_on | pulse(uv_led, 10.0) | set_high(gradient_mag))
 
 mot_morphism = (pulse(mag_trig,10.0) | mot_laser_on | pulse(uv_led, 10.0) | set_high(gradient_mag)) >> identity(1000_000) >> (mot_laser_off | set_low(gradient_mag)|pulse(mag_trig,10.0))
+mot_morphism = mot_morphism 
 
 # morphism = init_morphism >> global_sync() >> identity(10.0) >> mot_on
-morphism = init_morphism >> global_sync() >> identity(10.0) >> mot_morphism >> identity(50_000.0)
+morphism = init_morphism >> global_sync() >> identity(10.0) >> mot_morphism 
+
+molasses_morphism = linear_ramp([molasses_locking_target], 10_000)(cooling_lock, get_end_state(morphism, cooling_lock)) \
+    | linear_ramp([molasses_cooling_target], 10_000)(mot_cooling, get_end_state(morphism, mot_cooling))
+
+morphism = morphism >> molasses_morphism >> identity(50_000.0)
 
 imaging_morphism = rf_pulse(30_000)(global_imaging, get_end_state(morphism, global_imaging)) \
     | rf_pulse(30_000)(global_repump, get_end_state(morphism, global_repump)) \
@@ -129,30 +149,5 @@ rwgs = [1,2,3,4,5]
 run_all = run_cfg(intf_usb, rwgs+[0])
 seq = assembler(run_all,[(f'rwg{i}', C_RWG) for i in range(len(rwgs))]+[('main',C_MAIN)])
 
-from catseq.visualization import visualize_morphism, text_timeline
-
-print("Testing visualization...")
-try:
-    # 测试自适应时间尺度的可视化效果
-    result = text_timeline(morphism, style='compact')
-    print("Text timeline result:")
-    print(result)
-    
-    print("\n" + "="*50 + "\n")
-    
-    # 测试plot功能
-    from catseq.visualization import plot_timeline
-    fig, ax = plot_timeline(morphism, filename='test_complex_timeline.png', figsize=(20, 8))
-    print("✅ Plot saved to test_complex_timeline.png")
-    
-    print("✅ Adaptive time scaling working correctly!")
-    print("Key features demonstrated:")
-    print("  - Long duration pulses (1000010.0μs) and short pulses (10.0μs) both visible")
-    print("  - RF and TTL pulse pattern recognition")
-    print("  - Proper channel sorting by board and type")
-    print("  - Time synchronization across channels")
-    
-except Exception as e:
-    print(f"Error in visualization: {e}")
-    import traceback
-    traceback.print_exc()
+oasm_calls = compile_to_oasm_calls(morphism, seq)
+a,b = execute_oasm_calls(oasm_calls, seq)

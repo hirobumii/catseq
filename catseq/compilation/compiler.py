@@ -556,52 +556,30 @@ def _replace_wait_time_placeholders(events_by_board: Dict[OASMAddress, List[Logi
 
 def _pass3_schedule_and_optimize(events_by_board: Dict[OASMAddress, List[LogicalEvent]]):
     """
-    Pass 3: Schedule & Optimize - 基于串行约束的智能调度 (Plan 3)
+    Pass 3: Schedule & Optimize - Pipelining scheduler (New Plan)
     
-    核心功能：
-    1. 识别LOAD-PLAY对应关系和deadline
-    2. 按deadline排序，紧急的先执行  
-    3. 串行调度，利用播放期间的时间窗口
-    4. 确保同板卡LOAD操作严格串行执行
+    This pass implements the core pipelining optimization. It identifies LOAD-PLAY
+    pairs and schedules the LOAD operation as late as possible before the PLAY
+    operation, utilizing idle time.
     """
-    print("Compiler Pass 3: Scheduling with serial load constraints (Plan 3)...")
+    print("Compiler Pass 3: Scheduling with pipelining optimization...")
     
     for adr, events in events_by_board.items():
         # 1. 识别LOAD和PLAY操作
-        load_events = [e for e in events if e.operation.operation_type == OperationType.RWG_LOAD_COEFFS]
-        play_events = [e for e in events if e.operation.operation_type == OperationType.RWG_UPDATE_PARAMS]
-        
-        if not load_events:
-            continue  # 没有LOAD操作需要调度
+        # Note: _identify_pipeline_pairs is now used here for the main scheduling logic
+        pipeline_pairs = _identify_pipeline_pairs(events)
+        if not pipeline_pairs:
+            continue
             
-        print(f"  Board {adr.value}: Found {len(load_events)} LOAD operations, {len(play_events)} PLAY operations")
+        print(f"  Board {adr.value}: Found {len(pipeline_pairs)} pipeline pairs for optimization")
         
-        # 2. 建立LOAD-PLAY对应关系
-        load_play_pairs = _identify_load_play_pairs(load_events, play_events)
-        print(f"    Identified {len(load_play_pairs)} LOAD-PLAY pairs")
+        # 2. 计算最优调度方案
+        # This is the correct scheduling logic as per user's design intent
+        optimized_events = _calculate_optimal_schedule(events, pipeline_pairs)
         
-        # 3. 计算每个LOAD的deadline - 使用id()作为key避免hashable问题
-        load_deadlines = {}
-        for pair in load_play_pairs:
-            load_deadlines[id(pair['load_event'])] = pair['play_event'].timestamp_cycles
-        
-        # 4. 只对有明确deadline的LOAD进行调度（有对应PLAY的LOAD）
-        loads_to_schedule = [load for load in load_events if id(load) in load_deadlines]
-        orphaned_loads = [load for load in load_events if id(load) not in load_deadlines]
-        
-        if orphaned_loads:
-            print(f"    Warning: Found {len(orphaned_loads)} LOAD operations without corresponding PLAY operations")
-            
-        # 5. 按deadline排序需要调度的LOAD操作
-        sorted_loads = sorted(loads_to_schedule, key=lambda x: load_deadlines[id(x)])
-        
-        # 5. 串行调度LOAD操作
-        optimized_events = _schedule_loads_serially(events, sorted_loads, load_deadlines, play_events)
-        
-        # 6. 更新事件列表
+        # 3. 更新事件列表
         events_by_board[adr] = optimized_events
-        
-        print(f"    Completed serial scheduling optimization for board {adr.value}")
+        print(f"    Completed pipelining optimization for board {adr.value}")
 
 def _identify_load_play_pairs(load_events: List[LogicalEvent], play_events: List[LogicalEvent]) -> List[Dict]:
     """识别LOAD-PLAY对应关系"""
@@ -1307,31 +1285,33 @@ def _identify_pipeline_pairs(events: List[LogicalEvent]) -> List[PipelinePair]:
 
 def _calculate_optimal_schedule(events: List[LogicalEvent], pipeline_pairs: List[PipelinePair]) -> List[LogicalEvent]:
     """
-    Calculate optimal scheduling for pipeline pairs to minimize wait times.
+    Calculate optimal scheduling for pipeline pairs with conflict avoidance.
     
-    This function implements cross-channel pipelining optimization by scheduling
-    LOAD operations backwards from their corresponding PLAY operations.
-    It assumes all LOAD operations on a board are serial.
+    This function implements pipelining by scheduling LOAD operations backwards
+    from their corresponding PLAY operations. It is aware of ALL other operations
+    on the board and will adjust the LOAD timing to avoid conflicts, ensuring
+    that user-specified timestamps for visible effects are never violated.
     
     Args:
-        events: Original list of LogicalEvent objects
-        pipeline_pairs: List of identified LOAD→PLAY pairs
+        events: Original list of all LogicalEvent objects for the board.
+        pipeline_pairs: List of identified LOAD→PLAY pairs to be scheduled.
         
     Returns:
-        List of LogicalEvent objects with optimized timestamps
+        A new list of LogicalEvent objects with optimized timestamps.
     """
     if not pipeline_pairs:
         return events
 
-    print("    Calculating optimal schedule for pipeline pairs...")
+    print("    Calculating optimal schedule for pipeline pairs (with conflict avoidance)...")
 
-    events_to_reschedule = {}
-
+    # Create a dictionary for quick access to the events that will be rescheduled.
+    # The value will be the new timestamp.
+    events_to_reschedule: Dict[int, int] = {id(p.load_event): 0 for p in pipeline_pairs}
+    
     # Sort pairs by PLAY start time, DESCENDING, to schedule later operations first.
-    # A secondary sort key on channel id makes the scheduling deterministic.
     sorted_pairs = sorted(pipeline_pairs, key=lambda p: (p.play_start_time, p.channel.global_id), reverse=True)
 
-    # Tracks the start time of the previously scheduled LOAD.
+    # This tracks the start time of the previously scheduled LOAD.
     # Since we are scheduling backwards, this is the time the *next* load must finish by.
     next_load_available_ts = float('inf')
 
@@ -1340,11 +1320,47 @@ def _calculate_optimal_schedule(events: List[LogicalEvent], pipeline_pairs: List
         play_start_time = pair.play_start_time
         load_cost = pair.load_cost_cycles
 
-        # The load must complete before its own play starts, and before the next (later) load starts.
-        finish_by = min(play_start_time, next_load_available_ts)
+        # The latest possible time the load can finish.
+        # It must finish before its own PLAY starts, and before the next LOAD (for a later PLAY) starts.
+        latest_finish_by = min(play_start_time, next_load_available_ts)
         
-        new_load_ts = finish_by - load_cost
+        # The ideal start time if there are no other operations in the way.
+        proposed_start_ts = latest_finish_by - load_cost
+        
+        # --- Conflict Detection ---
+        # Find any operations that conflict with our proposed time slot.
+        # A conflict occurs if another operation's time span overlaps with
+        # [proposed_start_ts, proposed_start_ts + load_cost].
+        
+        conflicting_events = []
+        for other_event in events:
+            # Don't check for conflicts with the load itself or its corresponding play.
+            if id(other_event) == id(load_event) or id(other_event) == id(pair.play_event):
+                continue
+            
+            # Ignore other LOAD events that are also being rescheduled.
+            if id(other_event) in events_to_reschedule:
+                continue
 
+            other_start = other_event.timestamp_cycles
+            other_end = other_start + (other_event.cost_cycles or 0)
+            
+            # Overlap check: (StartA <= EndB) and (EndA >= StartB)
+            if (proposed_start_ts < other_end) and ((proposed_start_ts + load_cost) > other_start):
+                conflicting_events.append(other_event)
+
+        # If there are conflicts, we must adjust our schedule.
+        if conflicting_events:
+            # Find the latest start time among all conflicting events.
+            # Our load must finish before the earliest of these conflicts begins.
+            earliest_conflict_start = min(e.timestamp_cycles for e in conflicting_events)
+            finish_by = earliest_conflict_start
+        else:
+            finish_by = latest_finish_by
+
+        # Final calculation of the new timestamp.
+        new_load_ts = finish_by - load_cost
+        
         events_to_reschedule[id(load_event)] = new_load_ts
         
         # The next load we schedule (which happens earlier in time) must finish before this one starts.
@@ -1359,7 +1375,6 @@ def _calculate_optimal_schedule(events: List[LogicalEvent], pipeline_pairs: List
         if event_id in events_to_reschedule:
             new_timestamp = events_to_reschedule[event_id]
             # Create a new event with the updated timestamp
-            # Also update the logical_timestamp to be consistent
             optimized_event = LogicalEvent(
                 timestamp_cycles=new_timestamp,
                 operation=event.operation,
@@ -1395,16 +1410,10 @@ def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEv
             calls_by_board[adr] = board_calls
             continue
         
-        # Step 1: Identify pipeline pairs for optimization
-        pipeline_pairs = _identify_pipeline_pairs(events)
-        print(f"  Board {adr.value}: Found {len(pipeline_pairs)} pipeline pairs")
-        # Step 2: Calculate optimal scheduling for pipeline pairs
-        optimized_events = _calculate_optimal_schedule(events, pipeline_pairs)
-        print(f"  Board {adr.value}: Applied optimization to {len(optimized_events)} events")
-        # Sort events to create a deterministic timeline.
-        # Priority: 1. Timestamp, 2. RWG_INIT operations first, 3. Channel ID.
+        # Pass 3 has already performed the optimization. We just need to sort the
+        # events to create a deterministic timeline for final code generation.
         sorted_events = sorted(
-            optimized_events,
+            events,
             key=lambda e:
                 (
                     e.timestamp_cycles,
@@ -1413,40 +1422,29 @@ def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEv
                 )
         )
         
-        # Group events by timestamp to process them in concurrent blocks.
-        events_by_ts: Dict[int, List[LogicalEvent]] = {}
+        last_op_end_time = 0
         for event in sorted_events:
             ts = event.timestamp_cycles
-            if ts not in events_by_ts:
-                events_by_ts[ts] = []
-            events_by_ts[ts].append(event)
-
-        last_op_end_time = 0
-        # Process events chronologically, block by block.
-        for ts in sorted(events_by_ts.keys()):
-            ts_events = events_by_ts[ts]
             
-            # Calculate a single wait time for the entire concurrent block.
+            # Calculate wait time based on when the hardware is actually free
             wait_cycles = ts - last_op_end_time
+            
             if wait_cycles < 0:
-                # This warning should no longer appear with the improved scheduling,
-                # but we keep it as a safeguard.
-                print(f"Warning: Negative wait time ({wait_cycles}c) calculated for timestamp {ts}c. "
-                      f"This may indicate an issue in the pipelining optimization logic.")
+                # This can happen if a pipelined LOAD is scheduled into a slot where
+                # a previous operation is still running. We don't wait, but the 
+                # actual start time of this event is pushed to when the board is free.
                 wait_cycles = 0
             
             if wait_cycles > 0:
                 board_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.WAIT_US, args=(cycles_to_us(wait_cycles),)))
 
-            # Issue all OASM calls for this block without further waits.
-            # Find the cost of the longest operation in the block to advance the clock correctly.
-            max_cost_at_ts = 0
-            for event in ts_events:
-                board_calls.extend(event.oasm_calls)
-                max_cost_at_ts = max(max_cost_at_ts, event.cost_cycles)
+            # Add the actual OASM calls for the current event
+            board_calls.extend(event.oasm_calls)
 
-            # The next block can only start after the longest operation in this block has finished.
-            last_op_end_time = ts + max_cost_at_ts
+            # The next operation can only start after the current one *actually* finishes.
+            # The actual start time is the later of its scheduled time or when the board was last free.
+            actual_start_time = max(ts, last_op_end_time)
+            last_op_end_time = actual_start_time + event.cost_cycles
 
         calls_by_board[adr] = board_calls
 

@@ -7,7 +7,7 @@ dependencies = [
     "numpy",
     "oasm.dev",
     "ipykernel",
-    "sipyco",
+    "sipyco @ git+https://github.com/m-labs/sipyco.git",
     "h5py",
     "scipy",
     "matplotlib>=3.10.6",

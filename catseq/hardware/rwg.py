@@ -26,17 +26,15 @@ from ..types import (
 
 
 @dataclass
-class InitialTarget:
-    """Defines the initial state for a single SBG, requiring an explicit ID."""
-    sbg_id: int
-    freq: float
-    amp: float
+class RWGTarget:
+    """Represents a target state for an RWG's sub-band generator (SBG).
 
-@dataclass
-class RampTarget:
-    """Defines the ramp destination for a single, already-active SBG."""
-    target_freq: float
-    target_amp: float
+    The `sbg_id` is required when setting an initial state, but ignored during a ramp.
+    `freq` and `amp` can be set to None during a ramp to indicate no change.
+    """
+    freq: Optional[float] = None
+    amp: Optional[float] = None
+    sbg_id: Optional[int] = None
 
 
 def initialize(carrier_freq: float) -> MorphismDef:
@@ -54,7 +52,7 @@ def initialize(carrier_freq: float) -> MorphismDef:
     return MorphismDef(generator)
 
 
-def set_state(targets: List[InitialTarget]) -> MorphismDef:
+def set_state(targets: List[RWGTarget]) -> MorphismDef:
     """
     Creates a definition for a zero-duration ramp (setting an initial state).
     This operation creates a new set of active SBGs and resets their phase.
@@ -66,24 +64,30 @@ def set_state(targets: List[InitialTarget]) -> MorphismDef:
                 f"RWG set_state must start from RWGReady or RWGActive, not {type(start_state)}"
             )
 
-        params = [
-            WaveformParams(
-                sbg_id=t.sbg_id,
-                freq_coeffs=(t.freq, None, None, None),
-                amp_coeffs=(t.amp, None, None, None),
-                initial_phase=0.0,
-                phase_reset=True,
+        params = []
+        for t in targets:
+            if t.sbg_id is None or t.freq is None or t.amp is None:
+                raise ValueError("sbg_id, freq, and amp must be provided for all targets in set_state.")
+            params.append(
+                WaveformParams(
+                    sbg_id=t.sbg_id,
+                    freq_coeffs=(t.freq, None, None, None),
+                    amp_coeffs=(t.amp, None, None, None),
+                    initial_phase=0.0,
+                    phase_reset=True,
+                )
             )
-            for t in targets
-        ]
 
         load_morphism = rwg_load_coeffs(channel, params, start_state)
         instruction_state = load_morphism.lanes[channel].operations[-1].end_state
 
-        end_waveforms = [
-            StaticWaveform(sbg_id=t.sbg_id, freq=t.freq, amp=t.amp, phase=0.0)
-            for t in targets
-        ]
+        end_waveforms = []
+        for t in targets:
+            if t.sbg_id is None or t.freq is None or t.amp is None:
+                raise ValueError("sbg_id, freq, and amp must be provided for all targets in set_state.")
+            end_waveforms.append(
+                StaticWaveform(sbg_id=t.sbg_id, freq=t.freq, amp=t.amp, phase=0.0)
+            )
         end_state = RWGActive(
             carrier_freq=start_state.carrier_freq, rf_on=start_state.rf_on, waveforms=tuple(end_waveforms)
         )
@@ -95,7 +99,7 @@ def set_state(targets: List[InitialTarget]) -> MorphismDef:
     return MorphismDef(generator)
 
 
-def linear_ramp(targets: List[Optional[RampTarget]], duration_us: float) -> MorphismDef:
+def linear_ramp(targets: List[Optional[RWGTarget]], duration_us: float) -> MorphismDef:
     """Creates a definition for a linear ramp with phase continuity."""
 
     def generator(channel: Channel, start_state: State) -> Morphism:
@@ -121,21 +125,22 @@ def linear_ramp(targets: List[Optional[RampTarget]], duration_us: float) -> Morp
             start_amp = current_wf.amp
             start_phase = current_wf.phase
 
-            if target is None:
-                target_freq = start_freq
-                target_amp = start_amp
-            else:
-                target_freq = target.target_freq
-                target_amp = target.target_amp
+            # Determine target freq/amp, defaulting to current values if not specified
+            target_freq = target.freq if target and target.freq is not None else start_freq
+            target_amp = target.amp if target and target.amp is not None else start_amp
 
+            # If ramp rate is zero, coeffs will be None to prevent unnecessary register updates
             freq_ramp_rate = (target_freq - start_freq) / duration_us
             amp_ramp_rate = (target_amp - start_amp) / duration_us
+
+            freq_coeffs = (start_freq, freq_ramp_rate, None, None) if freq_ramp_rate != 0 else (None, None, None, None)
+            amp_coeffs = (start_amp, amp_ramp_rate, None, None) if amp_ramp_rate != 0 else (None, None, None, None)
 
             params.append(
                 WaveformParams(
                     sbg_id=sbg_id,
-                    freq_coeffs=(start_freq, freq_ramp_rate, None, None),
-                    amp_coeffs=(start_amp, amp_ramp_rate, None, None),
+                    freq_coeffs=freq_coeffs,
+                    amp_coeffs=amp_coeffs,
                     initial_phase=start_phase,
                     phase_reset=False, # Ensure phase continuity
                 )

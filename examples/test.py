@@ -14,7 +14,7 @@ from hardware_map import (
 
 from catseq.hardware.sync import global_sync
 from catseq.hardware.ttl import pulse, initialize_channel, set_high, set_low
-from catseq.hardware.rwg import initialize, set_state, identity, rf_on, rf_off, rf_pulse, linear_ramp, InitialTarget, RampTarget
+from catseq.hardware.rwg import initialize, set_state, identity, rf_on, rf_off, rf_pulse, linear_ramp, RWGTarget
 from catseq.compilation.compiler import compile_to_oasm_calls, execute_oasm_calls
 from catseq.morphism import Morphism
 from catseq.types.common import Channel, State
@@ -53,46 +53,44 @@ laser_init = mot_cooling_init | mot_repump_init | global_imaging_init | global_r
 trig_init = sync_init | mag_trig_init | qcmos_trig_init | artiq_trig_init | gradient_mag_init
 all_init = (laser_init | trig_init) >> identity(10.0)
 
-cooling_target = InitialTarget(
-    mot_cooling.local_id<<5,
-    0.0,
-    0.15
+cooling_target = RWGTarget(
+    sbg_id=mot_cooling.local_id<<5,
+    freq=0.0,
+    amp=0.15
  )
 
-repump_target = InitialTarget(
-    mot_repump.local_id<<5,
-    0.0,
-    0.15
+repump_target = RWGTarget(
+    sbg_id=mot_repump.local_id<<5,
+    freq=0.0,
+    amp=0.15
 )
 
-global_imaging_target = InitialTarget(
-    global_imaging.local_id<<5,
-    0.0,
-    0.012
+global_imaging_target = RWGTarget(
+    sbg_id=global_imaging.local_id<<5,
+    freq=0.0,
+    amp=0.012
 )
 
-global_repump_target = InitialTarget(
-    global_repump.local_id<<5,
-    0.0,
-    0.077
+global_repump_target = RWGTarget(
+    sbg_id=global_repump.local_id<<5,
+    freq=0.0,
+    amp=0.077
 )
 
-cooling_locking_target = InitialTarget(
-    cooling_lock.local_id<<5,
-    0.0,
-    0.1
+cooling_locking_target = RWGTarget(
+    sbg_id=cooling_lock.local_id<<5,
+    freq=0.0,
+    amp=0.1
 )
 
-molasses_locking_target = RampTarget(
-    # cooling_lock.local_id<<5,
-    -1.09,
-    0.1
+molasses_locking_target = RWGTarget(
+    freq=-1.09,
+    amp=0.1
 )
 
-molasses_cooling_target = RampTarget(
-    # mot_cooling.local_id<<5,
-    0.0,
-    0.1089
+molasses_cooling_target = RWGTarget(
+    freq=0.0,
+    amp=0.1089
  )
 
 locking_morphism = initialize(204.96)(cooling_lock) >> identity(10.0) 

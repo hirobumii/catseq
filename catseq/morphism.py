@@ -710,7 +710,7 @@ class MorphismSequence:
     def __call__(self, channel: Channel, start_state: State | None = None) -> Morphism:
         """Executes the full sequence of generators."""
         if start_state is None:
-            start_atate = RWGUninitialized()
+            start_state = RWGUninitialized()
 
         if not self.defs:
             return Morphism(lanes={})

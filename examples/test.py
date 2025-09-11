@@ -85,26 +85,38 @@ cooling_locking_target = RWGTarget(
 
 molasses_locking_target = RWGTarget(
     # cooling_lock.local_id<<5,
-    1.09,
+    1.0944,
     0.1
 )
 
 molasses_cooling_target = RWGTarget(
     # mot_cooling.local_id<<5,
     0.0,
-    0.1089
- )
+    0.05
+)
+
+molasses_cooling_start_target = RWGTarget(
+    0.0,
+    0.10,
+    mot_cooling.local_id<<5,
+)
+
 
 locking_morphism = initialize(204.96)(cooling_lock) >> identity(10.0) 
 locking_morphism = locking_morphism >> set_state([cooling_locking_target])(cooling_lock, get_end_state(locking_morphism, cooling_lock))
 locking_morphism = locking_morphism >> rf_on()(cooling_lock, get_end_state(locking_morphism, cooling_lock))
 
+para_init = {
+    mot_cooling: set_state([cooling_target]),
+    mot_repump: set_state([repump_target]),
+    global_imaging: set_state([global_imaging_target]),
+    global_imaging: set_state([global_repump_target])
+}
 
-
-para_init = set_state([cooling_target])(mot_cooling, get_end_state(laser_init, mot_cooling)) \
-    | set_state([repump_target])(mot_repump, get_end_state(laser_init, mot_repump)) \
-    | set_state([global_imaging_target])(global_imaging, get_end_state(laser_init, global_imaging)) \
-    | set_state([global_repump_target])(global_repump, get_end_state(laser_init, global_repump))
+# para_init = set_state([cooling_target])(mot_cooling, get_end_state(laser_init, mot_cooling)) \
+#     | set_state([repump_target])(mot_repump, get_end_state(laser_init, mot_repump)) \
+#     | set_state([global_imaging_target])(global_imaging, get_end_state(laser_init, global_imaging)) \
+#     | set_state([global_repump_target])(global_repump, get_end_state(laser_init, global_repump))
 
 init_morphism = all_init >> para_init >> identity(100.0)
 init_morphism = init_morphism | locking_morphism
@@ -128,11 +140,13 @@ mot_on = (mot_laser_on | pulse(uv_led, 10.0) | set_high(gradient_mag))
 
 # trigger = pulse(mag_trig, 10.0)
 
-mot_morphism = (pulse(mag_trig,10.0) | mot_laser_on | pulse(uv_led, 10.0) | set_high(gradient_mag)) >> identity(1000_000) >> (mot_laser_off | set_low(gradient_mag)|pulse(mag_trig,10.0))
-mot_morphism = mot_morphism 
+mot_morphism = (pulse(mag_trig,10.0) | mot_laser_on | pulse(uv_led, 10.0) | set_high(gradient_mag)) >> \
+    identity(1000_000) >> (mot_laser_off | set_low(gradient_mag)|pulse(mag_trig,10.0)) 
+mot_morphism = mot_morphism >> (set_state([molasses_cooling_start_target])(mot_cooling, get_end_state(mot_morphism, mot_cooling))) >> identity(10)
 
 # morphism = init_morphism >> global_sync() >> identity(10.0) >> mot_on
 morphism = init_morphism >> global_sync() >> identity(10.0) >> mot_morphism 
+
 
 molasses_morphism = linear_ramp([molasses_locking_target], 10_000)(cooling_lock, get_end_state(morphism, cooling_lock)) \
     | (rf_on()>>linear_ramp([molasses_cooling_target], 10_000))(mot_cooling, get_end_state(morphism, mot_cooling)) \
@@ -144,11 +158,12 @@ molasses_morphism = molasses_morphism >> linear_ramp([cooling_locking_target], 5
 
 morphism = morphism >> molasses_morphism >> identity(50_000.0)
 # morphism = morphism >> identity(50_000.0)
+artiq_trigger_morphism = pulse(artiq_trig, 10.0)
 
 imaging_morphism = rf_pulse(30_000)(global_imaging, get_end_state(morphism, global_imaging)) \
     | rf_pulse(30_000)(global_repump, get_end_state(morphism, global_repump)) \
     | pulse(qcmos_trig, 10.0)
-morphism = morphism >> imaging_morphism >> identity(100_000) >> imaging_morphism
+morphism = morphism >> imaging_morphism >> identity(50_000) >> artiq_trigger_morphism >> identity(50_000) >> imaging_morphism
 
 # intf_usb = sim_intf()
 intf_usb = ft601_intf("IONCV2PROT")#;intf_usb.__enter__()
@@ -158,9 +173,3 @@ intf_usb.loc_chn = 1
 rwgs = [1,2,3,4,5]
 run_all = run_cfg(intf_usb, rwgs+[0])
 seq = assembler(run_all,[(f'rwg{i}', C_RWG) for i in range(len(rwgs))]+[('main',C_MAIN)])
-
-# oasm_calls = compile_to_oasm_calls(morphism, seq)
-# a,b = execute_oasm_calls(oasm_calls, seq)
-from catseq.visualization.timeline import plot_timeline
-
-plot_timeline(morphism, filename='timeline_rf_pulse_test.png')

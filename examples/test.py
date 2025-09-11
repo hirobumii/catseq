@@ -110,7 +110,7 @@ para_init = {
     mot_cooling: set_state([cooling_target]),
     mot_repump: set_state([repump_target]),
     global_imaging: set_state([global_imaging_target]),
-    global_imaging: set_state([global_repump_target])
+    global_repump: set_state([global_repump_target])
 }
 
 # para_init = set_state([cooling_target])(mot_cooling, get_end_state(laser_init, mot_cooling)) \
@@ -121,18 +121,33 @@ para_init = {
 init_morphism = all_init >> para_init >> identity(100.0)
 init_morphism = init_morphism | locking_morphism
 
-mot_laser_on = rf_on()(mot_cooling, get_end_state(init_morphism, mot_cooling)) \
-    | rf_on()(mot_repump, get_end_state(init_morphism, mot_repump))
+mot_laser_on = {
+    mot_cooling: rf_on(),
+    mot_repump: rf_on()
+}
+# mot_laser_on = rf_on()(mot_cooling, get_end_state(init_morphism, mot_cooling)) \
+#     | rf_on()(mot_repump, get_end_state(init_morphism, mot_repump))
     # | rf_on()(global_imaging, get_end_state(init_morphism, global_imaging)) \
     # | rf_on()(global_repump, get_end_state(init_morphism, global_repump))
 
-mot_laser_off = rf_off()(mot_cooling, get_end_state(init_morphism, mot_cooling)) \
-    | rf_off()(mot_repump, get_end_state(init_morphism, mot_repump))
+mot_laser_off = {
+    mot_cooling: rf_off(),
+    mot_repump: rf_off()
+}
+# mot_laser_off = rf_off()(mot_cooling, get_end_state(init_morphism, mot_cooling)) \
+#     | rf_off()(mot_repump, get_end_state(init_morphism, mot_repump))
 
-rf_all_off = rf_off()(mot_cooling, get_end_state(init_morphism, mot_cooling)) \
-    | rf_off()(mot_repump, get_end_state(init_morphism, mot_repump)) \
-    | rf_off()(global_imaging, get_end_state(init_morphism, global_imaging)) \
-    | rf_off()(global_repump, get_end_state(init_morphism, global_repump))
+rf_all_off = {
+    mot_cooling: rf_off(),
+    mot_repump: rf_off(),
+    global_imaging: rf_off(),
+    global_repump: rf_off()
+}
+
+# rf_all_off = rf_off()(mot_cooling, get_end_state(init_morphism, mot_cooling)) \
+#     | rf_off()(mot_repump, get_end_state(init_morphism, mot_repump)) \
+#     | rf_off()(global_imaging, get_end_state(init_morphism, global_imaging)) \
+#     | rf_off()(global_repump, get_end_state(init_morphism, global_repump))
 
 mot_on = (mot_laser_on | pulse(uv_led, 10.0) | set_high(gradient_mag))
 

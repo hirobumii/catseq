@@ -117,8 +117,17 @@ class Morphism:
         # Case 3: Morphism >> MorphismDef (apply MorphismDef to all channels)
         elif isinstance(other, MorphismDef):
             return other(self)  # Use the multi-channel call functionality
+        
+        # Case 4: Morphism >> Dict[Channel, MorphismDef] (apply different operations to different channels)
+        elif isinstance(other, dict):
+            # Type check: all keys must be Channels, all values must be MorphismDefs
+            if not all(isinstance(k, Channel) for k in other.keys()):
+                return NotImplemented
+            if not all(isinstance(v, MorphismDef) for v in other.values()):
+                return NotImplemented
+            return self._apply_channel_operations(other)
 
-        # Case 4: Unsupported type
+        # Case 5: Unsupported type
         return NotImplemented
     
     def __or__(self, other) -> 'Morphism':
@@ -443,6 +452,118 @@ class Morphism:
             current_time_us += op_duration_us
         
         return ''.join(timeline)
+
+    def _apply_channel_operations(self, channel_operations: Dict[Channel, 'MorphismDef']) -> 'Morphism':
+        """Apply different operations to different channels with automatic time alignment.
+        
+        Args:
+            channel_operations: Dictionary mapping channels to their operations
+            
+        Returns:
+            New Morphism with all operations applied and time-aligned
+            
+        Raises:
+            ValueError: If any channel in the dictionary is not found in this morphism
+        """
+        # 1. Validate that all channels exist in the morphism
+        for channel in channel_operations.keys():
+            if channel not in self.lanes:
+                available_channels = [str(ch.global_id) for ch in self.lanes.keys()]
+                raise ValueError(
+                    f"Channel {channel.global_id} not found in morphism. "
+                    f"Available channels: {available_channels}"
+                )
+        
+        # Handle empty dictionary case
+        if not channel_operations:
+            return self
+        
+        # 2. Execute all specified operations and track maximum duration
+        operation_results = {}
+        max_duration_cycles = 0
+        
+        for channel, operation_def in channel_operations.items():
+            # Get the end state of this channel
+            lane = self.lanes[channel]
+            if lane.operations:
+                end_state = lane.operations[-1].end_state
+            else:
+                end_state = RWGUninitialized()
+            
+            # Execute the operation
+            result_morphism = operation_def(channel, end_state)
+            operation_results[channel] = result_morphism
+            
+            # Track maximum duration
+            operation_duration = result_morphism.total_duration_cycles
+            max_duration_cycles = max(max_duration_cycles, operation_duration)
+        
+        # 3. Time alignment: pad shorter operations to match the longest
+        aligned_results = {}
+        
+        for channel, result_morphism in operation_results.items():
+            current_duration = result_morphism.total_duration_cycles
+            
+            if current_duration < max_duration_cycles:
+                # Need to pad with identity operation
+                padding_cycles = max_duration_cycles - current_duration
+                
+                if padding_cycles > 0:
+                    # Get the end state to create identity operation
+                    if channel in result_morphism.lanes:
+                        channel_lane = result_morphism.lanes[channel]
+                        end_state = channel_lane.operations[-1].end_state if channel_lane.operations else RWGUninitialized()
+                        
+                        # Create identity operation manually
+                        padding_op = AtomicMorphism(
+                            channel=channel,
+                            start_state=end_state,
+                            end_state=end_state,
+                            duration_cycles=padding_cycles,
+                            operation_type=OperationType.IDENTITY
+                        )
+                        
+                        # Add padding operation to the existing operations
+                        padded_operations = channel_lane.operations + (padding_op,)
+                        aligned_results[channel] = Morphism({channel: Lane(padded_operations)})
+                    else:
+                        # This should not happen, but handle gracefully
+                        aligned_results[channel] = result_morphism
+                else:
+                    aligned_results[channel] = result_morphism
+            else:
+                # Already at maximum duration
+                aligned_results[channel] = result_morphism
+        
+        # 4. Build new lanes
+        new_lanes = {}
+        
+        for channel, lane in self.lanes.items():
+            if channel in aligned_results:
+                # Use the aligned operation result
+                aligned_morphism = aligned_results[channel]
+                new_operations = lane.operations + aligned_morphism.lanes[channel].operations
+                new_lanes[channel] = Lane(new_operations)
+            else:
+                # Channel not specified in dictionary - add wait operation
+                if lane.operations:
+                    end_state = lane.operations[-1].end_state
+                else:
+                    end_state = RWGUninitialized()
+                
+                # Create identity operation for the maximum duration
+                wait_operation = AtomicMorphism(
+                    channel=channel,
+                    start_state=end_state,
+                    end_state=end_state,
+                    duration_cycles=max_duration_cycles,
+                    operation_type=OperationType.IDENTITY
+                )
+                
+                new_operations = lane.operations + (wait_operation,)
+                new_lanes[channel] = Lane(new_operations)
+        
+        return Morphism(new_lanes)
 
 
 def from_atomic(op: AtomicMorphism) -> Morphism:

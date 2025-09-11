@@ -5,10 +5,11 @@ This module provides TTL-specific hardware abstractions and utilities
 for working with TTL devices in the CatSeq framework.
 """
 
-from ..types.common import Channel, State
+from ..types.common import Channel, State, AtomicMorphism, OperationType
 from ..atomic import ttl_init, ttl_on, ttl_off
 from ..morphism import identity, Morphism, MorphismDef
 from ..time_utils import us_to_cycles, cycles_to_us
+from ..lanes import Lane
 
 
 def pulse(channel: Channel, duration_us: float) -> Morphism:
@@ -77,7 +78,18 @@ def hold(duration_us: float) -> MorphismDef:
     """Creates a definition for a hold (wait) operation."""
 
     def generator(channel: Channel, start_state: State) -> Morphism:
-        return identity(duration_us)
+        duration_cycles = us_to_cycles(duration_us)
+        
+        # Create identity operation for the specific channel
+        identity_op = AtomicMorphism(
+            channel=channel,
+            start_state=start_state,
+            end_state=start_state,
+            duration_cycles=duration_cycles,
+            operation_type=OperationType.IDENTITY
+        )
+        
+        return Morphism({channel: Lane((identity_op,))})
 
     return MorphismDef(generator)
 

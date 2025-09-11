@@ -165,8 +165,8 @@ def linear_ramp(targets: List[Optional[RWGTarget]], duration_us: float) -> Morph
             static_params.append(
                 WaveformParams(
                     sbg_id=sbg_id,
-                    freq_coeffs=(target_freq, None, None, None),  # Static at target frequency
-                    amp_coeffs=(target_amp, None, None, None),    # Static at target amplitude  
+                    freq_coeffs=(target_freq, 0.0, None, None),  # Static at target frequency
+                    amp_coeffs=(target_amp, 0.0, None, None),    # Static at target amplitude  
                     initial_phase=0.0,  # Phase will be continuous from ramp
                     phase_reset=False,
                 )

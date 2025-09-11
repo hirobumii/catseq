@@ -61,3 +61,8 @@ examples/test.ipynb
 Thumbs.db
 
 .env
+
+examples/results/
+examples/modules/
+examples/labopt_logs/
+examples/analysis.py

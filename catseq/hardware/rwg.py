@@ -12,6 +12,7 @@ from typing import List, Optional, Tuple
 from ..morphism import Morphism, MorphismDef, from_atomic
 from ..atomic import rwg_board_init, rwg_set_carrier, rwg_load_coeffs, rwg_update_params
 from ..morphism import identity
+from .common import hold
 from ..types import (
     Channel,
     State,
@@ -214,26 +215,7 @@ def linear_ramp(targets: List[Optional[RWGTarget]], duration_us: float) -> Morph
     return MorphismDef(generator)
 
 
-def hold(duration_us: float) -> MorphismDef:
-    """Creates a definition for a hold (wait) operation."""
-
-    def generator(channel: Channel, start_state: State) -> Morphism:
-        from ..time_utils import us_to_cycles
-        duration_cycles = us_to_cycles(duration_us)
-        
-        # Create identity operation for the specific channel
-        identity_op = AtomicMorphism(
-            channel=channel,
-            start_state=start_state,
-            end_state=start_state,
-            duration_cycles=duration_cycles,
-            operation_type=OperationType.IDENTITY
-        )
-        
-        from ..lanes import Lane
-        return Morphism({channel: Lane((identity_op,))})
-
-    return MorphismDef(generator)
+# hold function is now imported from .common
 
 
 def _create_rf_switch_morphism(on: bool) -> MorphismDef:

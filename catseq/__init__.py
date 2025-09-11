@@ -26,7 +26,7 @@ from .morphism import identity
 from .morphism import Morphism, from_atomic
 
 # Hardware abstraction
-from .hardware import pulse, initialize_channel, set_high, set_low, hold
+from .hardware import pulse, initialize, set_high, set_low, hold
 
 # OASM interface
 from .compilation import compile_to_oasm_calls, execute_oasm_calls, OASMCall

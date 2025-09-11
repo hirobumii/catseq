@@ -35,8 +35,8 @@ def test_pass1_cost_analysis(capsys):
     # The second (from linear_ramp) has 1 param.
     sequence_def = (
         rwg.initialize(carrier_freq=100.0) >>
-        rwg.set_state([rwg.InitialTarget(sbg_id=0, freq=10, amp=0.5)]) >>
-        rwg.linear_ramp([rwg.RampTarget(target_freq=20, target_amp=0.8)], duration_us=10)
+        rwg.set_state([rwg.RWGTarget(sbg_id=0, freq=10, amp=0.5)]) >>
+        rwg.linear_ramp([rwg.RWGTarget(freq=20, amp=0.8)], duration_us=10)
     )
     morphism = sequence_def(rwg_ch)
 
@@ -77,7 +77,7 @@ def test_pass3_generates_correct_rwg_calls():
     rwg_ch = Channel(board, 0, ChannelType.RWG)
     sequence_def = (
         rwg.initialize(carrier_freq=120.0) >>
-        rwg.set_state([rwg.InitialTarget(sbg_id=0, freq=15, amp=0.6)])
+        rwg.set_state([rwg.RWGTarget(sbg_id=0, freq=15, amp=0.6)])
     )
     morphism = sequence_def(rwg_ch)
 
@@ -139,9 +139,9 @@ def test_pass3_pipelined_scheduling():
     # 10us = 2500 cycles. Load cost is 1*20=20 cycles.
     sequence_def = (
         rwg.initialize(carrier_freq=100.0) >>
-        rwg.set_state([rwg.InitialTarget(sbg_id=0, freq=10, amp=0.5)]) >>
-        rwg.linear_ramp([rwg.RampTarget(target_freq=20, target_amp=0.8)], duration_us=10) >>
-        rwg.linear_ramp([rwg.RampTarget(target_freq=15, target_amp=0.7)], duration_us=5)
+        rwg.set_state([rwg.RWGTarget(sbg_id=0, freq=10, amp=0.5)]) >>
+        rwg.linear_ramp([rwg.RWGTarget(freq=20, amp=0.8)], duration_us=10) >>
+        rwg.linear_ramp([rwg.RWGTarget(freq=15, amp=0.7)], duration_us=5)
     )
     morphism = sequence_def(rwg_ch)
 
@@ -191,10 +191,10 @@ def test_pass2_pipelining_constraint():
     success_def = (
         rwg.initialize(carrier_freq=100.0) >>
         rwg.hold(100.0) >>
-        rwg.set_state([rwg.InitialTarget(sbg_id=0, freq=10, amp=0.5)]) >>
+        rwg.set_state([rwg.RWGTarget(sbg_id=0, freq=10, amp=0.5)]) >>
         rwg.hold(100.0) >>
-        rwg.linear_ramp([rwg.RampTarget(target_freq=20, target_amp=0.8)], duration_us=10) >>
-        rwg.linear_ramp([rwg.RampTarget(target_freq=15, target_amp=0.7)], duration_us=5) 
+        rwg.linear_ramp([rwg.RWGTarget(freq=20, amp=0.8)], duration_us=10) >>
+        rwg.linear_ramp([rwg.RWGTarget(freq=15, amp=0.7)], duration_us=5) 
     )
     morphism = success_def(rwg_ch)
     
@@ -214,10 +214,10 @@ def test_pass2_pipelining_constraint():
     fail_def = (
         rwg.initialize(carrier_freq=100.0) >>
         rwg.hold(100.0) >>
-        rwg.set_state([rwg.InitialTarget(sbg_id=0, freq=10, amp=0.5)]) >>
+        rwg.set_state([rwg.RWGTarget(sbg_id=0, freq=10, amp=0.5)]) >>
         rwg.hold(100.0) >>
-        rwg.linear_ramp([rwg.RampTarget(target_freq=20, target_amp=0.8)], duration_us=0.05) >>
-        rwg.linear_ramp([rwg.RampTarget(target_freq=15, target_amp=0.7)], duration_us=5) 
+        rwg.linear_ramp([rwg.RWGTarget(freq=20, amp=0.8)], duration_us=0.05) >>
+        rwg.linear_ramp([rwg.RWGTarget(freq=15, amp=0.7)], duration_us=5) 
     )
     morphism_fail = fail_def(rwg_ch)
     with pytest.raises(ValueError, match="Timing violation"):

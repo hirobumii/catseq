@@ -408,8 +408,8 @@ def test_complete_compilation_pipeline():
     channel = Channel(board=board, local_id=0, channel_type=ChannelType.RWG)
     
     # Use proper MorphismDef to create a realistic RWG sequence
-    # Define the target state using InitialTarget
-    target = rwg.InitialTarget(sbg_id=1, freq=10.0, amp=0.5)
+    # Define the target state using RWGTarget
+    target = rwg.RWGTarget(sbg_id=1, freq=10.0, amp=0.5)
     
     # Create morphism: delay → set_state (which internally creates LOAD → UPDATE)
     start_state = RWGReady(carrier_freq=100e6, rf_on=False)

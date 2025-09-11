@@ -91,34 +91,52 @@ def _group_by_channel(operations: List[PhysicalOperation]) -> Dict[Channel, List
 def _detect_pulse_patterns(ops: List[PhysicalOperation]) -> List[Dict[str, Any]]:
     """检测单个通道的脉冲模式"""
     patterns = []
+    used_indices = set()
     i = 0
-    while i < len(ops) - 1:
-        current_op, next_op = ops[i], ops[i+1]
+    
+    while i < len(ops):
+        if i in used_indices:
+            i += 1
+            continue
+            
+        current_op = ops[i]
         
-        # TTL Pulse
-        if (current_op.operation.operation_type == OperationType.TTL_ON and
-            next_op.operation.operation_type == OperationType.TTL_OFF):
-            patterns.append({
-                'type': 'TTL_PULSE', 'start_time': current_op.timestamp_us,
-                'duration': next_op.timestamp_us - current_op.timestamp_us,
-                'operation_indices': {i, i + 1}
-            })
-            i += 2
-            continue
+        # TTL Pulse: 检测 TTL_ON 然后向前找最近的 TTL_OFF
+        if current_op.operation.operation_type == OperationType.TTL_ON:
+            for j in range(i + 1, len(ops)):
+                if j in used_indices:
+                    continue
+                next_op = ops[j]
+                if next_op.operation.operation_type == OperationType.TTL_OFF:
+                    patterns.append({
+                        'type': 'TTL_PULSE', 'start_time': current_op.timestamp_us,
+                        'duration': next_op.timestamp_us - current_op.timestamp_us,
+                        'operation_indices': {i, j}
+                    })
+                    used_indices.add(i)
+                    used_indices.add(j)
+                    break
 
-        # RF Pulse
-        if (current_op.operation.operation_type == OperationType.RWG_RF_SWITCH and
-            next_op.operation.operation_type == OperationType.RWG_RF_SWITCH and
-            hasattr(current_op.operation, 'end_state') and hasattr(next_op.operation, 'end_state') and
-            current_op.operation.end_state.rf_on and
-            not next_op.operation.end_state.rf_on):
-            patterns.append({
-                'type': 'RF_PULSE', 'start_time': current_op.timestamp_us,
-                'duration': next_op.timestamp_us - current_op.timestamp_us,
-                'operation_indices': {i, i + 1}
-            })
-            i += 2
-            continue
+        # RF Pulse: 检测 RF ON 然后向前找最近的 RF OFF
+        elif (current_op.operation.operation_type == OperationType.RWG_RF_SWITCH and
+              hasattr(current_op.operation, 'end_state') and
+              current_op.operation.end_state.rf_on):
+            for j in range(i + 1, len(ops)):
+                if j in used_indices:
+                    continue
+                next_op = ops[j]
+                if (next_op.operation.operation_type == OperationType.RWG_RF_SWITCH and
+                    hasattr(next_op.operation, 'end_state') and
+                    not next_op.operation.end_state.rf_on):
+                    patterns.append({
+                        'type': 'RF_PULSE', 'start_time': current_op.timestamp_us,
+                        'duration': next_op.timestamp_us - current_op.timestamp_us,
+                        'operation_indices': {i, j}
+                    })
+                    used_indices.add(i)
+                    used_indices.add(j)
+                    break
+        
         i += 1
     return patterns
 
@@ -176,11 +194,11 @@ def _draw_adaptive_channel_operations(ax: plt.Axes, ops: List[PhysicalOperation]
                                       y_pos: int, time_mapping: Dict[float, float]):
     """使用自适应时间映射绘制通道操作"""
     pulse_patterns = _detect_pulse_patterns(ops)
-    drawn_op_indices = set()
+    pulse_op_indices = set()
     for p in pulse_patterns:
-        drawn_op_indices.update(p['operation_indices'])
+        pulse_op_indices.update(p['operation_indices'])
 
-    # 绘制脉冲
+    # 绘制脉冲背景色块（只覆盖配对的on/off操作，不影响中间操作的显示）
     for pattern in pulse_patterns:
         start_display = _map_time_to_display(pattern['start_time'], time_mapping)
         end_display = _map_time_to_display(pattern['start_time'] + pattern['duration'], time_mapping)
@@ -189,22 +207,95 @@ def _draw_adaptive_channel_operations(ax: plt.Axes, ops: List[PhysicalOperation]
         color, label_prefix = ('lightgreen', 'TTL') if pattern['type'] == 'TTL_PULSE' else ('orange', 'RF')
         label = f"{label_prefix}({pattern['duration']:.1f}μs)"
         
+        # 绘制背景色块
         rect = plt.Rectangle((start_display, y_pos - 0.4), width, 0.8,
-                             facecolor=color, alpha=0.7, edgecolor='black', linewidth=1)
+                             facecolor=color, alpha=0.3, edgecolor='black', linewidth=1)
         ax.add_patch(rect)
-        ax.text(start_display + width/2, y_pos, label, ha='center', va='center', fontsize=8, fontweight='bold')
+        ax.text(start_display + width/2, y_pos - 0.3, label, ha='center', va='center', 
+                fontsize=8, fontweight='bold', color='black')
 
-    # 绘制其他单独操作
+    # 绘制所有操作（除了在脉冲模式中已配对的on/off操作）
     for i, pop in enumerate(ops):
-        if i in drawn_op_indices:
-            continue
         display_pos = _map_time_to_display(pop.timestamp_us, time_mapping)
         op_type = pop.operation.operation_type
         color = _get_operation_color(op_type)
         symbol = _get_operation_symbol_text(op_type)
         
-        ax.plot([display_pos, display_pos], [y_pos-0.4, y_pos+0.4], color=color, linewidth=2)
-        ax.text(display_pos, y_pos + 0.2, symbol, ha='center', va='bottom', fontsize=7, rotation=90)
+        # 对于脉冲模式中的配对操作，只画简化标记
+        if i in pulse_op_indices:
+            # 配对的on/off操作画小圆点
+            ax.plot(display_pos, y_pos, 'o', color=color, markersize=4)
+            ax.text(display_pos, y_pos + 0.15, symbol, ha='center', va='bottom', 
+                   fontsize=6, rotation=0, color=color, fontweight='bold')
+        else:
+            # 改进单线操作的可视化
+            _draw_enhanced_operation(ax, pop, display_pos, y_pos, color, symbol)
+
+def _draw_enhanced_operation(ax: plt.Axes, pop: PhysicalOperation, display_pos: float, 
+                           y_pos: int, color: str, symbol: str):
+    """增强的单个操作绘制，提高可读性"""
+    op_type = pop.operation.operation_type
+    
+    # 根据操作类型选择不同的可视化风格
+    if op_type in [OperationType.RWG_INIT, OperationType.TTL_INIT]:
+        # INIT 操作：画粗实线 + 背景框
+        ax.plot([display_pos, display_pos], [y_pos-0.35, y_pos+0.35], 
+               color=color, linewidth=4, solid_capstyle='round')
+        # 添加浅色背景框
+        rect = plt.Rectangle((display_pos-0.15, y_pos-0.35), 0.3, 0.7,
+                            facecolor=color, alpha=0.2, edgecolor='none')
+        ax.add_patch(rect)
+        # 标签放在右侧，避免重叠
+        ax.text(display_pos + 0.2, y_pos, symbol, ha='left', va='center', 
+               fontsize=8, fontweight='bold', color=color)
+                
+    elif op_type in [OperationType.RWG_LOAD_COEFFS, OperationType.RWG_UPDATE_PARAMS]:
+        # LOAD/PLAY 操作：画钻石形状
+        diamond_size = 0.15
+        diamond_x = [display_pos-diamond_size, display_pos, display_pos+diamond_size, display_pos]
+        diamond_y = [y_pos, y_pos+diamond_size, y_pos, y_pos-diamond_size]
+        ax.plot(diamond_x + [diamond_x[0]], diamond_y + [diamond_y[0]], 
+               color=color, linewidth=2, marker='o', markersize=3, markerfacecolor=color)
+        ax.fill(diamond_x, diamond_y, color=color, alpha=0.3)
+        # 标签放在上方
+        ax.text(display_pos, y_pos + 0.25, symbol, ha='center', va='bottom', 
+               fontsize=7, fontweight='bold', color='black')
+    
+    elif op_type in [OperationType.SYNC_MASTER, OperationType.SYNC_SLAVE]:
+        # SYNC 操作：画双线 + 强调标记
+        ax.plot([display_pos-0.05, display_pos-0.05], [y_pos-0.3, y_pos+0.3], 
+               color=color, linewidth=3, solid_capstyle='round')
+        ax.plot([display_pos+0.05, display_pos+0.05], [y_pos-0.3, y_pos+0.3], 
+               color=color, linewidth=3, solid_capstyle='round')
+        # 添加星形标记
+        ax.plot(display_pos, y_pos, '*', color=color, markersize=8, markeredgecolor='black')
+        # 标签放在左侧
+        ax.text(display_pos - 0.2, y_pos, symbol, ha='right', va='center', 
+               fontsize=8, fontweight='bold', color=color)
+    
+    elif op_type == OperationType.RWG_SET_CARRIER:
+        # CARRIER 操作：画波浪线形状
+        import numpy as np
+        wave_x = np.linspace(display_pos-0.1, display_pos+0.1, 20)
+        wave_y = y_pos + 0.1 * np.sin(15 * (wave_x - display_pos))
+        ax.plot(wave_x, wave_y, color=color, linewidth=2)
+        # 垂直指示线
+        ax.plot([display_pos, display_pos], [y_pos-0.2, y_pos+0.2], 
+               color=color, linewidth=1, linestyle='--', alpha=0.7)
+        # 标签放在下方
+        ax.text(display_pos, y_pos - 0.3, symbol, ha='center', va='top', 
+               fontsize=7, fontweight='bold', color=color)
+    
+    else:
+        # 其他操作：传统垂直线但改进样式
+        ax.plot([display_pos, display_pos], [y_pos-0.3, y_pos+0.3], 
+               color=color, linewidth=2.5, solid_capstyle='round')
+        # 添加圆形端点
+        ax.plot(display_pos, y_pos+0.3, 'o', color=color, markersize=3)
+        ax.plot(display_pos, y_pos-0.3, 'o', color=color, markersize=3)
+        # 标签放在右侧，水平显示
+        ax.text(display_pos + 0.1, y_pos, symbol, ha='left', va='center', 
+               fontsize=7, fontweight='bold', color=color, rotation=0)
 
 def _get_operation_color(op_type: OperationType) -> str:
     return {

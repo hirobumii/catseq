@@ -68,7 +68,7 @@ def rwg_set_carrier(channel: Channel, carrier_freq: float) -> Morphism:
     op = AtomicMorphism(
         channel=channel,
         start_state=RWGUninitialized(),
-        end_state=RWGReady(carrier_freq=carrier_freq, rf_on=False),
+        end_state=RWGReady(carrier_freq=carrier_freq),
         duration_cycles=0,  # Instantaneous operation, handled during global sync
         operation_type=OperationType.RWG_SET_CARRIER,
     )

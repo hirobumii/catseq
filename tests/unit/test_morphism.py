@@ -215,7 +215,7 @@ def test_rwg_rf_pulse_composite_operation():
     start_state = RWGActive(
         carrier_freq=1000.0,
         rf_on=False,  # Must start with RF off
-        waveforms=waveforms
+        snapshot=waveforms
     )
     
     pulse_duration_us = 50.0
@@ -258,7 +258,7 @@ def test_rwg_rf_pulse_composite_operation():
     
     # 5. Verify that waveforms and carrier_freq are preserved
     assert first_op_start.carrier_freq == last_op_end.carrier_freq
-    assert first_op_start.waveforms == last_op_end.waveforms
+    assert first_op_start.snapshot == last_op_end.snapshot
 
 
 def test_rwg_rf_pulse_invalid_start_state():
@@ -275,7 +275,7 @@ def test_rwg_rf_pulse_invalid_start_state():
     invalid_state = RWGActive(
         carrier_freq=1000.0,
         rf_on=True,  # Invalid: RF already on
-        waveforms=waveforms
+        snapshot=waveforms
     )
     
     with pytest.raises(ValueError, match="RF pulse requires rf_on=False"):

@@ -43,25 +43,30 @@ class RWGUninitialized(RWGState):
 class RWGReady(RWGState):
     """State after the RWG is configured with a carrier but is not yet outputting."""
     carrier_freq: float
-    rf_on: bool = False
 
 @dataclass(frozen=True)
 class RWGActive(RWGState):
     """State where the RWG is actively generating a dynamic waveform."""
     carrier_freq: float
     rf_on: bool
-    waveforms: Tuple[StaticWaveform, ...] = field(default_factory=tuple)
+    snapshot: Tuple[StaticWaveform, ...] = field(default_factory=tuple)
+    pending_waveforms: Optional[Tuple[StaticWaveform, ...]] = None
 
     def __post_init__(self):
-        # Ensure waveforms are always sorted by SBG ID for consistent comparisons.
+        # Ensure snapshot is always sorted by SBG ID for consistent comparisons.
         object.__setattr__(
-            self, "waveforms", tuple(sorted(self.waveforms, key=lambda wf: wf.sbg_id))
+            self, "snapshot", tuple(sorted(self.snapshot, key=lambda wf: wf.sbg_id))
         )
+        # Ensure pending_waveforms is also sorted if not None
+        if self.pending_waveforms is not None:
+            object.__setattr__(
+                self, "pending_waveforms", tuple(sorted(self.pending_waveforms, key=lambda wf: wf.sbg_id))
+            )
 
     @property
     def is_active(self) -> bool:
         """The channel is active if any waveform has non-zero amplitude."""
-        return any(abs(wf.amp) > 1e-12 for wf in self.waveforms)
+        return any(abs(wf.amp) > 1e-12 for wf in self.snapshot)
 
 @dataclass(frozen=True)
 class RWGWaveformInstruction(State):

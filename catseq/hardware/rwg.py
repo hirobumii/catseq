@@ -88,8 +88,12 @@ def set_state(targets: List[RWGTarget]) -> MorphismDef:
             end_waveforms.append(
                 StaticWaveform(sbg_id=t.sbg_id, freq=t.freq, amp=t.amp, phase=0.0)
             )
+        # For set_state, we directly set the snapshot (immediate state change)
         end_state = RWGActive(
-            carrier_freq=start_state.carrier_freq, rf_on=start_state.rf_on, waveforms=tuple(end_waveforms)
+            carrier_freq=start_state.carrier_freq, 
+            rf_on=getattr(start_state, 'rf_on', False),  # Preserve RF state if available
+            snapshot=tuple(end_waveforms),
+            pending_waveforms=None
         )
 
         update_morphism = rwg_update_params(channel, 0.0, instruction_state, end_state)
@@ -122,7 +126,7 @@ def linear_ramp(targets: List[Optional[RWGTarget]], duration_us: float) -> Morph
         if duration_us <= 0:
             raise ValueError("Ramp duration must be positive.")
 
-        active_waveforms = start_state.waveforms
+        active_waveforms = start_state.snapshot
         if len(targets) != len(active_waveforms):
             raise ValueError(
                 f"The number of targets ({len(targets)}) must match the number of active SBGs ({len(active_waveforms)})."
@@ -180,7 +184,8 @@ def linear_ramp(targets: List[Optional[RWGTarget]], duration_us: float) -> Morph
         end_state = RWGActive(
             carrier_freq=start_state.carrier_freq,
             rf_on=start_state.rf_on, # Preserve RF state during ramp
-            waveforms=tuple(end_waveforms)
+            snapshot=tuple(end_waveforms),
+            pending_waveforms=None
         )
 
         # Phase 1: Load ramp coefficients (t=0, instantaneous)
@@ -227,12 +232,13 @@ def _create_rf_switch_morphism(on: bool) -> MorphismDef:
 
         # Reconstruct the end state with the toggled rf_on flag
         if isinstance(start_state, RWGReady):
-            end_state = RWGReady(carrier_freq=start_state.carrier_freq, rf_on=on)
+            end_state = RWGReady(carrier_freq=start_state.carrier_freq)  # RWGReady no longer has rf_on
         else: # RWGActive
             end_state = RWGActive(
                 carrier_freq=start_state.carrier_freq,
                 rf_on=on,
-                waveforms=start_state.waveforms
+                snapshot=start_state.snapshot,
+                pending_waveforms=start_state.pending_waveforms
             )
 
         # Create the atomic operation for the switch
@@ -290,7 +296,8 @@ def rf_pulse(duration_us: float) -> MorphismDef:
         intermediate_state = RWGActive(
             carrier_freq=start_state.carrier_freq,
             rf_on=True,
-            waveforms=start_state.waveforms
+            snapshot=start_state.snapshot,
+            pending_waveforms=start_state.pending_waveforms
         )
         
         # Create wait operation with user's specified duration

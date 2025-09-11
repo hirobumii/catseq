@@ -58,7 +58,7 @@ def test_pass1_and_pass2_rwg_load_coeffs_cost_analysis():
         rwg_load_coeffs(
             channel,
             params=[test_waveform_params],
-            start_state=RWGReady(carrier_freq=100e6, rf_on=False)
+            start_state=RWGReady(carrier_freq=100e6)
         )
     )
 
@@ -247,7 +247,7 @@ def test_pass4_oasm_call_generation_and_timing():
         rwg_load_coeffs(
             channel,
             params=[test_waveform_params],
-            start_state=RWGReady(carrier_freq=100e6, rf_on=False)
+            start_state=RWGReady(carrier_freq=100e6)
         )
     )
     
@@ -344,7 +344,7 @@ def test_pass4_multiple_events_timing():
         rwg_load_coeffs(
             channel,
             params=[waveform_params],
-            start_state=RWGReady(carrier_freq=100e6, rf_on=False)
+            start_state=RWGReady(carrier_freq=100e6)
         ) >>
         identity(duration_us=15) >>  # 3750 cycles
         rwg_update_params(
@@ -412,7 +412,7 @@ def test_complete_compilation_pipeline():
     target = rwg.RWGTarget(sbg_id=1, freq=10.0, amp=0.5)
     
     # Create morphism: delay → set_state (which internally creates LOAD → UPDATE)
-    start_state = RWGReady(carrier_freq=100e6, rf_on=False)
+    start_state = RWGReady(carrier_freq=100e6)
     
     # Create initial delay, then set_state morphism
     delay = identity(duration_us=3)  # Combined 3μs delay
@@ -559,7 +559,7 @@ def test_pipeline_pair_identification():
         rwg_load_coeffs(
             ch0,
             params=[waveform_params_ch0],
-            start_state=RWGReady(carrier_freq=100e6, rf_on=False)
+            start_state=RWGReady(carrier_freq=100e6)
         ) >>
         rwg_update_params(
             ch0,
@@ -574,7 +574,7 @@ def test_pipeline_pair_identification():
         rwg_load_coeffs(
             ch1,
             params=[waveform_params_ch1],
-            start_state=RWGReady(carrier_freq=100e6, rf_on=False)
+            start_state=RWGReady(carrier_freq=100e6)
         ) >>
         rwg_update_params(
             ch1,
@@ -661,7 +661,7 @@ def test_intelligent_scheduling_optimization():
         rwg_load_coeffs(
             ch0,
             params=[waveform_params0],
-            start_state=RWGReady(carrier_freq=100e6, rf_on=False)
+            start_state=RWGReady(carrier_freq=100e6)
         ) >>
         rwg_update_params(
             ch0,
@@ -676,7 +676,7 @@ def test_intelligent_scheduling_optimization():
         rwg_load_coeffs(
             ch1,
             params=[waveform_params1],
-            start_state=RWGReady(carrier_freq=100e6, rf_on=False)
+            start_state=RWGReady(carrier_freq=100e6)
         ) >>
         rwg_update_params(
             ch1,

@@ -197,3 +197,13 @@ intf_usb.loc_chn = 1
 rwgs = [1,2,3,4,5]
 run_all = run_cfg(intf_usb, rwgs+[0])
 seq = assembler(run_all,[(f'rwg{i}', C_RWG) for i in range(len(rwgs))]+[('main',C_MAIN)])
+
+from catseq.visualization.timeline import plot_timeline
+
+# 配置 mot_cooling 通道使用振幅 ramp 样式
+channel_styles = {
+    mot_cooling: {"style": "amp", "name": "MOT Cooling"},
+    cooling_lock: {"style": "freq", "name": "Cooling Lock"},
+}
+
+plot_timeline(morphism, filename='experiment_timeline.png', channel_styles=channel_styles)

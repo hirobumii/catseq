@@ -2,7 +2,7 @@
 Types specific to RWG hardware.
 """
 from dataclasses import dataclass, field
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional
 from .common import State
 
 # --- Dynamic Description ---
@@ -50,7 +50,7 @@ class RWGActive(RWGState):
     carrier_freq: float
     rf_on: bool
     snapshot: Tuple[StaticWaveform, ...] = field(default_factory=tuple)
-    pending_waveforms: Optional[Tuple[StaticWaveform, ...]] = None
+    pending_waveforms: Optional[Tuple[WaveformParams, ...]] = None
 
     def __post_init__(self):
         # Ensure snapshot is always sorted by SBG ID for consistent comparisons.
@@ -68,7 +68,3 @@ class RWGActive(RWGState):
         """The channel is active if any waveform has non-zero amplitude."""
         return any(abs(wf.amp) > 1e-12 for wf in self.snapshot)
 
-@dataclass(frozen=True)
-class RWGWaveformInstruction(State):
-    """Internal state used to pass waveform parameters to the compiler."""
-    params: List[WaveformParams]

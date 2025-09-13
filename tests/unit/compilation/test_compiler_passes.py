@@ -16,7 +16,7 @@ from catseq.compilation.compiler import (
 from catseq.compilation.types import OASMAddress, OASMFunction, OASMCall
 from catseq.compilation.functions import rwg_load_waveform
 from catseq.types.common import OperationType, AtomicMorphism, Board, Channel, ChannelType
-from catseq.types.rwg import WaveformParams, RWGReady, RWGWaveformInstruction, RWGActive
+from catseq.types.rwg import WaveformParams, RWGReady, RWGActive
 from catseq.morphism import Morphism, identity
 from catseq.lanes import Lane
 from catseq.atomic import rwg_load_coeffs, rwg_update_params
@@ -133,22 +133,25 @@ def test_pass3_pipelining_constraint_checking():
     # Test Case 1: Valid pipelining (PLAY duration > LOAD cost)
     print("  Testing valid pipelining scenario...")
     
-    # Create waveform instruction for PLAY operation
-    waveform_instruction = RWGWaveformInstruction(
-        params=[WaveformParams(
+    # Create RWGActive state with pending waveforms for PLAY operation
+    waveform_state = RWGActive(
+        carrier_freq=100e6,
+        rf_on=False,
+        snapshot=(),
+        pending_waveforms=(WaveformParams(
             sbg_id=1,
             freq_coeffs=(10.0, 0.1, None, None),
             amp_coeffs=(0.5, 0.01, None, None),
             initial_phase=1.57,
             phase_reset=True
-        )]
+        ),)
     )
     
     # Create a PLAY operation with 1000 cycles duration
     play_morphism = rwg_update_params(
         channel, 
         duration_us=4.0,  # 4μs = 1000 cycles at 250MHz
-        start_state=waveform_instruction,
+        start_state=waveform_state,
         end_state=RWGActive(carrier_freq=100e6, rf_on=True)
     )
     
@@ -336,7 +339,13 @@ def test_pass4_multiple_events_timing():
         phase_reset=True
     )
     
-    waveform_instruction = RWGWaveformInstruction(params=[waveform_params])
+    # Create RWGActive state with pending waveforms from load_coeffs result
+    waveform_state = RWGActive(
+        carrier_freq=100e6,
+        rf_on=False,
+        snapshot=(),
+        pending_waveforms=(waveform_params,)
+    )
     
     # Create complex morphism
     morphism = (
@@ -350,7 +359,7 @@ def test_pass4_multiple_events_timing():
         rwg_update_params(
             channel,
             duration_us=8.0,  # 2000 cycles 
-            start_state=waveform_instruction,
+            start_state=waveform_state,
             end_state=RWGActive(carrier_freq=100e6, rf_on=True)
         )
     )

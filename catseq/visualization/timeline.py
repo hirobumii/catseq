@@ -15,6 +15,7 @@ from ..morphism import Morphism
 from ..lanes import merge_board_lanes, PhysicalLane, PhysicalOperation
 from ..time_utils import cycles_to_us
 from ..types import Board, Channel, OperationType
+from .rwg_analyzer import analyze_rwg_timeline, _evaluate_taylor_series
 
 
 # ==============================================================================
@@ -25,6 +26,7 @@ def plot_timeline(morphism: Morphism,
                   figsize: Tuple[int, int] = (15, 8),
                   filename: Optional[str] = None,
                   show_sync: bool = True,
+                  channel_styles: Optional[Dict[Any, Dict[str, str]]] = None,
                   **kwargs) -> Tuple[plt.Figure, plt.Axes]:
     """使用 matplotlib 绘制时间轴"""
     physical_lanes = _compute_physical_lanes(morphism)
@@ -46,7 +48,7 @@ def plot_timeline(morphism: Morphism,
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    _plot_adaptive_timeline(ax, physical_lanes, **kwargs)
+    _plot_adaptive_timeline(ax, physical_lanes, channel_styles=channel_styles, **kwargs)
 
     if show_sync:
         sync_points = _detect_sync_points(physical_lanes)
@@ -191,8 +193,20 @@ def _map_time_to_display(time_us: float, time_mapping: Dict[float, float]) -> fl
     return time_mapping[sorted_times[-1]]
 
 def _draw_adaptive_channel_operations(ax: plt.Axes, ops: List[PhysicalOperation], 
-                                      y_pos: int, time_mapping: Dict[float, float]):
+                                      y_pos: int, time_mapping: Dict[float, float], 
+                                      channel=None, channel_styles=None):
     """使用自适应时间映射绘制通道操作"""
+    # 检查是否需要使用特殊样式
+    style_config = None
+    if channel_styles and channel and channel in channel_styles:
+        style_config = channel_styles[channel]
+    
+    # 如果配置了特殊样式（freq 或 amp），使用连续曲线渲染
+    if style_config and style_config.get("style") in ["freq", "amp"]:
+        _draw_taylor_curve(ax, ops, y_pos, time_mapping, style_config["style"])
+        return
+    
+    # 原有的离散操作点逻辑
     pulse_patterns = _detect_pulse_patterns(ops)
     pulse_op_indices = set()
     for p in pulse_patterns:
@@ -345,7 +359,7 @@ def _setup_adaptive_time_ticks(ax: plt.Axes, event_times: List[float], time_mapp
     ax.set_xticklabels([f"{t:.1f}" for t in important_times], rotation=45, ha="right")
     ax.set_xlabel("Time (μs) - Adaptive Scale")
 
-def _plot_adaptive_timeline(ax: plt.Axes, physical_lanes: Dict[Board, PhysicalLane], **kwargs):
+def _plot_adaptive_timeline(ax: plt.Axes, physical_lanes: Dict[Board, PhysicalLane], channel_styles=None, **kwargs):
     """绘制自适应时间尺度的图表"""
     event_times = _collect_all_event_times(physical_lanes)
     time_mapping = _create_adaptive_time_mapping(event_times)
@@ -356,10 +370,17 @@ def _plot_adaptive_timeline(ax: plt.Axes, physical_lanes: Dict[Board, PhysicalLa
 
     for y_pos, channel in enumerate(sorted_channels):
         ops = ops_by_channel[channel]
-        _draw_adaptive_channel_operations(ax, ops, y_pos, time_mapping)
+        _draw_adaptive_channel_operations(ax, ops, y_pos, time_mapping, channel=channel, channel_styles=channel_styles)
     
     ax.set_yticks(range(len(sorted_channels)))
-    ax.set_yticklabels([ch.global_id for ch in sorted_channels])
+    # Use custom names from channel_styles if available, otherwise use global_id
+    labels = []
+    for ch in sorted_channels:
+        if channel_styles and ch in channel_styles and 'name' in channel_styles[ch]:
+            labels.append(channel_styles[ch]['name'])
+        else:
+            labels.append(ch.global_id)
+    ax.set_yticklabels(labels)
     ax.set_ylim(-0.5, len(sorted_channels) - 0.5)
     _setup_adaptive_time_ticks(ax, event_times, time_mapping)
 
@@ -436,5 +457,320 @@ def _generate_text_timeline(physical_lanes: Dict[Board, PhysicalLane], max_width
         lines.append(f"{channel.global_id:<12} │ {timeline}")
         
     return "\n".join(lines)
+
+
+# ==============================================================================
+# TAYLOR CURVE VISUALIZATION FUNCTIONS
+# ==============================================================================
+
+def _find_previous_load(ops: List[PhysicalOperation]) -> Optional[PhysicalOperation]:
+    """从操作列表中找到最近的 LOAD 操作"""
+    from ..types.common import OperationType
+    for op in reversed(ops):
+        if op.operation.operation_type == OperationType.RWG_LOAD_COEFFS:
+            return op
+    return None
+
+def _extract_taylor_coeffs_from_ops(ops: List[PhysicalOperation], curve_type: str) -> Optional[Tuple]:
+    """从操作序列提取 Taylor 系数"""
+    from ..types.common import OperationType
+    
+    for i, op in enumerate(ops):
+        if (op.operation.operation_type == OperationType.RWG_UPDATE_PARAMS and 
+            op.operation.duration_cycles > 0):
+            # 这是一个有持续时间的 PLAY 操作，找配对的 LOAD
+            paired_load = _find_previous_load(ops[:i])
+            if paired_load and hasattr(paired_load.operation.end_state, 'pending_waveforms'):
+                waveforms = paired_load.operation.end_state.pending_waveforms
+                if waveforms:
+                    if curve_type == "freq":
+                        return waveforms[0].freq_coeffs
+                    elif curve_type == "amp":
+                        return waveforms[0].amp_coeffs
+    return None
+
+def _evaluate_taylor_series(coeffs: Tuple, t: float) -> float:
+    """计算 Taylor 级数在时间 t 的值"""
+    if not coeffs:
+        return 0.0
+    
+    result = coeffs[0] if coeffs[0] is not None else 0.0
+    for i, coeff in enumerate(coeffs[1:], 1):
+        if coeff is not None:
+            result += coeff * (t ** i)
+    return result
+
+def _analyze_rwg_timeline(ops: List[PhysicalOperation], curve_type: str) -> List[Dict]:
+    """分析 RWG 操作序列，构建完整的频率/振幅时间轴"""
+    from ..types.common import OperationType
+    from ..time_utils import cycles_to_us
+    
+    segments = []
+    current_rf_state = False
+    current_static_value = 0.0
+    last_timestamp = 0.0
+    
+    # 状态追踪变量
+    events = []  # 收集所有状态变化事件
+    
+    for i, op in enumerate(ops):
+        op_start_time = op.timestamp_us
+        
+        # 在处理当前操作前，先添加之前状态的延续段（如果有间隙）
+        if segments and op_start_time > last_timestamp:
+            # 延续之前的状态
+            prev_segment = segments[-1]
+            if prev_segment['type'] == 'static':
+                segments.append({
+                    'type': 'static',
+                    'start_time': last_timestamp,
+                    'end_time': op_start_time,
+                    'value': prev_segment['value'],
+                    'rf_on': prev_segment['rf_on']
+                })
+        
+        # 首先更新当前静态值（从任何 RWGActive 状态的 snapshot 中）
+        if hasattr(op.operation, 'end_state') and hasattr(op.operation.end_state, 'snapshot'):
+            snapshot = op.operation.end_state.snapshot
+            if snapshot:
+                if curve_type == "freq":
+                    current_static_value = snapshot[0].freq
+                elif curve_type == "amp":
+                    current_static_value = snapshot[0].amp
+                print(f"  更新静态值: {curve_type}={current_static_value}")
+        
+        if op.operation.operation_type == OperationType.RWG_RF_SWITCH:
+            # RF 状态变化
+            if hasattr(op.operation, 'end_state'):
+                new_rf_state = op.operation.end_state.rf_on
+                print(f"  RF 切换: {current_rf_state} -> {new_rf_state}")
+                if new_rf_state != current_rf_state:
+                    current_rf_state = new_rf_state
+                    # RF 状态变化影响显示值
+                    display_value = 0.0 if not current_rf_state else current_static_value
+                    print(f"  显示值: {display_value}")
+                    
+                    segments.append({
+                        'type': 'rf_switch',
+                        'start_time': op_start_time,
+                        'end_time': op_start_time,  # 瞬时操作
+                        'rf_on': current_rf_state,
+                        'value': display_value
+                    })
+        
+        elif op.operation.operation_type == OperationType.RWG_UPDATE_PARAMS:
+            if op.operation.duration_cycles > 0:
+                # Ramp 段：使用 Taylor 系数
+                duration_us = cycles_to_us(op.operation.duration_cycles)
+                
+                # 找配对的 LOAD 操作获取系数
+                paired_load = _find_previous_load(ops[:i])
+                ramp_coeffs = None
+                if paired_load and hasattr(paired_load.operation.end_state, 'pending_waveforms'):
+                    waveforms = paired_load.operation.end_state.pending_waveforms
+                    if waveforms:
+                        if curve_type == "freq":
+                            ramp_coeffs = waveforms[0].freq_coeffs
+                        elif curve_type == "amp":
+                            ramp_coeffs = waveforms[0].amp_coeffs
+                
+                segments.append({
+                    'type': 'ramp',
+                    'start_time': op_start_time,
+                    'end_time': op_start_time + duration_us,
+                    'coeffs': ramp_coeffs,
+                    'rf_on': current_rf_state
+                })
+                
+                # 更新 ramp 结束后的静态值
+                if ramp_coeffs and ramp_coeffs[0] is not None:
+                    # 计算 ramp 结束时的值
+                    end_value = _evaluate_taylor_series(ramp_coeffs, duration_us)
+                    current_static_value = end_value
+                
+                last_timestamp = op_start_time + duration_us
+            else:
+                # 瞬时 PLAY 操作 - 可能改变静态值
+                if hasattr(op.operation, 'end_state') and hasattr(op.operation.end_state, 'snapshot'):
+                    snapshot = op.operation.end_state.snapshot
+                    if snapshot:
+                        if curve_type == "freq":
+                            current_static_value = snapshot[0].freq
+                        elif curve_type == "amp":
+                            current_static_value = snapshot[0].amp
+                
+                # 添加新的静态段
+                display_value = 0.0 if not current_rf_state else current_static_value
+                segments.append({
+                    'type': 'static',
+                    'start_time': op_start_time,
+                    'end_time': op_start_time,  # 瞬时，会在下次状态变化时结束
+                    'value': display_value,
+                    'rf_on': current_rf_state
+                })
+                
+                last_timestamp = op_start_time
+        
+        elif op.operation.operation_type == OperationType.RWG_LOAD_COEFFS:
+            # LOAD 操作可能包含新的静态值信息
+            if (hasattr(op.operation, 'end_state') and 
+                hasattr(op.operation.end_state, 'pending_waveforms') and
+                op.operation.end_state.pending_waveforms):
+                
+                waveform = op.operation.end_state.pending_waveforms[0]
+                target_coeffs = waveform.freq_coeffs if curve_type == "freq" else waveform.amp_coeffs
+                
+                # 检查是否为静态值（只有常数项，其他为0或None）
+                if target_coeffs and target_coeffs[0] is not None:
+                    is_static = all(coeff is None or coeff == 0 for coeff in target_coeffs[1:])
+                    if is_static:
+                        current_static_value = target_coeffs[0]
+            
+            last_timestamp = op_start_time
+        
+        else:
+            last_timestamp = op_start_time
+    
+    # 修正所有未结束的段，延续到时间轴末尾
+    if segments:
+        timeline_end = max(op.timestamp_us for op in ops) if ops else 0.0
+        for segment in segments:
+            if segment['end_time'] == segment['start_time']:  # 瞬时操作
+                # 找到下一个状态变化点
+                next_change = timeline_end
+                for other_seg in segments:
+                    if other_seg['start_time'] > segment['start_time']:
+                        next_change = min(next_change, other_seg['start_time'])
+                segment['end_time'] = next_change
+    
+    return segments
+
+def _draw_taylor_curve(ax: plt.Axes, ops: List[PhysicalOperation], y_pos: int, 
+                      time_mapping: Dict[float, float], curve_type: str):
+    """绘制基于 Taylor 系数的连续曲线"""
+    import numpy as np
+    from ..types.common import OperationType
+    
+    # 使用新的时间轴分析
+    segments = analyze_rwg_timeline(ops, curve_type)
+    
+    
+    if not segments:
+        # 如果没有分析到任何段，回退到默认渲染
+        pulse_patterns = _detect_pulse_patterns(ops)
+        pulse_op_indices = set()
+        for p in pulse_patterns:
+            pulse_op_indices.update(p['operation_indices'])
+        
+        for pattern in pulse_patterns:
+            start_display = _map_time_to_display(pattern['start_time'], time_mapping)
+            end_display = _map_time_to_display(pattern['start_time'] + pattern['duration'], time_mapping)
+            width = max(0.5, end_display - start_display)
+            
+            color, label_prefix = ('lightgreen', 'TTL') if pattern['type'] == 'TTL_PULSE' else ('orange', 'RF')
+            label = f"{label_prefix}({pattern['duration']:.1f}μs)"
+            
+            rect = plt.Rectangle((start_display, y_pos - 0.4), width, 0.8,
+                               facecolor=color, alpha=0.3, edgecolor='black', linewidth=1)
+            ax.add_patch(rect)
+            ax.text(start_display + width/2, y_pos - 0.3, label, ha='center', va='center', 
+                   fontsize=8, fontweight='bold', color='black')
+        
+        for i, pop in enumerate(ops):
+            if i not in pulse_op_indices:
+                display_pos = _map_time_to_display(pop.timestamp_us, time_mapping)
+                op_type = pop.operation.operation_type
+                color = _get_operation_color(op_type)
+                symbol = _get_operation_symbol_text(op_type)
+                _draw_enhanced_operation(ax, pop, display_pos, y_pos, color, symbol)
+        return
+    
+    # 设置曲线颜色
+    curve_color = 'blue' if curve_type == "freq" else 'red'
+    
+    # 建立统一的数值到位置映射
+    # 首先收集所有数值范围
+    all_values = []
+    for segment in segments:
+        if segment['type'] == 'static':
+            all_values.append(segment['value'])
+        elif segment['type'] == 'ramp' and segment['coeffs']:
+            # 从 ramp 的开始和结束值采样
+            duration = segment['end_time'] - segment['start_time']
+            start_val = _evaluate_taylor_series(segment['coeffs'], 0)
+            end_val = _evaluate_taylor_series(segment['coeffs'], duration)
+            all_values.extend([start_val, end_val])
+    
+    # 计算数值范围，零点固定在 y_pos
+    zero_pos = y_pos  # 零点固定在通道的标称位置
+    
+    if all_values:
+        min_val, max_val = min(all_values), max(all_values)
+        # 计算最大偏离零点的距离，确保正负值都能合理显示
+        max_abs_val = max(abs(min_val), abs(max_val))
+        # 使用固定的显示范围：±0.3 units around y_pos
+        scale_factor = 0.3 / max_abs_val if max_abs_val > 0 else 0
+    else:
+        scale_factor = 0
+    
+    # 数值到位置的转换函数（考虑 y 轴反转）
+    def value_to_pos(val):
+        return zero_pos - val * scale_factor  # 负号因为 y 轴被反转
+    
+    # 绘制零线
+    timeline_start = min(seg['start_time'] for seg in segments) if segments else 0
+    timeline_end = max(seg['end_time'] for seg in segments) if segments else 0
+    if timeline_start < timeline_end:
+        start_display = _map_time_to_display(timeline_start, time_mapping)
+        end_display = _map_time_to_display(timeline_end, time_mapping)
+        ax.plot([start_display, end_display], [zero_pos, zero_pos], 
+               color='lightgray', linewidth=1, linestyle=':', alpha=0.7)
+    
+    # 渲染所有时间段
+    for segment in segments:
+        start_display = _map_time_to_display(segment['start_time'], time_mapping)
+        end_display = _map_time_to_display(segment['end_time'], time_mapping)
+        
+        if segment['type'] == 'static':
+            # 绘制水平直线，使用实际数值位置
+            y_value = value_to_pos(segment['value'])
+            ax.plot([start_display, end_display], [y_value, y_value], 
+                   color=curve_color, linewidth=2, linestyle='-', alpha=0.8)
+                   
+        elif segment['type'] == 'ramp' and segment['coeffs']:
+            # 绘制 Taylor 曲线，使用实际数值
+            duration = segment['end_time'] - segment['start_time']
+            num_points = max(50, int(duration * 10))
+            t_samples = np.linspace(0, duration, num_points)
+            
+            # 计算曲线值
+            curve_values = [_evaluate_taylor_series(segment['coeffs'], t) for t in t_samples]
+            
+            # 映射到显示时间和位置
+            time_points = [segment['start_time'] + t for t in t_samples]
+            display_points = [_map_time_to_display(t, time_mapping) for t in time_points]
+            position_points = [value_to_pos(val) for val in curve_values]
+            
+            # 绘制曲线
+            ax.plot(display_points, position_points, color=curve_color, linewidth=3, alpha=0.9)
+    
+    # 绘制 RF 背景
+    rf_segments = [s for s in segments if s.get('rf_on', False)]
+    for rf_seg in rf_segments:
+        start_display = _map_time_to_display(rf_seg['start_time'], time_mapping)
+        end_display = _map_time_to_display(rf_seg['end_time'], time_mapping)
+        width = max(0.1, end_display - start_display)
+        
+        rect = plt.Rectangle((start_display, y_pos - 0.4), width, 0.8,
+                           facecolor='orange', alpha=0.15, edgecolor=None)
+        ax.add_patch(rect)
+    
+    # 绘制离散操作点（LOAD 等瞬时操作）
+    for op in ops:
+        if op.operation.operation_type == OperationType.RWG_LOAD_COEFFS:
+            display_pos = _map_time_to_display(op.timestamp_us, time_mapping)
+            color = _get_operation_color(op.operation.operation_type)
+            symbol = _get_operation_symbol_text(op.operation.operation_type)
+            _draw_enhanced_operation(ax, op, display_pos, y_pos, color, symbol)
 
 

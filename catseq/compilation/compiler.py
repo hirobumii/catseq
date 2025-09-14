@@ -12,7 +12,7 @@ from typing import List, Dict, Callable, Union, Optional
 from ..types.common import OperationType, AtomicMorphism, Channel
 from ..types.timing import LogicalTimestamp, TimestampType, is_same_epoch
 from ..lanes import merge_board_lanes
-from ..types.rwg import RWGWaveformInstruction
+from ..types.rwg import RWGActive
 from ..time_utils import cycles_to_us
 from .types import OASMAddress, OASMFunction, OASMCall
 from .functions import (
@@ -240,10 +240,10 @@ def _pass1_extract_and_translate(morphism) -> Dict[OASMAddress, List[LogicalEven
                         pass
 
                     case OperationType.RWG_LOAD_COEFFS:
-                        # Generate separate OASM calls for each WaveformParams in the instruction
-                        # The OASM DSL function expects individual WaveformParams, not the entire instruction
-                        if isinstance(op.end_state, RWGWaveformInstruction):
-                            for waveform_params in op.end_state.params:
+                        # Generate separate OASM calls for each WaveformParams in pending_waveforms
+                        # The OASM DSL function expects individual WaveformParams
+                        if isinstance(op.end_state, RWGActive) and op.end_state.pending_waveforms:
+                            for waveform_params in op.end_state.pending_waveforms:
                                 event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_LOAD_WAVEFORM, args=(waveform_params,)))
                     
                     case _:

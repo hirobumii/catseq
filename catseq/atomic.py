@@ -15,7 +15,6 @@ from .types.rwg import (
     RWGReady,
     RWGUninitialized,
     WaveformParams,
-    RWGWaveformInstruction,
     StaticWaveform,
 )
 
@@ -83,10 +82,26 @@ def rwg_load_coeffs(
     if not isinstance(start_state, (RWGReady, RWGActive)):
         raise TypeError(f"RWG load_coeffs must start from RWGReady or RWGActive, not {type(start_state)}")
 
+    # Create RWGActive state with pending waveforms to load
+    if isinstance(start_state, RWGReady):
+        end_state = RWGActive(
+            carrier_freq=start_state.carrier_freq,
+            rf_on=False,
+            snapshot=(),
+            pending_waveforms=tuple(params)
+        )
+    else:  # RWGActive
+        end_state = RWGActive(
+            carrier_freq=start_state.carrier_freq,
+            rf_on=start_state.rf_on,
+            snapshot=start_state.snapshot,
+            pending_waveforms=tuple(params)
+        )
+
     op = AtomicMorphism(
         channel=channel,
         start_state=start_state,
-        end_state=RWGWaveformInstruction(params=params),
+        end_state=end_state,
         duration_cycles=0,
         operation_type=OperationType.RWG_LOAD_COEFFS,
     )

@@ -12,11 +12,14 @@ from hardware_map import (
     artiq_trig
 )
 
+from functools import reduce
+
 from catseq.hardware.sync import global_sync
-from catseq.hardware.ttl import pulse, initialize_channel, set_high, set_low
+from catseq.hardware.ttl import pulse, set_high, set_low
+from catseq.hardware.ttl import initialize as ttl_initialize
 from catseq.hardware.rwg import initialize, set_state, identity, rf_on, rf_off, rf_pulse, linear_ramp, RWGTarget
 from catseq.compilation.compiler import compile_to_oasm_calls, execute_oasm_calls
-from catseq.morphism import Morphism
+from catseq.morphism import Morphism, MorphismDef
 from catseq.types.common import Channel, State
 from catseq.types.ttl import TTLState
 from oasm.rtmq2.intf import sim_intf, ft601_intf
@@ -25,13 +28,13 @@ from oasm.dev.main import run_cfg, C_MAIN
 from oasm.dev.rwg import C_RWG
 
 
-trig_uv_led = pulse(uv_led, 5.0)
+trig_uv_led = pulse(5.0)(uv_led)
 
-sync_init = initialize_channel(sync)
-mag_trig_init = initialize_channel(mag_trig)
-qcmos_trig_init = initialize_channel(qcmos_trig)
-artiq_trig_init = initialize_channel(artiq_trig)
-gradient_mag_init = initialize_channel(gradient_mag)
+sync_init = ttl_initialize()(sync)
+mag_trig_init = ttl_initialize()(mag_trig)
+qcmos_trig_init = ttl_initialize()(qcmos_trig)
+artiq_trig_init = ttl_initialize()(artiq_trig)
+gradient_mag_init = ttl_initialize()(gradient_mag)
 
 
 # rwg0_init = rwg_board_init(mot_cooling)
@@ -43,6 +46,12 @@ gradient_mag_init = initialize_channel(gradient_mag)
 
 def get_end_state(morphism: Morphism, channel: Channel)->State | None:
     return morphism.lanes[channel].operations[-1].end_state
+
+def dict_to_morphism(d: dict[Channel, MorphismDef], base_morphism: Morphism) -> Morphism:
+    a = []
+    for ch, morph in d.items():
+        a.append(morph(ch, get_end_state(base_morphism, ch)))
+    return reduce(lambda x, y: x | y, a)
 
 mot_cooling_init = initialize(95)(mot_cooling)
 mot_repump_init = initialize(71)(mot_repump)
@@ -118,7 +127,7 @@ para_init = {
 #     | set_state([global_imaging_target])(global_imaging, get_end_state(laser_init, global_imaging)) \
 #     | set_state([global_repump_target])(global_repump, get_end_state(laser_init, global_repump))
 
-init_morphism = all_init >> para_init >> identity(100.0)
+init_morphism = all_init >> dict_to_morphism(para_init, all_init) >> identity(100.0)
 init_morphism = init_morphism | locking_morphism
 
 mot_laser_on = {
@@ -149,14 +158,14 @@ rf_all_off = {
 #     | rf_off()(global_imaging, get_end_state(init_morphism, global_imaging)) \
 #     | rf_off()(global_repump, get_end_state(init_morphism, global_repump))
 
-mot_on = (mot_laser_on | pulse(uv_led, 10.0) | set_high(gradient_mag))
+mot_on = (dict_to_morphism(mot_laser_on, init_morphism) | pulse(10.0)(uv_led) | set_high()(gradient_mag))
 
 # morphism = init_morphism >> global_sync() >> identity(10.0) >> mot_on
 
 # trigger = pulse(mag_trig, 10.0)
 
-mot_morphism = (pulse(mag_trig,10.0) | mot_laser_on | pulse(uv_led, 10.0) | set_high(gradient_mag)) >> \
-    identity(1000_000) >> (mot_laser_off | set_low(gradient_mag)|pulse(mag_trig,10.0)) 
+mot_morphism = (pulse(10.0)(mag_trig) | dict_to_morphism(mot_laser_on, init_morphism) | pulse(10.0)(uv_led) | set_high()(gradient_mag)) >> \
+    identity(1000_000) >> (dict_to_morphism(mot_laser_off, init_morphism) | set_low()(gradient_mag)|pulse(10.0)(mag_trig)) 
 mot_morphism = mot_morphism >> (set_state([molasses_cooling_start_target])(mot_cooling, get_end_state(mot_morphism, mot_cooling))) >> identity(10)
 
 # morphism = init_morphism >> global_sync() >> identity(10.0) >> mot_on
@@ -173,18 +182,28 @@ molasses_morphism = molasses_morphism >> linear_ramp([cooling_locking_target], 5
 
 morphism = morphism >> molasses_morphism >> identity(50_000.0)
 # morphism = morphism >> identity(50_000.0)
-artiq_trigger_morphism = pulse(artiq_trig, 10.0)
+artiq_trigger_morphism = pulse(10.0)(artiq_trig)
 
 imaging_morphism = rf_pulse(30_000)(global_imaging, get_end_state(morphism, global_imaging)) \
     | rf_pulse(30_000)(global_repump, get_end_state(morphism, global_repump)) \
-    | pulse(qcmos_trig, 10.0)
+    | pulse(10.0)(qcmos_trig)
 morphism = morphism >> imaging_morphism >> identity(50_000) >> artiq_trigger_morphism >> identity(50_000) >> imaging_morphism
 
-# intf_usb = sim_intf()
-intf_usb = ft601_intf("IONCV2PROT")#;intf_usb.__enter__()
+intf_usb = sim_intf()
+# intf_usb = ft601_intf("IONCV2PROT")#;intf_usb.__enter__()
 intf_usb.nod_adr = 0
 intf_usb.loc_chn = 1
 
 rwgs = [1,2,3,4,5]
 run_all = run_cfg(intf_usb, rwgs+[0])
 seq = assembler(run_all,[(f'rwg{i}', C_RWG) for i in range(len(rwgs))]+[('main',C_MAIN)])
+
+from catseq.visualization.timeline import plot_timeline
+
+# 配置 mot_cooling 通道使用振幅 ramp 样式
+channel_styles = {
+    mot_cooling: {"style": "amp", "name": "MOT Cooling"},
+    cooling_lock: {"style": "freq", "name": "Cooling Lock"},
+}
+
+plot_timeline(morphism, filename='experiment_timeline.png', channel_styles=channel_styles)

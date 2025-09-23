@@ -7,24 +7,24 @@ such as hold/wait operations.
 
 from ..types.common import Channel, State, AtomicMorphism, OperationType
 from ..morphism import Morphism, MorphismDef
-from ..time_utils import us_to_cycles
+from ..time_utils import us_to_cycles, time_to_cycles
 from ..lanes import Lane
 
 
-def hold(duration_us: float) -> MorphismDef:
+def hold(duration: float) -> MorphismDef:
     """Creates a definition for a hold (wait) operation.
-    
+
     This is a universal hold function that works with any channel type.
-    
+
     Args:
-        duration_us: Duration of the hold operation in microseconds
-        
+        duration: Duration of the hold operation in seconds (SI unit)
+
     Returns:
         MorphismDef that generates a hold operation for any channel
     """
-    
+
     def generator(channel: Channel, start_state: State) -> Morphism:
-        duration_cycles = us_to_cycles(duration_us)
+        duration_cycles = time_to_cycles(duration)
         
         # Create identity operation for the specific channel
         identity_op = AtomicMorphism(

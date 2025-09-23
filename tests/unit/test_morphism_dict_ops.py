@@ -14,6 +14,7 @@ from catseq.hardware import rwg, ttl
 from catseq.hardware.rwg import RWGTarget
 from catseq.morphism import Morphism, identity
 from catseq.time_utils import us_to_cycles
+from catseq import us  # Import microsecond unit
 
 
 class TestMorphismDictOperations:
@@ -69,7 +70,7 @@ class TestMorphismDictOperations:
         
         result = init_morphism >> {
             self.ch1: rwg.set_state([target]),           # ~instant
-            self.ch2: rwg.hold(5.0),                     # 5μs  
+            self.ch2: rwg.hold(5.0 * us),                # 5μs  
             # ch3 not specified - should get auto wait
         }
         

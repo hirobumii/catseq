@@ -16,7 +16,7 @@ Core concepts:
 
 
 # Time utilities
-from .time_utils import us_to_cycles, cycles_to_us
+from .time_utils import us_to_cycles, cycles_to_us, time_to_cycles, cycles_to_time, s, ms, us, ns, mu
 
 # Atomic operations
 from .atomic import ttl_init, ttl_on, ttl_off
@@ -44,6 +44,10 @@ __all__ = [
     # Time utilities
     'us_to_cycles',
     'cycles_to_us',
+    'time_to_cycles',
+    'cycles_to_time',
+    # SI time units
+    's', 'ms', 'us', 'ns', 'mu',
     
     # Atomic operations
     'ttl_init',

@@ -37,3 +37,37 @@ cooling_shutter = Channel(board=rwg2, local_id=0, channel_type=ChannelType.TTL)
 mot_repump_shutter = Channel(board=rwg2, local_id=1, channel_type=ChannelType.TTL)
 global_imaging_shutter = Channel(board=rwg2, local_id=2, channel_type=ChannelType.TTL)
 blowoff_shutter = Channel(board=rwg2, local_id=3, channel_type=ChannelType.TTL)
+global_repump_shutter = Channel(board=rwg1, local_id=2, channel_type=ChannelType.TTL)
+
+
+channel_styles = {
+    sync: {"style": "default", "name": "Sync"},
+
+    cooling_lock: {"style": "freq", "name": "Cooling Lock"},
+
+    mot_repump: {"style": "default", "name": "Mot Repump"},
+    mot_cooling: {"style": "amp", "name": "MOT Cooling"},
+
+    global_imaging: {"style": "default", "name": "Global Imaging"},
+    global_repump: {"style": "default", "name": "Global Repump"},
+    blowoff: {"style": "amp", "name": "Blowoff & Pumping"},
+
+    eit1: {"style": "default", "name": "EIT 1"},
+    eit2: {"style": "default", "name": "EIT 2"},
+    local_repump: {"style": "default", "name": "Local Repump"},
+    local_image1: {"style": "default", "name": "Local Image1"},
+    local_image2: {"style": "default", "name": "Local Image2"},
+    local_image_total: {"style": "default", "name": "Local Image Total"},
+
+    uv_led: {"style": "default", "name": "UV Led"},
+    artiq_trig: {"style": "default", "name": "Artiq Trig"},
+    gradient_mag: {"style": "default", "name": "Gradient Mag"},
+    mag_trig: {"style": "default", "name": "Mag Trig"},
+    qcmos_trig: {"style": "default", "name": "Qcmos Trig"},
+
+    cooling_shutter: {"style": "default", "name": "Cooling Shutter"},
+    mot_repump_shutter: {"style": "default", "name": "MOT Repump Shutter"},
+    global_imaging_shutter: {"style": "default", "name": "Global Imaging Shutter"},
+    blowoff_shutter: {"style": "default", "name": "Blowoff Shutter"},
+    global_repump_shutter: {"style": "default", "name": "Global Repump Shutter"},
+}

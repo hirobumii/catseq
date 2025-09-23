@@ -10,7 +10,7 @@ from typing import Dict, Callable, List, Self
 
 
 from .lanes import Lane
-from .time_utils import cycles_to_us, us_to_cycles, time_to_cycles, cycles_to_time
+from .time_utils import cycles_to_us, us_to_cycles, time_to_cycles, cycles_to_time, us
 from .types.common import AtomicMorphism, Board, Channel, OperationType, State
 from .types.rwg import RWGUninitialized
 from .types.ttl import TTLState
@@ -47,8 +47,8 @@ class Morphism:
     
     @property
     def total_duration_us(self) -> float:
-        """总时长（微秒）"""
-        return cycles_to_us(self.total_duration_cycles)
+        """总时长（微秒）- 使用SI单位系统"""
+        return cycles_to_time(self.total_duration_cycles) / us
     
     def lanes_by_board(self) -> Dict[Board, Dict[Channel, Lane]]:
         """按板卡分组的通道-Lane映射"""

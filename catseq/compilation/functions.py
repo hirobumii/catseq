@@ -61,6 +61,9 @@ def ttl_set(mask, state):
     print(f"  -> mask=0b{mask:08b}, state=0b{state:08b}")
     print("  TODO: 实现实际的OASM汇编调用")
 
+def wait_mu(cycles):
+    wait(cycles)
+
 def wait_us(duration):
     """等待指定微秒数
     
@@ -68,7 +71,7 @@ def wait_us(duration):
         duration: 等待时长（微秒）
     """
     # print(f"OASM: Wait {duration} μs")
-    t = round(duration * us)
+    t = round(duration*250)
     wait(t)  # 使用转换后的时间单位
 
 def wait_master(cod=None):

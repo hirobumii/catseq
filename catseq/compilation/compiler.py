@@ -19,6 +19,7 @@ from .functions import (
     ttl_config,
     ttl_set,
     wait_us,
+    wait_mu,
     wait_master,
     trig_slave,
     rwg_init,
@@ -881,7 +882,7 @@ def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEv
                 wait_cycles = 0
             
             if wait_cycles > 0:
-                board_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.WAIT_US, args=(cycles_to_us(wait_cycles),)))
+                board_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.WAIT, args=(wait_cycles,)))
 
             # Add the actual OASM calls for the current event
             board_calls.extend(event.oasm_calls)
@@ -900,6 +901,7 @@ OASM_FUNCTION_MAP: Dict[OASMFunction, Callable] = {
     OASMFunction.TTL_CONFIG: ttl_config,
     OASMFunction.TTL_SET: ttl_set,
     OASMFunction.WAIT_US: wait_us,
+    OASMFunction.WAIT: wait_mu,
     OASMFunction.WAIT_MASTER: wait_master,
     OASMFunction.TRIG_SLAVE: trig_slave,
     OASMFunction.RWG_INIT: rwg_init,

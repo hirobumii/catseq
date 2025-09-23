@@ -34,6 +34,7 @@ class OASMFunction(Enum):
     
     # 时间函数
     WAIT_US = auto()
+    WAIT = auto()
 
     # RWG 函数
     RWG_INIT = auto()               # 板卡级初始化

@@ -10,7 +10,7 @@ from typing import Dict, Callable, List, Self
 
 
 from .lanes import Lane
-from .time_utils import cycles_to_us, us_to_cycles
+from .time_utils import cycles_to_us, us_to_cycles, time_to_cycles, cycles_to_time
 from .types.common import AtomicMorphism, Board, Channel, OperationType, State
 from .types.rwg import RWGUninitialized
 from .types.ttl import TTLState
@@ -583,9 +583,13 @@ def from_atomic(op: AtomicMorphism) -> Morphism:
     lane = Lane((op,))
     return Morphism({op.channel: lane})
 
-def identity(duration_us: float) -> "Morphism":
-    """Creates a channelless identity morphism (a pure wait)."""
-    duration_cycles = us_to_cycles(duration_us)
+def identity(duration: float) -> "Morphism":
+    """Creates a channelless identity morphism (a pure wait).
+
+    Args:
+        duration: Wait time in seconds (SI unit)
+    """
+    duration_cycles = time_to_cycles(duration)
     if duration_cycles < 0:
         raise ValueError("Identity duration must be non-negative.")
     return Morphism(lanes={}, _duration_cycles=duration_cycles)
@@ -750,14 +754,14 @@ def parallel_compose_morphisms(left: Morphism, right: Morphism) -> Morphism:
     # 利用 >> identity() 逻辑补齐
     if left_duration < right_duration:
         padding_cycles = right_duration - left_duration
-        padding_us = cycles_to_us(padding_cycles)
+        padding_seconds = cycles_to_time(padding_cycles)
         # identity() returns a channelless Morphism, >> will broadcast it
-        left = left >> identity(padding_us)
+        left = left >> identity(padding_seconds)
     elif right_duration < left_duration:
         padding_cycles = left_duration - right_duration
-        padding_us = cycles_to_us(padding_cycles)
+        padding_seconds = cycles_to_time(padding_cycles)
         # identity() returns a channelless Morphism, >> will broadcast it
-        right = right >> identity(padding_us)
+        right = right >> identity(padding_seconds)
 
     # 合并lanes
     result_lanes = {**left.lanes, **right.lanes}

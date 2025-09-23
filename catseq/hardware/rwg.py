@@ -48,7 +48,7 @@ def initialize(carrier_freq: float) -> MorphismDef:
                     f"RWG initialize must start from Uninitialized or Ready, got {type(start_state)}"
                 )
         # Composite operation: board initialization followed by carrier setting
-        return rwg_board_init(channel) >> identity(1.0) >> rwg_set_carrier(channel, carrier_freq)
+        return rwg_board_init(channel) >> identity(1e-6) >> rwg_set_carrier(channel, carrier_freq)
 
     return MorphismDef(generator)
 
@@ -97,26 +97,30 @@ def set_state(targets: List[RWGTarget]) -> MorphismDef:
             pending_waveforms=None
         )
 
-        update_morphism = rwg_update_params(channel, 0.0, instruction_state, end_state)
+        update_morphism = rwg_update_params(channel, 1e-6, instruction_state, end_state)  # 1us duration
 
         return load_morphism >> update_morphism
 
     return MorphismDef(generator)
 
 
-def linear_ramp(targets: List[Optional[RWGTarget]], duration_us: float) -> MorphismDef:
+def linear_ramp(targets: List[Optional[RWGTarget]], duration: float) -> MorphismDef:
     """Creates a definition for a linear ramp with phase continuity.
-    
-    The ramp will run for exactly duration_us and then stop at the target values.
+
+    The ramp will run for exactly the specified duration and then stop at the target values.
     This ensures the total morphism duration matches the user's expectation.
-    
+
     Timeline:
-    - t=0: Load ramp coefficients (instantaneous)  
-    - t=0 to t=duration_us: Execute ramp with specified slope
-    - t=duration_us: Load static coefficients to stop ramping (instantaneous)
-    - t=duration_us: Execute static update to finalize target state (instantaneous)
-    
-    Total duration = duration_us
+    - t=0: Load ramp coefficients (instantaneous)
+    - t=0 to t=duration: Execute ramp with specified slope
+    - t=duration: Load static coefficients to stop ramping (instantaneous)
+    - t=duration: Execute static update to finalize target state (instantaneous)
+
+    Args:
+        targets: Target values for each RWG parameter (freq, amp, phase)
+        duration: Ramp duration in seconds (SI unit)
+
+    Total duration = duration
     """
 
     def generator(channel: Channel, start_state: State) -> Morphism:
@@ -124,7 +128,7 @@ def linear_ramp(targets: List[Optional[RWGTarget]], duration_us: float) -> Morph
             raise TypeError(
                 "RWG linear_ramp must follow an operation that leaves the channel in an Active state."
             )
-        if duration_us <= 0:
+        if duration <= 0:
             raise ValueError("Ramp duration must be positive.")
 
         active_waveforms = start_state.snapshot
@@ -149,8 +153,10 @@ def linear_ramp(targets: List[Optional[RWGTarget]], duration_us: float) -> Morph
             target_amp = target.amp if target and target.amp is not None else start_amp
 
             # Calculate ramp rates
-            freq_ramp_rate = (target_freq - start_freq) / duration_us
-            amp_ramp_rate = (target_amp - start_amp) / duration_us
+            # Convert duration from seconds to microseconds for hardware units
+            duration_us = duration * 1e6  # Convert s to us
+            freq_ramp_rate = (target_freq - start_freq) / duration_us  # MHz/us
+            amp_ramp_rate = (target_amp - start_amp) / duration_us     # units/us
 
             # Ramp coefficients (for the PLAY phase)
             freq_coeffs = (start_freq, freq_ramp_rate, None, None) if freq_ramp_rate != 0 else (None, None, None, None)
@@ -193,9 +199,9 @@ def linear_ramp(targets: List[Optional[RWGTarget]], duration_us: float) -> Morph
         load_ramp_morphism = rwg_load_coeffs(channel, ramp_params, start_state)
         ramp_instruction_state = load_ramp_morphism.lanes[channel].operations[-1].end_state
 
-        # Phase 2: Execute ramp for specified duration (t=0 to t=duration_us)
+        # Phase 2: Execute ramp for specified duration (t=0 to t=duration)
         play_ramp_morphism = rwg_update_params(
-            channel, duration_us, ramp_instruction_state, end_state
+            channel, duration, ramp_instruction_state, end_state
         )
 
         # Phase 3: Load static coefficients to stop ramping (t=duration_us, instantaneous)
@@ -260,7 +266,7 @@ def rf_off() -> MorphismDef:
     return _create_rf_switch_morphism(on=False)
 
 
-def rf_pulse(duration_us: float) -> MorphismDef:
+def rf_pulse(duration: float) -> MorphismDef:
     """Creates a definition for an RF pulse: rf_on → wait → rf_off.
     
     This is a composite operation that temporarily turns on the RF switch
@@ -268,7 +274,7 @@ def rf_pulse(duration_us: float) -> MorphismDef:
     externally as RWGActive(rf_on=False) → RWGActive(rf_on=False).
     
     Args:
-        duration_us: Duration of the RF pulse in microseconds
+        duration: Duration of the RF pulse in seconds (SI unit)
         
     Returns:
         MorphismDef that generates the RF pulse sequence
@@ -296,7 +302,7 @@ def rf_pulse(duration_us: float) -> MorphismDef:
         )
         
         # Create wait operation with user's specified duration
-        wait_morphism = identity(duration_us)
+        wait_morphism = identity(duration)
         
         # Generate rf_off operation  
         rf_off_morphism = rf_off_def(channel, intermediate_state)

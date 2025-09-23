@@ -7,7 +7,7 @@ which are the fundamental building blocks of sequences.
 from typing import List, Union
 
 from .morphism import Morphism, from_atomic
-from .time_utils import us_to_cycles
+from .time_utils import us_to_cycles, time_to_cycles
 from .types.common import Channel, OperationType, AtomicMorphism, State
 from .types.ttl import TTLState
 from .types.rwg import (
@@ -108,20 +108,20 @@ def rwg_load_coeffs(
     return from_atomic(op)
 
 def rwg_update_params(
-    channel: Channel, 
-    duration_us: float, 
-    start_state: Union[RWGReady, RWGActive], 
+    channel: Channel,
+    duration: float,
+    start_state: Union[RWGReady, RWGActive],
     end_state: Union[RWGReady, RWGActive]
 ) -> Morphism:
     """Creates a morphism to trigger an RWG parameter update (a ramp).
-    
+
     Args:
         channel: RWG channel to operate on
-        duration_us: Duration of the waveform playback in microseconds
+        duration: Duration of the waveform playback in seconds (SI unit)
         start_state: RWG state at the beginning of playback
         end_state: RWG state at the end of playback
     """
-    duration_cycles = us_to_cycles(duration_us)
+    duration_cycles = time_to_cycles(duration)
     op = AtomicMorphism(
         channel=channel,
         start_state=start_state,

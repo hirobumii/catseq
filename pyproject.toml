@@ -11,6 +11,7 @@ dependencies = [
     "h5py",
     "scipy",
     "matplotlib>=3.10.6",
+    "dataclasses-json",
 ]
 
 [project.optional-dependencies]

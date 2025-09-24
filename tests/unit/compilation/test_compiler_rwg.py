@@ -112,7 +112,7 @@ def test_pass3_generates_correct_rwg_calls():
     calls_by_func = {call.dsl_func: call for call in oasm_calls}
     
     assert OASMFunction.RWG_INIT in calls_by_func
-    assert OASMFunction.WAIT_US in calls_by_func
+    assert OASMFunction.WAIT in calls_by_func
     assert OASMFunction.RWG_SET_CARRIER in calls_by_func
     assert OASMFunction.RWG_LOAD_WAVEFORM in calls_by_func
     assert OASMFunction.RWG_PLAY in calls_by_func

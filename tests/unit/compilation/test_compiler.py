@@ -49,7 +49,7 @@ class TestCompileToOASMCalls:
         assert oasm_calls[0].args == (1, 0)  # mask=1 (ch0), dir=0 (init to OFF)
         
         # Check that we have wait calls
-        wait_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.WAIT_US]
+        wait_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.WAIT]
         assert len(wait_calls) >= 2
         
         # Check that we have TTL_SET calls
@@ -151,11 +151,11 @@ class TestCompileToOASMCalls:
         assert OASMFunction.TTL_CONFIG in func_types  # Should have init
         
         # Find wait calls if they exist
-        wait_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.WAIT_US]
+        wait_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.WAIT]
         if wait_calls:  # If wait calls are generated
-            wait_duration = wait_calls[0].args[0]
-            assert isinstance(wait_duration, float)
-            assert wait_duration > 0.0  # Should be positive
+            wait_cycles = wait_calls[0].args[0]
+            assert isinstance(wait_cycles, int)
+            assert wait_cycles > 0  # Should be positive
 
 
 class TestExecuteOASMCalls:
@@ -261,7 +261,7 @@ class TestOASMCallStructure:
         """Test OASM function enumeration completeness."""
         # Check that all expected functions are defined
         expected_functions = {
-            'TTL_CONFIG', 'TTL_SET', 'WAIT_US', 'WAIT_MASTER', 'TRIG_SLAVE',
+            'TTL_CONFIG', 'TTL_SET', 'WAIT_US', 'WAIT', 'WAIT_MASTER', 'TRIG_SLAVE',
             'RWG_INIT', 'RWG_SET_CARRIER', 'RWG_RF_SWITCH', 'RWG_LOAD_WAVEFORM', 'RWG_PLAY'
         }
         actual_functions = {func.name for func in OASMFunction}
@@ -312,7 +312,7 @@ class TestIntegrationCompilerFlow:
         # Should have config, waits, and sets
         func_types = [call.dsl_func for call in oasm_calls]
         assert OASMFunction.TTL_CONFIG in func_types
-        assert OASMFunction.WAIT_US in func_types  
+        assert OASMFunction.WAIT in func_types  
         assert OASMFunction.TTL_SET in func_types
         
         # Config should affect both channels (mask = 3)

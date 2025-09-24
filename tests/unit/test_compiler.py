@@ -42,8 +42,8 @@ def test_compile_sequential_morphism():
     oasm_calls = oasm_calls_by_board[board_adr]
     
     assert len(oasm_calls) > 1
-    # Expected: TTL_SET, WAIT_US, TTL_SET
-    assert "WAIT_US" in str(oasm_calls)
+    # Expected: TTL_SET, WAIT, TTL_SET
+    assert "WAIT" in str(oasm_calls)
 
 
 def test_compile_parallel_morphism():

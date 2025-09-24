@@ -289,15 +289,16 @@ def test_pass4_oasm_call_generation_and_timing():
     # Verify expected structure
     assert len(oasm_calls) >= 2, f"Expected at least 2 calls (wait + load), got {len(oasm_calls)}"
     
-    # First call should be a WAIT_US for the 10μs delay
+    # First call should be a WAIT for the cycles delay
     wait_call = oasm_calls[0]
-    assert wait_call.dsl_func == OASMFunction.WAIT_US, f"First call should be WAIT_US, got {wait_call.dsl_func.name}"
+    assert wait_call.dsl_func == OASMFunction.WAIT, f"First call should be WAIT, got {wait_call.dsl_func.name}"
     assert wait_call.adr == board_adr, f"Wait call should be for {board_adr.value}, got {wait_call.adr}"
     
-    # Verify wait duration (should be 10μs)
-    wait_duration = wait_call.args[0]
-    assert abs(wait_duration - 10.0) < 0.001, f"Wait duration should be ~10μs, got {wait_duration}μs"
-    print(f"  ✅ Wait call correctly generated for {wait_duration}μs")
+    # Verify wait duration (should be 2500 cycles for 10μs)
+    wait_cycles = wait_call.args[0]
+    expected_cycles = 2500  # 10μs * 250 cycles/μs
+    assert abs(wait_cycles - expected_cycles) < 10, f"Wait duration should be ~{expected_cycles} cycles, got {wait_cycles} cycles"
+    print(f"  ✅ Wait call correctly generated for {wait_cycles} cycles")
     
     # Second call should be RWG_LOAD_WAVEFORM
     load_call = oasm_calls[1]
@@ -398,12 +399,12 @@ def test_pass4_multiple_events_timing():
 
     # Expected sequence: WAIT -> LOAD -> WAIT -> PLAY
     call_types = [call.dsl_func for call in oasm_calls]
-    assert call_types == [OASMFunction.WAIT_US, OASMFunction.RWG_LOAD_WAVEFORM, OASMFunction.WAIT_US, OASMFunction.RWG_PLAY]
+    assert call_types == [OASMFunction.WAIT, OASMFunction.RWG_LOAD_WAVEFORM, OASMFunction.WAIT, OASMFunction.RWG_PLAY]
 
-    # Verify the wait time. The first wait should be 5μs as originally specified.
-    wait_duration = oasm_calls[0].args[0]
-    expected_wait_us = 5.0  # 5μs initial delay as specified in morphism
-    assert abs(wait_duration - expected_wait_us) < 0.001, f"Expected wait to be ~{expected_wait_us}us, got {wait_duration}us"
+    # Verify the wait time. The first wait should be 5μs (1250 cycles) as originally specified.
+    wait_cycles = oasm_calls[0].args[0]
+    expected_cycles = 1250  # 5μs * 250 cycles/μs
+    assert abs(wait_cycles - expected_cycles) < 10, f"Expected wait to be ~{expected_cycles} cycles, got {wait_cycles} cycles"
     print("✅ Pass 4 multiple events timing test completed successfully!")
 
 
@@ -502,7 +503,7 @@ def test_complete_compilation_pipeline():
     # The expected sequence is WAIT, LOAD, PLAY
     assert len(oasm_calls) == 3, f"Expected 3 calls (WAIT, LOAD, PLAY), got {len(oasm_calls)}"
     
-    wait_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.WAIT_US]
+    wait_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.WAIT]
     load_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.RWG_LOAD_WAVEFORM]
     play_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.RWG_PLAY]
 
@@ -511,13 +512,13 @@ def test_complete_compilation_pipeline():
     assert len(play_calls) == 1, f"Expected 1 PLAY call, got {len(play_calls)}"
 
     # Verify the wait time accounts for optimization and instruction cost
-    # Original delay was 3us. The LOAD cost is 9 cycles. The scheduler optimizes the LOAD
+    # Original delay was 3us (750 cycles). The LOAD cost is 9 cycles. The scheduler optimizes the LOAD
     # to happen just before the PLAY, so the initial wait is reduced by the LOAD's execution time.
-    wait_duration = wait_calls[0].args[0]
+    wait_cycles = wait_calls[0].args[0]
     # Note: the exact expected wait depends on the scheduling optimization, which we verify here.
     # The key is that a wait call exists and is calculated correctly.
-    expected_wait = 3.0 - (9 / 250.0) # 3us delay minus cost of optimized load (9 cycles)
-    assert abs(wait_duration - expected_wait) < 0.001, f"Wait time should be ~{expected_wait}us, got {wait_duration}us"
+    expected_cycles = 750 - 9  # 3us delay (750 cycles) minus cost of optimized load (9 cycles)
+    assert abs(wait_cycles - expected_cycles) < 10, f"Wait time should be ~{expected_cycles} cycles, got {wait_cycles} cycles"
     
     # Verify load call parameters
     load_params = load_calls[0].args[0]

@@ -57,31 +57,64 @@ Before you begin, ensure you have the following software installed in your devel
 
 ### Installation
 
-**Option 1: Using the provided setup script (Recommended)**
+**Linux/macOS - Using setup script (Recommended)**
 ```bash
 git clone https://github.com/hirobumii/catseq.git
 cd catseq
-chmod +x setup.sh
-./setup.sh
+chmod +x scripts/setup.sh
+./scripts/setup.sh
 ```
 
-**Option 2: Manual Installation**
+**Windows PowerShell - Using setup script (Recommended)**
+```powershell
+git clone https://github.com/hirobumii/catseq.git
+cd catseq
+.\scripts\setup.ps1
+```
+
+**Manual Installation (Any Platform)**
 ```bash
 # 1. Clone the repository
 git clone https://github.com/hirobumii/catseq.git
 cd catseq
 
 # 2. Install uv (if not already installed)
+# Linux/macOS:
 curl -LsSf https://astral.sh/uv/install.sh | sh
+# Windows PowerShell:
+# Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
 
 # 3. Create a virtual environment and install dependencies
 uv venv --python 3.12
+# Linux/macOS:
 source .venv/bin/activate
+# Windows:
+# .\.venv\Scripts\Activate.ps1
+
 uv pip install -e .[dev]
 
 # 4. Verify the installation
-.venv/bin/pytest tests/ -v
+.venv/bin/pytest tests/ -v  # Linux/macOS
+# .\.venv\Scripts\python.exe -m pytest tests/ -v  # Windows
 ```
+
+**Install from Any Location**
+
+To install CatSeq as a dependency from any directory:
+
+```bash
+# Option 1: Direct installation (requires OASM.dev pre-installed)
+pip install oasm.dev h5py scipy numpy
+pip install git+https://github.com/hirobumii/catseq.git
+
+# Option 2: Clone and install with environment auto-detection
+git clone https://github.com/hirobumii/catseq.git
+cd catseq
+python scripts/post_install.py  # Automatically detects your environment
+pip install -e .
+```
+
+The `post_install.py` script automatically detects your Python environment (virtualenv or system) and installs the required OASM extensions to the correct location.
 
 ### Basic Usage
 
@@ -171,15 +204,21 @@ We welcome contributions from the community! If you'd like to get involved, plea
 
 **Development Environment Setup**:
 ```bash
-# Use the script for a quick setup
-./setup.sh
+# Linux/macOS - Use the setup script
+chmod +x scripts/setup.sh && ./scripts/setup.sh
 
-# Or set up manually
-source .venv/bin/activate
+# Windows PowerShell - Use the setup script
+.\scripts\setup.ps1
+
+# Or set up manually (any platform)
+source .venv/bin/activate  # Linux/macOS
+# .\.venv\Scripts\Activate.ps1  # Windows
+
 uv pip install -e .[dev]
 
 # Run the test suite
-.venv/bin/pytest tests/ -v
+.venv/bin/pytest tests/ -v  # Linux/macOS
+# .\.venv\Scripts\python.exe -m pytest tests/ -v  # Windows
 
 # Check code formatting and types
 ruff check catseq/

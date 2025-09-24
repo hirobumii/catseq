@@ -13,6 +13,7 @@ from ..morphism import Morphism, MorphismDef, from_atomic
 from ..atomic import rwg_board_init, rwg_set_carrier, rwg_load_coeffs, rwg_update_params
 from ..morphism import identity
 from .common import hold
+from ..abstractions import SavableABDC
 from ..types import (
     Channel,
     State,
@@ -26,8 +27,7 @@ from ..types import (
 )
 
 
-@dataclass
-class RWGTarget:
+class RWGTarget(SavableABDC):
     """Represents a target state for an RWG's sub-band generator (SBG).
 
     The `sbg_id` is required when setting an initial state, but ignored during a ramp.

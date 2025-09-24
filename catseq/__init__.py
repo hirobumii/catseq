@@ -61,7 +61,6 @@ __all__ = [
     
     # Hardware abstraction
     'pulse',
-    'initialize_channel',
     'set_high',
     'set_low', 
     'hold',

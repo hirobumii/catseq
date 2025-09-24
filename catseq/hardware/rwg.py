@@ -36,6 +36,7 @@ class RWGTarget:
     freq: Optional[float] = None
     amp: Optional[float] = None
     sbg_id: Optional[int] = None
+    phase: float = 0.0
 
 
 def initialize(carrier_freq: float) -> MorphismDef:
@@ -74,7 +75,7 @@ def set_state(targets: List[RWGTarget]) -> MorphismDef:
                     sbg_id=t.sbg_id,
                     freq_coeffs=(t.freq, None, None, None),
                     amp_coeffs=(t.amp, None, None, None),
-                    initial_phase=0.0,
+                    initial_phase=t.phase,
                     phase_reset=True,
                 )
             )
@@ -87,7 +88,7 @@ def set_state(targets: List[RWGTarget]) -> MorphismDef:
             if t.sbg_id is None or t.freq is None or t.amp is None:
                 raise ValueError("sbg_id, freq, and amp must be provided for all targets in set_state.")
             end_waveforms.append(
-                StaticWaveform(sbg_id=t.sbg_id, freq=t.freq, amp=t.amp, phase=0.0)
+                StaticWaveform(sbg_id=t.sbg_id, freq=t.freq, amp=t.amp, phase=t.phase)
             )
         # For set_state, we directly set the snapshot (immediate state change)
         end_state = RWGActive(

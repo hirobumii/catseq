@@ -7,7 +7,9 @@ main = Board(id="main")
 rwg0 = Board(id="rwg0")
 rwg1 = Board(id="rwg1")
 rwg2 = Board(id="rwg2")
+rwg3 = Board(id="rwg3")
 rwg4 = Board(id="rwg4")
+rwg5 = Board(id="rwg5")
 
 # 2. Define specific channels on the boards
 
@@ -40,6 +42,13 @@ blowoff_shutter = Channel(board=rwg2, local_id=3, channel_type=ChannelType.TTL)
 global_repump_shutter = Channel(board=rwg1, local_id=2, channel_type=ChannelType.TTL)
 
 
+global_raman = Channel(board=rwg3, local_id=0, channel_type=ChannelType.RWG)
+
+sqg_i = Channel(board=rwg5, local_id=0, channel_type=ChannelType.RWG)
+sqg_q = Channel(board=rwg5, local_id=1, channel_type=ChannelType.RWG)
+mw_sw = Channel(board=rwg5, local_id=0, channel_type=ChannelType.TTL)
+
+
 channel_styles = {
     sync: {"style": "default", "name": "Sync"},
 
@@ -70,4 +79,8 @@ channel_styles = {
     global_imaging_shutter: {"style": "default", "name": "Global Imaging Shutter"},
     blowoff_shutter: {"style": "default", "name": "Blowoff Shutter"},
     global_repump_shutter: {"style": "default", "name": "Global Repump Shutter"},
+
+    sqg_i: {"style": "default", "name": "SQG I"},
+    sqg_q: {"style": "default", "name": "SQG Q"},
+    mw_sw: {"style": "default", "name": "Microwave Switch"}
 }

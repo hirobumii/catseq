@@ -16,7 +16,7 @@ class ABDCMeta(ABCMeta):
 
         # apply the decorators to all classes,
         # including abstract bases
-        decorated_cls = dataclass_json(dataclass(cls))
+        decorated_cls = dataclass_json(dataclass(cls,frozen=True))
         return decorated_cls
 
 

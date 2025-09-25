@@ -24,10 +24,10 @@ class StaticWaveform:
     """
     An instantaneous snapshot of a single waveform's properties (freq, amp, phase).
     """
-    sbg_id: int
-    freq: float  # MHz
-    amp: float  # FS
-    phase: float  # Radian
+    freq: Optional[float] = None  # MHz
+    amp: Optional[float] = None  # FS
+    sbg_id: Optional[int] = None
+    phase: float = 0.0 # Radian
 
 # --- Channel States ---
 class RWGState(State):

@@ -26,17 +26,18 @@ from ..types import (
     OperationType,
 )
 
+from catseq.types.rwg import StaticWaveform
 
-class RWGTarget(SavableABDC):
-    """Represents a target state for an RWG's sub-band generator (SBG).
+# class RWGTarget(SavableABDC):
+#     """Represents a target state for an RWG's sub-band generator (SBG).
 
-    The `sbg_id` is required when setting an initial state, but ignored during a ramp.
-    `freq` and `amp` can be set to None during a ramp to indicate no change.
-    """
-    freq: Optional[float] = None
-    amp: Optional[float] = None
-    sbg_id: Optional[int] = None
-    phase: float = 0.0
+#     The `sbg_id` is required when setting an initial state, but ignored during a ramp.
+#     `freq` and `amp` can be set to None during a ramp to indicate no change.
+#     """
+#     freq: Optional[float] = None
+#     amp: Optional[float] = None
+#     sbg_id: Optional[int] = None
+#     phase: float = 0.0
 
 
 def initialize(carrier_freq: float) -> MorphismDef:
@@ -54,7 +55,7 @@ def initialize(carrier_freq: float) -> MorphismDef:
     return MorphismDef(generator)
 
 
-def set_state(targets: List[RWGTarget]) -> MorphismDef:
+def set_state(targets: List[StaticWaveform]) -> MorphismDef:
     """
     Creates a definition for a zero-duration ramp (setting an initial state).
     This operation creates a new set of active SBGs and resets their phase.
@@ -83,13 +84,7 @@ def set_state(targets: List[RWGTarget]) -> MorphismDef:
         load_morphism = rwg_load_coeffs(channel, params, start_state)
         instruction_state = load_morphism.lanes[channel].operations[-1].end_state
 
-        end_waveforms = []
-        for t in targets:
-            if t.sbg_id is None or t.freq is None or t.amp is None:
-                raise ValueError("sbg_id, freq, and amp must be provided for all targets in set_state.")
-            end_waveforms.append(
-                StaticWaveform(sbg_id=t.sbg_id, freq=t.freq, amp=t.amp, phase=t.phase)
-            )
+        end_waveforms = targets
         # For set_state, we directly set the snapshot (immediate state change)
         end_state = RWGActive(
             carrier_freq=start_state.carrier_freq, 
@@ -105,7 +100,7 @@ def set_state(targets: List[RWGTarget]) -> MorphismDef:
     return MorphismDef(generator)
 
 
-def linear_ramp(targets: List[Optional[RWGTarget]], duration: float) -> MorphismDef:
+def linear_ramp(targets: List[Optional[StaticWaveform]], duration: float) -> MorphismDef:
     """Creates a definition for a linear ramp with phase continuity.
 
     The ramp will run for exactly the specified duration and then stop at the target values.

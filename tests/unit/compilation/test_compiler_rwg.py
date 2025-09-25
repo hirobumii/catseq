@@ -36,8 +36,8 @@ def test_pass1_cost_analysis(capsys):
     # The second and third (from linear_ramp) have 1 param each (ramp + static).
     sequence_def = (
         rwg.initialize(carrier_freq=100.0) >>
-        rwg.set_state([rwg.RWGTarget(sbg_id=0, freq=10, amp=0.5)]) >>
-        rwg.linear_ramp([rwg.RWGTarget(freq=20, amp=0.8)], 10 * us)
+        rwg.set_state([rwg.StaticWaveform(sbg_id=0, freq=10, amp=0.5)]) >>
+        rwg.linear_ramp([rwg.StaticWaveform(freq=20, amp=0.8)], 10 * us)
     )
     morphism = sequence_def(rwg_ch)
 
@@ -82,7 +82,7 @@ def test_pass3_generates_correct_rwg_calls():
     rwg_ch = Channel(board, 0, ChannelType.RWG)
     sequence_def = (
         rwg.initialize(carrier_freq=120.0) >>
-        rwg.set_state([rwg.RWGTarget(sbg_id=0, freq=15, amp=0.6)])
+        rwg.set_state([rwg.StaticWaveform(sbg_id=0, freq=15, amp=0.6)])
     )
     morphism = sequence_def(rwg_ch)
 
@@ -144,9 +144,9 @@ def test_pass3_pipelined_scheduling():
     # 10us = 2500 cycles. Load cost is 1*20=20 cycles.
     sequence_def = (
         rwg.initialize(carrier_freq=100.0) >>
-        rwg.set_state([rwg.RWGTarget(sbg_id=0, freq=10, amp=0.5)]) >>
-        rwg.linear_ramp([rwg.RWGTarget(freq=20, amp=0.8)], 10 * us) >>
-        rwg.linear_ramp([rwg.RWGTarget(freq=15, amp=0.7)], 5 * us)
+        rwg.set_state([rwg.StaticWaveform(sbg_id=0, freq=10, amp=0.5)]) >>
+        rwg.linear_ramp([rwg.StaticWaveform(freq=20, amp=0.8)], 10 * us) >>
+        rwg.linear_ramp([rwg.StaticWaveform(freq=15, amp=0.7)], 5 * us)
     )
     morphism = sequence_def(rwg_ch)
 
@@ -199,10 +199,10 @@ def test_pass2_pipelining_constraint():
     success_def = (
         rwg.initialize(carrier_freq=100.0) >>
         rwg.hold(100.0) >>
-        rwg.set_state([rwg.RWGTarget(sbg_id=0, freq=10, amp=0.5)]) >>
+        rwg.set_state([rwg.StaticWaveform(sbg_id=0, freq=10, amp=0.5)]) >>
         rwg.hold(100.0) >>
-        rwg.linear_ramp([rwg.RWGTarget(freq=20, amp=0.8)], 10 * us) >>
-        rwg.linear_ramp([rwg.RWGTarget(freq=15, amp=0.7)], 5 * us) 
+        rwg.linear_ramp([rwg.StaticWaveform(freq=20, amp=0.8)], 10 * us) >>
+        rwg.linear_ramp([rwg.StaticWaveform(freq=15, amp=0.7)], 5 * us) 
     )
     morphism = success_def(rwg_ch)
     
@@ -223,10 +223,10 @@ def test_pass2_pipelining_constraint():
     short_ramp_def = (
         rwg.initialize(carrier_freq=100.0) >>
         rwg.hold(100.0) >>
-        rwg.set_state([rwg.RWGTarget(sbg_id=0, freq=10, amp=0.5)]) >>
+        rwg.set_state([rwg.StaticWaveform(sbg_id=0, freq=10, amp=0.5)]) >>
         rwg.hold(100.0) >>
-        rwg.linear_ramp([rwg.RWGTarget(freq=20, amp=0.8)], 0.05 * us) >>
-        rwg.linear_ramp([rwg.RWGTarget(freq=15, amp=0.7)], 5 * us)
+        rwg.linear_ramp([rwg.StaticWaveform(freq=20, amp=0.8)], 0.05 * us) >>
+        rwg.linear_ramp([rwg.StaticWaveform(freq=15, amp=0.7)], 5 * us)
     )
     morphism_short = short_ramp_def(rwg_ch)
     # This now compiles successfully with current scheduling algorithm

@@ -3,7 +3,7 @@ import pytest
 from catseq.types.common import Board, Channel, ChannelType, OperationType
 from catseq.compilation.types import OASMAddress, OASMFunction
 from catseq.types.rwg import WaveformParams, RWGUninitialized, RWGReady, RWGActive
-from catseq.hardware.rwg import RWGTarget
+from catseq.hardware.rwg import StaticWaveform
 from catseq.types.ttl import TTLState
 from catseq.hardware import rwg, ttl
 from catseq.hardware.sync import global_sync
@@ -90,13 +90,13 @@ def test_rwg_init_constraint_violation():
     main_seq = (
         rwg.initialize(100.0) >>
         rwg.hold(200.0 * us) >>
-        rwg.set_state([RWGTarget(sbg_id=0, freq=10, amp=0.5)])
+        rwg.set_state([StaticWaveform(sbg_id=0, freq=10, amp=0.5)])
     )
     
     rwg0_seq = (
         rwg.hold(300.0 * us) >>
         rwg.initialize(150.0) >>
-        rwg.set_state([RWGTarget(sbg_id=0, freq=20, amp=0.8)])
+        rwg.set_state([StaticWaveform(sbg_id=0, freq=20, amp=0.8)])
     )
     
     multi_board_sequence = main_seq(main_ch) | rwg0_seq(rwg0_ch)
@@ -130,20 +130,20 @@ def test_dynamic_master_wait_calculation():
     
     main_seq = (
         rwg.initialize(100.0) >>
-        rwg.set_state([RWGTarget(sbg_id=0, freq=10, amp=0.5)])
+        rwg.set_state([StaticWaveform(sbg_id=0, freq=10, amp=0.5)])
     )
     
     rwg0_seq = (
         rwg.initialize(150.0) >>
         rwg.hold(50.0 * us) >>
-        rwg.set_state([RWGTarget(sbg_id=0, freq=20, amp=0.8)])
+        rwg.set_state([StaticWaveform(sbg_id=0, freq=20, amp=0.8)])
     )
     
     rwg1_seq = (
         rwg.initialize(200.0) >>
         rwg.hold(150.0 * us) >>
-        rwg.set_state([RWGTarget(sbg_id=0, freq=30, amp=0.6)]) >>
-        rwg.set_state([RWGTarget(sbg_id=1, freq=35, amp=0.7)])
+        rwg.set_state([StaticWaveform(sbg_id=0, freq=30, amp=0.6)]) >>
+        rwg.set_state([StaticWaveform(sbg_id=1, freq=35, amp=0.7)])
     )
     
     multi_board_sequence = (main_seq(main_ch) | rwg0_seq(rwg0_ch) | rwg1_seq(rwg1_ch)) >> global_sync()
@@ -192,7 +192,7 @@ def test_single_board_no_sync():
     sequence = (
         rwg.initialize(100.0) >>
         rwg.hold(50.0 * us) >>
-        rwg.set_state([RWGTarget(sbg_id=0, freq=10, amp=0.5)])
+        rwg.set_state([StaticWaveform(sbg_id=0, freq=10, amp=0.5)])
     )
     
     single_board_morphism = sequence(ch)
@@ -233,13 +233,13 @@ def test_global_sync_timing_accuracy():
     main_seq = (
         rwg.initialize(100.0) >>
         rwg.hold(100.0 * us) >>
-        rwg.set_state([RWGTarget(sbg_id=0, freq=10, amp=0.5)])
+        rwg.set_state([StaticWaveform(sbg_id=0, freq=10, amp=0.5)])
     )
 
     rwg0_seq = (
         rwg.initialize(150.0) >>
         rwg.hold(80.0 * us) >>
-        rwg.set_state([RWGTarget(sbg_id=0, freq=20, amp=0.8)])
+        rwg.set_state([StaticWaveform(sbg_id=0, freq=20, amp=0.8)])
     )
     
     multi_board_sequence = (main_seq(main_ch) | rwg0_seq(rwg0_ch)) >> global_sync()
@@ -299,7 +299,7 @@ def test_complex_multi_board_sequence_with_sync():
     # -- Part 1: Pre-sync operations (epoch 0) --
     ttl_ops_pre = ttl_pulse(10)
     rwg_ops_pre = rwg.initialize(100.0)(ch_rwg) >> rwg.set_state(
-        [rwg.RWGTarget(sbg_id=0, freq=10, amp=0.5)]
+        [rwg.StaticWaveform(sbg_id=0, freq=10, amp=0.5)]
     )
     pre_sync_morphism = ttl_ops_pre | rwg_ops_pre
 
@@ -315,9 +315,9 @@ def test_complex_multi_board_sequence_with_sync():
     # Define the post-sync operations for each channel as a callable sequence
     ttl_ops_post_seq = rwg.hold(5 * us) >> ttl.on()
     rwg_ops_post_seq = rwg.set_state(
-        [rwg.RWGTarget(sbg_id=0, freq=10, amp=0.5)]
+        [rwg.StaticWaveform(sbg_id=0, freq=10, amp=0.5)]
     ) >> rwg.linear_ramp(
-        [RWGTarget(freq=20, amp=0.8)], 50 * us
+        [StaticWaveform(freq=20, amp=0.8)], 50 * us
     )
 
     # Apply the sequences to their respective channels with the correct start states

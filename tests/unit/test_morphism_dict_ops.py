@@ -11,7 +11,7 @@ from catseq.types import Board, Channel, ChannelType
 from catseq.types.rwg import RWGUninitialized, RWGReady, RWGActive, StaticWaveform
 from catseq.types.ttl import TTLState
 from catseq.hardware import rwg, ttl
-from catseq.hardware.rwg import RWGTarget
+from catseq.hardware.rwg import StaticWaveform
 from catseq.morphism import Morphism, identity
 from catseq.time_utils import us_to_cycles
 from catseq import us  # Import microsecond unit
@@ -34,8 +34,8 @@ class TestMorphismDictOperations:
         init_morphism = rwg.initialize(100.0)(self.ch1) | rwg.initialize(200.0)(self.ch2)
         
         # Apply different operations to each channel
-        target1 = RWGTarget(freq=10.0, amp=0.5, sbg_id=0)
-        target2 = RWGTarget(freq=20.0, amp=0.8, sbg_id=0)
+        target1 = StaticWaveform(freq=10.0, amp=0.5, sbg_id=0)
+        target2 = StaticWaveform(freq=20.0, amp=0.8, sbg_id=0)
         
         result = init_morphism >> {
             self.ch1: rwg.set_state([target1]),
@@ -66,7 +66,7 @@ class TestMorphismDictOperations:
                         rwg.initialize(300.0)(self.ch3))
         
         # Operations with different durations
-        target = RWGTarget(freq=10.0, amp=0.5, sbg_id=0)
+        target = StaticWaveform(freq=10.0, amp=0.5, sbg_id=0)
         
         result = init_morphism >> {
             self.ch1: rwg.set_state([target]),           # ~instant
@@ -104,9 +104,9 @@ class TestMorphismDictOperations:
         """Test chaining multiple dictionary operations."""
         init_morphism = rwg.initialize(100.0)(self.ch1) | rwg.initialize(200.0)(self.ch2)
         
-        target1 = RWGTarget(freq=10.0, amp=0.5, sbg_id=0)
-        target2 = RWGTarget(freq=20.0, amp=0.8, sbg_id=0)
-        target3 = RWGTarget(freq=30.0, amp=0.3, sbg_id=0)
+        target1 = StaticWaveform(freq=10.0, amp=0.5, sbg_id=0)
+        target2 = StaticWaveform(freq=20.0, amp=0.8, sbg_id=0)
+        target3 = StaticWaveform(freq=30.0, amp=0.3, sbg_id=0)
         
         result = (init_morphism 
                  >> {self.ch1: rwg.set_state([target1]), self.ch2: rwg.hold(2.0)}
@@ -149,7 +149,7 @@ class TestMorphismDictOperations:
         # Create morphism with both RWG and TTL channels  
         init_morphism = rwg.initialize(100.0)(self.ch1) | ttl.off()(self.ttl_ch)
         
-        target = RWGTarget(freq=10.0, amp=0.5, sbg_id=0)
+        target = StaticWaveform(freq=10.0, amp=0.5, sbg_id=0)
         
         result = init_morphism >> {
             self.ch1: rwg.set_state([target]),
@@ -164,7 +164,7 @@ class TestMorphismDictOperations:
         """Test handling of zero-duration operations."""
         init_morphism = rwg.initialize(100.0)(self.ch1) | rwg.initialize(200.0)(self.ch2)
         
-        target = RWGTarget(freq=10.0, amp=0.5, sbg_id=0)
+        target = StaticWaveform(freq=10.0, amp=0.5, sbg_id=0)
         
         # One instant operation, one with duration
         result = init_morphism >> {
@@ -181,8 +181,8 @@ class TestMorphismDictOperations:
         """Test that dictionary operations are equivalent to manual | composition."""
         init_morphism = rwg.initialize(100.0)(self.ch1) | rwg.initialize(200.0)(self.ch2)
         
-        target1 = RWGTarget(freq=10.0, amp=0.5, sbg_id=0)
-        target2 = RWGTarget(freq=20.0, amp=0.8, sbg_id=0)
+        target1 = StaticWaveform(freq=10.0, amp=0.5, sbg_id=0)
+        target2 = StaticWaveform(freq=20.0, amp=0.8, sbg_id=0)
         
         # Dictionary approach
         dict_result = init_morphism >> {

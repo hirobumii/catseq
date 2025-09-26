@@ -149,12 +149,14 @@ def test_pass3_pipelining_constraint_checking():
     )
     
     # Create a PLAY operation with 1000 cycles duration
-    play_morphism = rwg_update_params(
-        channel, 
-        4.0 * us,  # 4μs = 1000 cycles at 250MHz
+    # Updated: rwg_update_params is now atomic (1 cycle), use identity for duration
+    start_play = rwg_update_params(
+        channel,
         start_state=waveform_state,
-        end_state=RWGActive(carrier_freq=100e6, rf_on=True)
+        end_state=waveform_state  # State doesn't change for atomic start
     )
+    play_wait = identity(4.0 * us)  # 4μs = 1000 cycles at 250MHz
+    play_morphism = start_play >> play_wait
     
     # Create a LOAD operation that costs 14 cycles (known from previous test)
     load_waveform_params = WaveformParams(
@@ -198,12 +200,14 @@ def test_pass3_pipelining_constraint_checking():
     print("  Testing invalid pipelining scenario...")
     
     # Create a PLAY operation with very short duration (5 cycles < 14 cycles LOAD cost)
-    short_play_morphism = rwg_update_params(
+    # Updated: rwg_update_params is now atomic (1 cycle), use identity for duration
+    start_short_play = rwg_update_params(
         channel,
-        0.02 * us,  # 0.02μs = 5 cycles at 250MHz  
         start_state=waveform_state,
-        end_state=RWGActive(carrier_freq=100e6, rf_on=True)
+        end_state=waveform_state  # State doesn't change for atomic start
     )
+    short_wait = identity(0.02 * us)  # 0.02μs = 5 cycles at 250MHz
+    short_play_morphism = start_short_play >> short_wait
     
     # Create sequence: SHORT_PLAY(5c) followed by LOAD(14c) - should fail
     invalid_sequence = short_play_morphism @ load_morphism
@@ -362,10 +366,10 @@ def test_pass4_multiple_events_timing():
         identity(15 * us) >>  # 3750 cycles
         rwg_update_params(
             channel,
-            8.0 * us,  # 2000 cycles 
             start_state=waveform_state,
-            end_state=RWGActive(carrier_freq=100e6, rf_on=True)
-        )
+            end_state=waveform_state  # Atomic operation, state doesn't change
+        ) >>
+        identity(8.0 * us)  # 2000 cycles - moved duration to identity
     )
     
     print("  Created complex morphism: 5μs → load → 15μs → update(8μs)")
@@ -579,10 +583,10 @@ def test_pipeline_pair_identification():
         ) >>
         rwg_update_params(
             ch0,
-            10.0 * us,
             start_state=RWGActive(carrier_freq=100e6, rf_on=True),
             end_state=RWGActive(carrier_freq=100e6, rf_on=True)
-        )
+        ) >>
+        identity(10.0 * us)  # Moved duration to identity
     )
     
     ch1_morphism = (
@@ -594,10 +598,10 @@ def test_pipeline_pair_identification():
         ) >>
         rwg_update_params(
             ch1,
-            15.0 * us,
             start_state=RWGActive(carrier_freq=100e6, rf_on=True),
             end_state=RWGActive(carrier_freq=100e6, rf_on=True)
-        )
+        ) >>
+        identity(15.0 * us)  # Moved duration to identity
     )
     
     # Parallel execution
@@ -681,10 +685,10 @@ def test_intelligent_scheduling_optimization():
         ) >>
         rwg_update_params(
             ch0,
-            5.0 * us,  # 5μs PLAY duration
             start_state=RWGActive(carrier_freq=100e6, rf_on=True),
             end_state=RWGActive(carrier_freq=100e6, rf_on=True)
-        )
+        ) >>
+        identity(5.0 * us)  # 5μs PLAY duration moved to identity
     )
     
     ch1_morphism = (
@@ -696,10 +700,10 @@ def test_intelligent_scheduling_optimization():
         ) >>
         rwg_update_params(
             ch1,
-            3.0 * us,  # 3μs PLAY duration
             start_state=RWGActive(carrier_freq=100e6, rf_on=True),
             end_state=RWGActive(carrier_freq=100e6, rf_on=True)
-        )
+        ) >>
+        identity(3.0 * us)  # 3μs PLAY duration moved to identity
     )
     
     parallel_morphism = ch0_morphism | ch1_morphism

@@ -80,7 +80,7 @@ def set_state(targets: List[StaticWaveform],phase_reset=True) -> MorphismDef:
             pending_waveforms=None
         )
 
-        update_morphism = rwg_update_params(channel, 1e-6, instruction_state, end_state)  # 1us duration
+        update_morphism = rwg_update_params(channel, instruction_state, end_state)
 
         return load_morphism >> update_morphism
 
@@ -182,24 +182,26 @@ def linear_ramp(targets: List[Optional[StaticWaveform]], duration: float) -> Mor
         load_ramp_morphism = rwg_load_coeffs(channel, ramp_params, start_state)
         ramp_instruction_state = load_ramp_morphism.lanes[channel].operations[-1].end_state
 
-        # Phase 2: Execute ramp for specified duration (t=0 to t=duration)
-        play_ramp_morphism = rwg_update_params(
-            channel, duration, ramp_instruction_state, end_state
+        # Phase 2: Start ramp execution (atomic, 1 cycle)
+        start_ramp_morphism = rwg_update_params(
+            channel, ramp_instruction_state, ramp_instruction_state
         )
 
-        # Phase 3: Load static coefficients to stop ramping (t=duration_us, instantaneous)
-        load_static_morphism = rwg_load_coeffs(channel, static_params, end_state)
+        # Phase 3: Wait for ramp to complete (user-specified duration)
+        wait_morphism = identity(duration)
+
+        # Phase 4: Load static coefficients to stop ramping (atomic, 1 cycle)
+        load_static_morphism = rwg_load_coeffs(channel, static_params, ramp_instruction_state)
         static_instruction_state = load_static_morphism.lanes[channel].operations[-1].end_state
 
-        # Phase 4: Execute static update to finalize state (t=duration_us, instantaneous)
+        # Phase 5: Execute static update to finalize state (atomic, 1 cycle)
         stop_ramp_morphism = rwg_update_params(
-            channel, 0.0, static_instruction_state, end_state
+            channel, static_instruction_state, end_state
         )
 
-        # Complete sequence: load_ramp → play_ramp → load_static → stop_ramp
-        # Total duration = duration_us (only play_ramp contributes to duration)
-        # Static operations execute at t=duration_us, ensuring ramp stops exactly when expected
-        return load_ramp_morphism >> play_ramp_morphism >> load_static_morphism >> stop_ramp_morphism
+        # Complete sequence: load_ramp → start_ramp → wait → load_static → stop_ramp
+        # Total duration = 1 + 1 + duration + 1 + 1 = duration + 4 cycles
+        return load_ramp_morphism >> start_ramp_morphism >> wait_morphism >> load_static_morphism >> stop_ramp_morphism
 
     return MorphismDef(generator)
 

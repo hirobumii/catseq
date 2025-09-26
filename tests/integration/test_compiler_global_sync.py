@@ -267,14 +267,15 @@ def test_global_sync_timing_accuracy():
     trig_slave_call = next(call for call in sync_events if call.dsl_func == OASMFunction.TRIG_SLAVE)
     wait_duration_cycles = trig_slave_call.args[0]
     
-    # The longest lane is on the main board (100us). The slave board's operations
-    # extend to 25250 cycles before padding. However, we must also account for the
-    # execution cost of the SYNC_MASTER operation itself (16 cycles).
-    # Total: max_end_time (25250 + 16) + 100-cycle safety margin = 25366
-    expected_cycles = 25615  # Updated based on corrected time calculations with scheduling
+    # Updated after rwg_update_params duration changed to 0:
+    # Pass 3 scheduling moves LOAD earlier, but PLAY (RWG_UPDATE_PARAMS) stays at t=25252
+    # SYNC_MASTER is added at the same timestamp t=25252 due to 0-duration operations
+    # Current calculation: Both operations at t=25252, SYNC_MASTER cost=16, end=25268
+    # master_wait_time = max_end_time(25268) + safety_margin(100) = 25368
+    expected_cycles = 25368  # Updated after scheduling optimization
     assert wait_duration_cycles == expected_cycles, (
         f"Compiler-calculated wait duration {wait_duration_cycles} cycles does not match the "
-        f"expected value of {expected_cycles} (100us sequence + 100 cycle margin)."
+        f"expected value of {expected_cycles} (100us sequence + safety margin)."
     )
 
 

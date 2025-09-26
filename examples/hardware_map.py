@@ -47,6 +47,7 @@ global_raman = Channel(board=rwg3, local_id=0, channel_type=ChannelType.RWG)
 sqg_i = Channel(board=rwg5, local_id=0, channel_type=ChannelType.RWG)
 sqg_q = Channel(board=rwg5, local_id=1, channel_type=ChannelType.RWG)
 mw_sw = Channel(board=rwg5, local_id=0, channel_type=ChannelType.TTL)
+raman_sw = Channel(board=rwg5, local_id=3, channel_type=ChannelType.TTL)
 test = Channel(rwg5, local_id=2, channel_type=ChannelType.RWG)
 
 

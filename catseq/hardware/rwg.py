@@ -56,8 +56,8 @@ def set_state(targets: List[StaticWaveform],phase_reset=True) -> MorphismDef:
 
         params = []
         for t in targets:
-            if t.sbg_id is None or t.freq is None or t.amp is None:
-                raise ValueError("sbg_id, freq, and amp must be provided for all targets in set_state.")
+            if t.sbg_id is None:
+                raise ValueError("sbg_id must be provided for all targets in set_state.")
             params.append(
                 WaveformParams(
                     sbg_id=t.sbg_id,

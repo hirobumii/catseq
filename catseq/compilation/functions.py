@@ -43,23 +43,26 @@ def ttl_config(mask, dir):
     # print(f"  -> mask=0b{mask:08b}, dir=0b{dir:08b}")
 
 
-def ttl_set(mask, state):
-    """设置 TTL 通道状态
-    
-    用于 TTL_ON/TTL_OFF 操作，设置TTL通道的输出状态
-    
+def ttl_set(mask, state, board_type="main"):
+    """根据板卡类型选择 TTL 控制方式
+
     Args:
-        mask: 通道掩码，指定哪些通道受影响 (binary format, e.g., 0b0101) 
+        mask: 通道掩码，指定哪些通道受影响 (binary format, e.g., 0b0101)
         state: TTL 状态值，指定选中通道的输出状态 (binary format, e.g., 0b0001)
+        board_type: 板卡类型 ("main" 或 "rwg")，默认为 "main"
     """
-    # Convert binary masks to RTMQ "A.B" format if possible
-    rtmq_mask = binary_to_rtmq_mask(mask)
-    rtmq_state = binary_to_rtmq_mask(state)
-    
-    amk('ttl', rtmq_mask, rtmq_state)
-    print(f"TTL_SET - mask={rtmq_mask}, state={rtmq_state}")
-    print(f"  -> mask=0b{mask:08b}, state=0b{state:08b}")
-    print("  TODO: 实现实际的OASM汇编调用")
+    if board_type == "main":
+        # Main 板卡：使用 TTL 寄存器（GPIO 子系统）
+        rtmq_mask = binary_to_rtmq_mask(mask)
+        rtmq_state = binary_to_rtmq_mask(state)
+        amk('ttl', rtmq_mask, rtmq_state)
+        print(f"TTL_SET (Main) - mask={rtmq_mask}, state={rtmq_state}")
+    else:  # RWG 板卡
+        # RWG 板卡：使用 SBG mark 位，避免与 IO_UPDATE 的流水线延迟错位
+        sbg.ctrl(iou=0, pud=0, mrk=state & 0xF)
+        print(f"TTL_SET (RWG) - SBG mark bits: 0b{state & 0xF:04b}")
+
+    print(f"  -> mask=0b{mask:08b}, state=0b{state:08b}, board_type={board_type}")
 
 def wait_mu(cycles):
     wait(cycles)

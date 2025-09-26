@@ -6,14 +6,12 @@ These functions return MorphismDefs, which can be composed together
 using the >> operator to build complex sequences.
 """
 
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from ..morphism import Morphism, MorphismDef, from_atomic
 from ..atomic import rwg_board_init, rwg_set_carrier, rwg_load_coeffs, rwg_update_params
 from ..morphism import identity
 from .common import hold
-from ..abstractions import SavableABDC
 from ..types import (
     Channel,
     State,
@@ -27,17 +25,6 @@ from ..types import (
 )
 
 from catseq.types.rwg import StaticWaveform
-
-# class RWGTarget(SavableABDC):
-#     """Represents a target state for an RWG's sub-band generator (SBG).
-
-#     The `sbg_id` is required when setting an initial state, but ignored during a ramp.
-#     `freq` and `amp` can be set to None during a ramp to indicate no change.
-#     """
-#     freq: Optional[float] = None
-#     amp: Optional[float] = None
-#     sbg_id: Optional[int] = None
-#     phase: float = 0.0
 
 
 def initialize(carrier_freq: float) -> MorphismDef:
@@ -55,7 +42,7 @@ def initialize(carrier_freq: float) -> MorphismDef:
     return MorphismDef(generator)
 
 
-def set_state(targets: List[StaticWaveform]) -> MorphismDef:
+def set_state(targets: List[StaticWaveform],phase_reset=True) -> MorphismDef:
     """
     Creates a definition for a zero-duration ramp (setting an initial state).
     This operation creates a new set of active SBGs and resets their phase.
@@ -77,7 +64,7 @@ def set_state(targets: List[StaticWaveform]) -> MorphismDef:
                     freq_coeffs=(t.freq, None, None, None),
                     amp_coeffs=(t.amp, None, None, None),
                     initial_phase=t.phase,
-                    phase_reset=True,
+                    phase_reset=phase_reset,
                 )
             )
 

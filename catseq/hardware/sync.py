@@ -2,7 +2,7 @@
 Global synchronization operations for multi-board coordination.
 """
 
-from ..morphism import MorphismDef, from_atomic
+from ..morphism import MorphismDef, Morphism, from_atomic
 from ..types import Channel, State, AtomicMorphism, OperationType
 
 
@@ -13,7 +13,7 @@ def global_sync() -> MorphismDef:
         MorphismDef: 可以应用到单个或多个通道的同步操作定义
     """
     
-    def generator(channel: Channel, start_state: State) -> "Morphism":
+    def generator(channel: Channel, start_state: State) -> Morphism:
         board_id = channel.board.id
         
         # 根据板卡类型选择操作

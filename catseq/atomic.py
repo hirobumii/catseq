@@ -122,7 +122,7 @@ def rwg_update_params(
         channel=channel,
         start_state=start_state,
         end_state=end_state,
-        duration_cycles=1,  # All atomic operations use 1 cycle for stable compiler ordering
+        duration_cycles=0,  
         operation_type=OperationType.RWG_UPDATE_PARAMS,
     )
     return from_atomic(op)

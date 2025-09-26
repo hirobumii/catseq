@@ -267,12 +267,12 @@ def test_global_sync_timing_accuracy():
     trig_slave_call = next(call for call in sync_events if call.dsl_func == OASMFunction.TRIG_SLAVE)
     wait_duration_cycles = trig_slave_call.args[0]
     
-    # Updated after atomic operations standardization (0→1 cycle):
-    # The SYNC_MASTER cost analysis changed from 262 to 16 cycles due to more stable
-    # atomic operation durations providing better assembly generation.
-    # Current calculation: SYNC_MASTER end = 25253 + 16 = 25269
-    # master_wait_time = max_end_time(25269) + safety_margin(100) = 25369
-    expected_cycles = 25369  # Updated based on improved atomic operations (1-cycle)
+    # Updated after rwg_update_params duration changed to 0:
+    # Pass 3 scheduling moves LOAD earlier, but PLAY (RWG_UPDATE_PARAMS) stays at t=25252
+    # SYNC_MASTER is added at the same timestamp t=25252 due to 0-duration operations
+    # Current calculation: Both operations at t=25252, SYNC_MASTER cost=16, end=25268
+    # master_wait_time = max_end_time(25268) + safety_margin(100) = 25368
+    expected_cycles = 25368  # Updated after scheduling optimization
     assert wait_duration_cycles == expected_cycles, (
         f"Compiler-calculated wait duration {wait_duration_cycles} cycles does not match the "
         f"expected value of {expected_cycles} (100us sequence + safety margin)."

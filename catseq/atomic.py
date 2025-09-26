@@ -7,7 +7,7 @@ which are the fundamental building blocks of sequences.
 from typing import List, Union
 
 from .morphism import Morphism, from_atomic
-from .time_utils import us_to_cycles, time_to_cycles
+from .time_utils import time_to_cycles
 from .types.common import Channel, OperationType, AtomicMorphism, State
 from .types.ttl import TTLState
 from .types.rwg import (
@@ -15,7 +15,6 @@ from .types.rwg import (
     RWGReady,
     RWGUninitialized,
     WaveformParams,
-    StaticWaveform,
 )
 
 def ttl_init(channel: Channel, initial_state: TTLState = TTLState.OFF) -> Morphism:
@@ -109,24 +108,21 @@ def rwg_load_coeffs(
 
 def rwg_update_params(
     channel: Channel,
-    duration: float,
     start_state: Union[RWGReady, RWGActive],
     end_state: Union[RWGReady, RWGActive]
 ) -> Morphism:
-    """Creates a morphism to trigger an RWG parameter update (a ramp).
+    """Creates a morphism to trigger an RWG parameter update (atomic operation).
 
     Args:
         channel: RWG channel to operate on
-        duration: Duration of the waveform playback in seconds (SI unit)
         start_state: RWG state at the beginning of playback
         end_state: RWG state at the end of playback
     """
-    duration_cycles = time_to_cycles(duration)
     op = AtomicMorphism(
         channel=channel,
         start_state=start_state,
         end_state=end_state,
-        duration_cycles=duration_cycles,
+        duration_cycles=1,  # All atomic operations use 1 cycle for stable compiler ordering
         operation_type=OperationType.RWG_UPDATE_PARAMS,
     )
     return from_atomic(op)

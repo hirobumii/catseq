@@ -56,7 +56,7 @@ def rwg_board_init(channel: Channel) -> Morphism:
         channel=channel,
         start_state=RWGUninitialized(),
         end_state=RWGUninitialized(),  # Still uninitialized until carrier is set
-        duration_cycles=0,  # Instantaneous operation, handled during global sync
+        duration_cycles=1,  # All atomic operations use 1 cycle for stable compiler ordering
         operation_type=OperationType.RWG_INIT,
     )
     return from_atomic(op)
@@ -67,7 +67,7 @@ def rwg_set_carrier(channel: Channel, carrier_freq: float) -> Morphism:
         channel=channel,
         start_state=RWGUninitialized(),
         end_state=RWGReady(carrier_freq=carrier_freq),
-        duration_cycles=0,  # Instantaneous operation, handled during global sync
+        duration_cycles=1,  # All atomic operations use 1 cycle for stable compiler ordering
         operation_type=OperationType.RWG_SET_CARRIER,
     )
     return from_atomic(op)
@@ -101,7 +101,7 @@ def rwg_load_coeffs(
         channel=channel,
         start_state=start_state,
         end_state=end_state,
-        duration_cycles=0,
+        duration_cycles=1,  # All atomic operations use 1 cycle for stable compiler ordering
         operation_type=OperationType.RWG_LOAD_COEFFS,
     )
     return from_atomic(op)

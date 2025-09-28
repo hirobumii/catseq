@@ -123,7 +123,7 @@ class Morphism:
             # Type check: all keys must be Channels, all values must be MorphismDefs
             if not all(isinstance(k, Channel) for k in other.keys()):
                 return NotImplemented
-            if not all(isinstance(v, MorphismDef) for v in other.values()):
+            if not all(isinstance(v, MorphismDef) or isinstance(v, MorphismSequence) for v in other.values()):
                 return NotImplemented
             return self._apply_channel_operations(other)
 

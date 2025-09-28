@@ -66,3 +66,8 @@ examples/results/
 examples/modules/
 examples/labopt_logs/
 examples/analysis.py
+examples/cxp/
+examples/analysis2.py
+examples/plot.py
+examples/mqtt_publisher.py
+examples/raman_transfer_scan.py

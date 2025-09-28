@@ -294,9 +294,11 @@ def _pass1_extract_and_translate(morphism) -> Dict[OASMAddress, List[LogicalEven
                 for op in ops_by_type.get(OperationType.TTL_ON, []): mask |= (1 << op.channel.local_id); state_value |= (1 << op.channel.local_id)
                 for op in ops_by_type.get(OperationType.TTL_OFF, []): mask |= (1 << op.channel.local_id)
                 if mask > 0:
+                    # 根据板卡地址确定板卡类型
+                    board_type = "main" if adr == OASMAddress.MAIN else "rwg"
                     for event in ts_events:
                         if event.operation.operation_type in [OperationType.TTL_ON, OperationType.TTL_OFF]:
-                            event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.TTL_SET, args=(mask, state_value)))
+                            event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.TTL_SET, args=(mask, state_value, board_type)))
                             break # Store the single merged call in the first relevant event
 
             if OperationType.RWG_UPDATE_PARAMS in ops_by_type:

@@ -71,3 +71,6 @@ examples/analysis2.py
 examples/plot.py
 examples/mqtt_publisher.py
 examples/raman_transfer_scan.py
+examples/pumping_depump_scan.py
+examples/dznb.npy
+*.png

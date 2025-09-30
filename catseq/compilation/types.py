@@ -43,6 +43,9 @@ class OASMFunction(Enum):
     RWG_LOAD_WAVEFORM = auto()
     RWG_PLAY = auto()
     
+    # User-defined black box function
+    USER_DEFINED_FUNC = auto()
+    
     # 同步函数
     WAIT_MASTER = auto()            # 主设备等待同步触发
     TRIG_SLAVE = auto()             # 从设备发送同步触发码

@@ -3,7 +3,7 @@ Common, hardware-agnostic types for the CatSeq framework.
 """
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any
+from typing import Any, Callable
 
 class ChannelType(Enum):
     """硬件通道类型"""
@@ -58,10 +58,35 @@ class OperationType(Enum):
     SYNC_MASTER = auto()
     SYNC_SLAVE = auto()
 
+    # 黑盒操作
+    OPAQUE_OASM_FUNC = auto()
+
+
+TIMING_CRITICAL_OPERATIONS = {
+    OperationType.IDENTITY,
+    OperationType.TTL_ON,
+    OperationType.TTL_OFF,
+    OperationType.RWG_UPDATE_PARAMS,
+    OperationType.RWG_RF_SWITCH,
+    OperationType.SYNC_MASTER,
+    OperationType.SYNC_SLAVE,
+    OperationType.OPAQUE_OASM_FUNC, # Black boxes are critical by definition
+}
+"""Set of operations that must be executed at their precise timestamp."""
+
+TIMING_NON_CRITICAL_OPERATIONS = {
+    OperationType.TTL_INIT,
+    OperationType.RWG_INIT,
+    OperationType.RWG_SET_CARRIER,
+    OperationType.RWG_LOAD_COEFFS,
+}
+"""Set of operations that can be rescheduled by the compiler for optimization."""
+
 
 # A generic base class for all hardware states.
 class State:
     pass
+
 
 @dataclass(frozen=True)
 class AtomicMorphism:
@@ -93,9 +118,18 @@ class AtomicMorphism:
             OperationType.IDENTITY: "wait",
             OperationType.SYNC_MASTER: "sync_master",
             OperationType.SYNC_SLAVE: "sync_slave",
+            OperationType.OPAQUE_OASM_FUNC: "opaque_oasm_func",
         }.get(self.operation_type, str(self.operation_type))
         
         if duration_us > 0:
             return f"{op_name}({duration_us:.1f}μs)"
         else:
             return op_name
+
+
+@dataclass(frozen=True)
+class OpaqueAtomicMorphism(AtomicMorphism):
+    """An atomic morphism that wraps a user-defined OASM function (black box)."""
+    user_func: Callable
+    user_args: tuple
+    user_kwargs: dict

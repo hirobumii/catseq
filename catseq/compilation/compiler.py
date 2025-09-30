@@ -9,7 +9,9 @@ architecture to support pipelined operations and timing checks.
 from dataclasses import dataclass, field
 from typing import List, Dict, Callable, Union, Optional
 
-from ..types.common import OperationType, AtomicMorphism, Channel
+from ..types.common import (
+    OperationType, AtomicMorphism, Channel, TIMING_CRITICAL_OPERATIONS, OpaqueAtomicMorphism
+)
 from ..types.timing import LogicalTimestamp, TimestampType, is_same_epoch
 from ..lanes import merge_board_lanes
 from ..types.rwg import RWGActive
@@ -79,6 +81,9 @@ class LogicalEvent:
     
     # Populated by Pass 2 (Cost Analysis)
     cost_cycles: int = 0
+
+    # Populated by Pass 1 (Coloring)
+    is_critical: bool = True
     
     # New compound timestamp support (optional for migration)
     logical_timestamp: LogicalTimestamp = field(default=None)
@@ -187,7 +192,8 @@ def _pass1_extract_and_translate(morphism, verbose: bool = False) -> Dict[OASMAd
 
             event = LogicalEvent(
                 timestamp_cycles=pop.timestamp_cycles,
-                operation=pop.operation
+                operation=pop.operation,
+                is_critical=(pop.operation.operation_type in TIMING_CRITICAL_OPERATIONS)
             )
             events_by_board[adr].append(event)
     
@@ -317,6 +323,28 @@ def _pass1_extract_and_translate(morphism, verbose: bool = False) -> Dict[OASMAd
                         event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_PLAY, args=(pud_mask, iou_mask)))
                         break # Store the single merged call in the first relevant event
 
+            # Handle Opaque OASM Functions (Black Boxes)
+            opaque_events = [e for e in ts_events if isinstance(e.operation, OpaqueAtomicMorphism)]
+            if opaque_events:
+                first_op = opaque_events[0].operation
+                func_id = id(first_op.user_func)
+
+                # Validation: Ensure all simultaneous opaque ops on this board are the same
+                for other_event in opaque_events[1:]:
+                    if id(other_event.operation.user_func) != func_id:
+                        raise ValueError(
+                            f"Cannot execute two different black-box functions on the same board at the same time. "
+                            f"Found {first_op.user_func.__name__} and {other_event.operation.user_func.__name__} at timestamp {ts}."
+                        )
+                
+                # Generate one call for the entire group
+                call = OASMCall(
+                    adr=adr,
+                    dsl_func=OASMFunction.USER_DEFINED_FUNC,
+                    args=(first_op.user_func, first_op.user_args, first_op.user_kwargs)
+                )
+                opaque_events[0].oasm_calls.append(call)
+
     return events_by_board
 
 def _pass2_cost_and_epoch_analysis(events_by_board: Dict[OASMAddress, List[LogicalEvent]], assembler_seq=None, verbose: bool = False):
@@ -349,24 +377,36 @@ def _pass2_cost_and_epoch_analysis(events_by_board: Dict[OASMAddress, List[Logic
             else:
                 print(f"    Board {adr.value}: Single epoch with {sum(epoch_info.values())} events")
 
-    # Step 2: Analyze costs for all operations (original Pass 2 logic)
+    # Step 2: Analyze costs for all operations
     if verbose:
-        print("  Analyzing costs for all operations via assembly generation...")
-    
+        print("  Analyzing costs for all operations...")
+
+    # First, handle opaque events which don't need an assembler
+    for events in events_by_board.values():
+        for event in events:
+            if isinstance(event.operation, OpaqueAtomicMorphism):
+                event.cost_cycles = event.operation.duration_cycles
+                if verbose:
+                    print(f"      - OPAQUE_OASM_FUNC at t={event.timestamp_cycles}: {event.cost_cycles} cycles (user-provided)")
+
+    # Abort standard analysis if no assembler is available
     if assembler_seq is None:
         if OASM_AVAILABLE:
             if verbose:
-                print("    Warning: No assembler provided. Cost analysis will be skipped.")
+                print("    Warning: No assembler provided. Standard cost analysis will be skipped.")
         else:
             if verbose:
                 print("    Warning: OASM modules not available. Skipping cost analysis.")
         return
 
+    # Now do standard cost analysis for all non-opaque events
     for adr, events in events_by_board.items():
         if verbose:
             print(f"    Analyzing costs for board {adr.value}...")
         for event in events:
-            # Analyze cost for all operations that have OASM calls
+            if isinstance(event.operation, OpaqueAtomicMorphism):
+                continue  # Already handled
+
             if event.oasm_calls:
                 event.cost_cycles = _analyze_operation_cost(event, adr, assembler_seq, verbose=verbose)
                 if verbose:
@@ -508,9 +548,48 @@ def _pass4_validate_constraints(events_by_board: Dict[OASMAddress, List[LogicalE
         
         # 4. 验证跨epoch边界（重用现有实现）
         _check_cross_epoch_violations_single_board(adr, events, verbose=verbose)
+
+        # 5. 验证黑盒操作的板卡独占性
+        _validate_black_box_exclusivity(adr, events, verbose=verbose)
         
         if verbose:
             print(f"    ✓ All constraints validated for board {adr.value}")
+
+
+def _validate_black_box_exclusivity(adr, events: List[LogicalEvent], verbose: bool = False):
+    """验证黑盒操作在执行期间是否独占板卡"""
+    # 1. 识别出所有的黑盒事件和其他事件
+    opaque_events = [e for e in events if isinstance(e.operation, OpaqueAtomicMorphism)]
+    other_events = [e for e in events if not isinstance(e.operation, OpaqueAtomicMorphism)]
+
+    if not opaque_events:
+        return
+
+    # 2. 获取所有不重复的黑盒时间窗口
+    # Pass 1已经保证了同一时刻、同一板卡上的所有黑盒都属于同一个逻辑操作
+    black_box_windows = {}
+    for event in opaque_events:
+        func_id = id(event.operation.user_func)
+        if func_id not in black_box_windows:
+            black_box_windows[func_id] = (event.timestamp_cycles, event.timestamp_cycles + event.cost_cycles)
+
+    # 3. 检查其他事件是否与黑盒时间窗口重叠
+    for start_A, end_A in black_box_windows.values():
+        for event_B in other_events:
+            start_B = event_B.timestamp_cycles
+            end_B = start_B + event_B.cost_cycles
+
+            # Overlap check: (StartA < EndB) and (EndA > StartB)
+            if (start_A < end_B) and (end_A > start_B):
+                raise ValueError(
+                    f"Constraint violation on board {adr.value}: Operation {event_B.operation} at t={start_B}c "
+                    f"conflicts with a black-box operation running in window [{start_A}c, {end_A}c]. "
+                    f"Black-box operations require exclusive access to the board."
+                )
+    
+    if verbose:
+        print(f"    ✓ Black-box exclusivity validated ({len(black_box_windows)} block(s))")
+
 
 def _validate_serial_load_constraints(adr, events: List[LogicalEvent], verbose: bool = False):
     """验证LOAD操作确实被串行调度"""
@@ -741,7 +820,7 @@ def _identify_pipeline_pairs(events: List[LogicalEvent], verbose: bool = False) 
         channel_events.sort(key=lambda e: e.timestamp_cycles)
         
         for i, event in enumerate(channel_events):
-            if event.operation.operation_type == OperationType.RWG_LOAD_COEFFS:
+            if not event.is_critical and event.operation.operation_type == OperationType.RWG_LOAD_COEFFS:
                 # Look for the next UPDATE_PARAMS on the same channel
                 for j in range(i + 1, len(channel_events)):
                     next_event = channel_events[j]
@@ -1025,20 +1104,30 @@ def execute_oasm_calls(calls_by_board: Dict[OASMAddress, List[OASMCall]], assemb
                 
                 for call in board_calls:
                     call_counter += 1
-                    func = OASM_FUNCTION_MAP.get(call.dsl_func)
-                    if func is None:
-                        print(f"Error: OASM function '{call.dsl_func.name}' not found in map.")
-                        return False, assembler_seq
-                    
-                    args_str = ", ".join(map(str, call.args))
-                    kwargs_str = ", ".join(f"{k}={v}" for k, v in call.kwargs.items()) if call.kwargs else ""
-                    params_str = ", ".join(filter(None, [args_str, kwargs_str]))
-                    print(f"  [{call_counter:02d}] {func.__name__}({params_str})")
-                    
-                    if call.kwargs:
-                        assembler_seq(call.adr.value, func, *call.args, **call.kwargs)
+
+                    # Handle user-defined black-box functions differently from standard functions
+                    if call.dsl_func == OASMFunction.USER_DEFINED_FUNC:
+                        # For black boxes, the function and its args are packed inside the call's args
+                        user_func, user_args, user_kwargs = call.args
+                        print(f"  [{call_counter:02d}] Executing black-box function: {user_func.__name__}")
+                        # The user function is passed into the assembler sequence to be executed
+                        assembler_seq(call.adr.value, user_func, *user_args, **user_kwargs)
                     else:
-                        assembler_seq(call.adr.value, func, *call.args)
+                        # For standard functions, look up the function in the map
+                        func = OASM_FUNCTION_MAP.get(call.dsl_func)
+                        if func is None:
+                            print(f"Error: OASM function '{call.dsl_func.name}' not found in map.")
+                            return False, assembler_seq
+                        
+                        args_str = ", ".join(map(str, call.args))
+                        kwargs_str = ", ".join(f"{k}={v}" for k, v in call.kwargs.items()) if call.kwargs else ""
+                        params_str = ", ".join(filter(None, [args_str, kwargs_str]))
+                        print(f"  [{call_counter:02d}] {func.__name__}({params_str})")
+                        
+                        if call.kwargs:
+                            assembler_seq(call.adr.value, func, *call.args, **call.kwargs)
+                        else:
+                            assembler_seq(call.adr.value, func, *call.args)
             
             # Generate assembly for each board
             for board_adr in calls_by_board.keys():

@@ -4,11 +4,18 @@ AtomicMorphism factories.
 This module provides factory functions for creating AtomicMorphism objects,
 which are the fundamental building blocks of sequences.
 """
-from typing import List, Union
+from typing import List, Union, Callable, Dict, Tuple
 
-from .morphism import Morphism, from_atomic
+from .morphism import Morphism, from_atomic, Lane
 from .time_utils import time_to_cycles
-from .types.common import Channel, OperationType, AtomicMorphism, State
+from .types.common import (
+    Board,
+    Channel, 
+    OperationType, 
+    AtomicMorphism, 
+    State,
+    OpaqueAtomicMorphism
+)
 from .types.ttl import TTLState
 from .types.rwg import (
     RWGActive,
@@ -126,3 +133,58 @@ def rwg_update_params(
         operation_type=OperationType.RWG_UPDATE_PARAMS,
     )
     return from_atomic(op)
+
+def oasm_black_box(
+    channel_states: Dict[Channel, Tuple[State, State]],
+    duration_cycles: int,
+    board_funcs: Dict[Board, Callable],
+    user_args: tuple = (),
+    user_kwargs: dict = {},
+) -> Morphism:
+    """Creates a multi-channel, potentially multi-board black-box Morphism.
+
+    This factory creates a single Morphism that contains multiple OpaqueAtomicMorphisms,
+    one for each specified channel. It looks up the correct user-defined function
+    from the board_funcs dictionary based on the channel's board.
+
+    Args:
+        channel_states: A dictionary mapping each channel to a tuple of its
+                        (start_state, end_state) for this black box.
+        duration_cycles: The fixed duration of the black-box operation in cycles.
+        board_funcs: A dictionary mapping each Board to the user-defined function
+                     to be executed on that board.
+        user_args: Positional arguments to pass to the user_func.
+        user_kwargs: Keyword arguments to pass to the user_func.
+
+    Returns:
+        A Morphism object representing the multi-channel black box.
+    """
+    lanes = {}
+    if not channel_states:
+        raise ValueError("channel_states cannot be empty for a black-box operation.")
+
+    # Validate that all channels belong to a board specified in board_funcs
+    for channel in channel_states.keys():
+        if channel.board not in board_funcs:
+            raise ValueError(
+                f"Channel {channel} belongs to board {channel.board.id}, but no function "
+                f"was provided for this board in board_funcs."
+            )
+
+    for channel, (start_state, end_state) in channel_states.items():
+        # Look up the correct function for this channel's board
+        board_func = board_funcs[channel.board]
+
+        op = OpaqueAtomicMorphism(
+            channel=channel,
+            start_state=start_state,
+            end_state=end_state,
+            duration_cycles=duration_cycles,
+            operation_type=OperationType.OPAQUE_OASM_FUNC,
+            user_func=board_func,
+            user_args=user_args,
+            user_kwargs=user_kwargs,
+        )
+        lanes[channel] = Lane((op,))
+
+    return Morphism(lanes)

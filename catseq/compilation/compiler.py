@@ -1077,14 +1077,15 @@ def _pass5_generate_final_calls(events_by_board: Dict[OASMAddress, List[LogicalE
     
     return oasm_calls
 
-def execute_oasm_calls(calls_by_board: Dict[OASMAddress, List[OASMCall]], assembler_seq=None):
+def execute_oasm_calls(calls_by_board: Dict[OASMAddress, List[OASMCall]], assembler_seq=None, verbose: bool = False):
     """执行 OASM 调用序列并生成实际的 RTMQ 汇编代码
     
     Args:
         calls_by_board: Dict mapping board addresses to their OASM call lists
         assembler_seq: Pre-initialized OASM assembler sequence. If None, falls back to mock execution.
     """
-    print("\n--- Executing OASM Calls ---")
+    if verbose:
+        print("\n--- Executing OASM Calls ---")
     if not calls_by_board:
         print("No OASM calls to execute.")
         return True, assembler_seq
@@ -1100,7 +1101,7 @@ def execute_oasm_calls(calls_by_board: Dict[OASMAddress, List[OASMCall]], assemb
             assembler_seq.clear()
             # Process each board separately
             for board_adr, board_calls in calls_by_board.items():
-                print(f"\n📋 Processing {len(board_calls)} calls for board '{board_adr.value}':")
+                print(f"📋 Processing {len(board_calls)} calls for board '{board_adr.value}':")
                 
                 for call in board_calls:
                     call_counter += 1
@@ -1109,7 +1110,8 @@ def execute_oasm_calls(calls_by_board: Dict[OASMAddress, List[OASMCall]], assemb
                     if call.dsl_func == OASMFunction.USER_DEFINED_FUNC:
                         # For black boxes, the function and its args are packed inside the call's args
                         user_func, user_args, user_kwargs = call.args
-                        print(f"  [{call_counter:02d}] Executing black-box function: {user_func.__name__}")
+                        if verbose:
+                            print(f"  [{call_counter:02d}] Executing black-box function: {user_func.__name__}")
                         # The user function is passed into the assembler sequence to be executed
                         assembler_seq(call.adr.value, user_func, *user_args, **user_kwargs)
                     else:
@@ -1119,10 +1121,11 @@ def execute_oasm_calls(calls_by_board: Dict[OASMAddress, List[OASMCall]], assemb
                             print(f"Error: OASM function '{call.dsl_func.name}' not found in map.")
                             return False, assembler_seq
                         
-                        args_str = ", ".join(map(str, call.args))
-                        kwargs_str = ", ".join(f"{k}={v}" for k, v in call.kwargs.items()) if call.kwargs else ""
-                        params_str = ", ".join(filter(None, [args_str, kwargs_str]))
-                        print(f"  [{call_counter:02d}] {func.__name__}({params_str})")
+                        if verbose:
+                            args_str = ", ".join(map(str, call.args))
+                            kwargs_str = ", ".join(f"{k}={v}" for k, v in call.kwargs.items()) if call.kwargs else ""
+                            params_str = ", ".join(filter(None, [args_str, kwargs_str]))
+                            print(f"  [{call_counter:02d}] {func.__name__}({params_str})")
                         
                         if call.kwargs:
                             assembler_seq(call.adr.value, func, *call.args, **call.kwargs)
@@ -1132,12 +1135,14 @@ def execute_oasm_calls(calls_by_board: Dict[OASMAddress, List[OASMCall]], assemb
             # Generate assembly for each board
             for board_adr in calls_by_board.keys():
                 board_name = board_adr.value
-                print(f"\n📋 Generated RTMQ assembly for {board_name}:")
+                if verbose:
+                    print(f"\n📋 Generated RTMQ assembly for {board_name}:")
                 try:
                     if OASM_AVAILABLE:
                         asm_lines = disassembler(core=C_RWG)(assembler_seq.asm[board_name])
-                        for line in asm_lines:
-                            print(f"   {line}")
+                        if verbose:
+                            for line in asm_lines:
+                                print(f"   {line}")
                     else:
                         print(f"   OASM not available for disassembly")
                 except KeyError:

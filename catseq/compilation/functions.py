@@ -56,13 +56,13 @@ def ttl_set(mask, state, board_type="main"):
         rtmq_mask = binary_to_rtmq_mask(mask)
         rtmq_state = binary_to_rtmq_mask(state)
         amk('ttl', rtmq_mask, rtmq_state)
-        print(f"TTL_SET (Main) - mask={rtmq_mask}, state={rtmq_state}")
+        # print(f"TTL_SET (Main) - mask={rtmq_mask}, state={rtmq_state}")
     else:  # RWG 板卡
         # RWG 板卡：使用 SBG mark 位，避免与 IO_UPDATE 的流水线延迟错位
         sbg.ctrl(iou=0, pud=0, mrk=state & 0xF)
-        print(f"TTL_SET (RWG) - SBG mark bits: 0b{state & 0xF:04b}")
+        # print(f"TTL_SET (RWG) - SBG mark bits: 0b{state & 0xF:04b}")
 
-    print(f"  -> mask=0b{mask:08b}, state=0b{state:08b}, board_type={board_type}")
+    # print(f"  -> mask=0b{mask:08b}, state=0b{state:08b}, board_type={board_type}")
 
 def wait_mu(cycles):
     wait(cycles)
@@ -114,8 +114,8 @@ def rwg_rf_switch(ch_mask: int, state_mask: int):
             
             amk('PDM', rtmq_mask, rtmq_value)
             
-    print(f"RF_SWITCH - ch_mask=0b{ch_mask:04b}, state_mask=0b{state_mask:04b}")
-    print(f"  -> Affected RF ports: {[i for i in range(4) if ch_mask & (1 << i)]}")
+    # print(f"RF_SWITCH - ch_mask=0b{ch_mask:04b}, state_mask=0b{state_mask:04b}")
+    # print(f"  -> Affected RF ports: {[i for i in range(4) if ch_mask & (1 << i)]}")
 
 def rwg_load_waveform(params: WaveformParams):
     """Load waveform parameters for a single SBG."""

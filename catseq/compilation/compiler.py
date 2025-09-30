@@ -160,9 +160,10 @@ def _detect_epoch_boundaries(events: List[LogicalEvent]) -> List[LogicalEvent]:
 
 # --- Plan 3 Refactored Passes ---
 
-def _pass1_extract_and_translate(morphism) -> Dict[OASMAddress, List[LogicalEvent]]:
+def _pass1_extract_and_translate(morphism, verbose: bool = False) -> Dict[OASMAddress, List[LogicalEvent]]:
     """Pass 1: Extract events from morphism and translate to OASM calls (Plan 3)"""
-    print("Compiler Pass 1: Extracting events and translating to OASM calls...")
+    if verbose:
+        print("Compiler Pass 1: Extracting events and translating to OASM calls...")
     
     # Step 1: Extract events from morphism (original Pass 0 logic)
     events_by_board: Dict[OASMAddress, List[LogicalEvent]] = {}
@@ -194,7 +195,8 @@ def _pass1_extract_and_translate(morphism) -> Dict[OASMAddress, List[LogicalEven
         events_by_board[adr].sort(key=lambda e: e.timestamp_cycles)
     
     # Step 2: Translate events to OASM calls (original Pass 1 logic with placeholder mechanism)
-    print("  Translating logical events to OASM calls...")
+    if verbose:
+        print("  Translating logical events to OASM calls...")
     for adr, events in events_by_board.items():
         # Group events by timestamp to handle simultaneous operations that might be merged
         events_by_ts: Dict[int, List[LogicalEvent]] = {}
@@ -317,12 +319,14 @@ def _pass1_extract_and_translate(morphism) -> Dict[OASMAddress, List[LogicalEven
 
     return events_by_board
 
-def _pass2_cost_and_epoch_analysis(events_by_board: Dict[OASMAddress, List[LogicalEvent]], assembler_seq=None):
+def _pass2_cost_and_epoch_analysis(events_by_board: Dict[OASMAddress, List[LogicalEvent]], assembler_seq=None, verbose: bool = False):
     """Pass 2: Cost analysis and epoch detection (Plan 3)"""
-    print("Compiler Pass 2: Cost analysis and epoch detection...")
+    if verbose:
+        print("Compiler Pass 2: Cost analysis and epoch detection...")
     
     # Step 1: Detect epoch boundaries GLOBALLY and assign logical timestamps
-    print("  Detecting epoch boundaries and assigning logical timestamps...")
+    if verbose:
+        print("  Detecting epoch boundaries and assigning logical timestamps...")
     
     # Create a flat list of all events from all boards for global epoch detection
     all_events = [event for events in events_by_board.values() for event in events]
@@ -332,40 +336,47 @@ def _pass2_cost_and_epoch_analysis(events_by_board: Dict[OASMAddress, List[Logic
     _detect_epoch_boundaries(all_events)
 
     # Print summary of epochs found on each board
-    for adr, events in events_by_board.items():
-        epoch_info = {}
-        for event in events:
-            epoch = event.epoch
-            if epoch not in epoch_info:
-                epoch_info[epoch] = 0
-            epoch_info[epoch] += 1
-        if len(epoch_info) > 1:
-            print(f"    Board {adr.value}: Found {len(epoch_info)} epochs: {dict(sorted(epoch_info.items()))}")
-        else:
-            print(f"    Board {adr.value}: Single epoch with {sum(epoch_info.values())} events")
+    if verbose:
+        for adr, events in events_by_board.items():
+            epoch_info = {}
+            for event in events:
+                epoch = event.epoch
+                if epoch not in epoch_info:
+                    epoch_info[epoch] = 0
+                epoch_info[epoch] += 1
+            if len(epoch_info) > 1:
+                print(f"    Board {adr.value}: Found {len(epoch_info)} epochs: {dict(sorted(epoch_info.items()))}")
+            else:
+                print(f"    Board {adr.value}: Single epoch with {sum(epoch_info.values())} events")
 
     # Step 2: Analyze costs for all operations (original Pass 2 logic)
-    print("  Analyzing costs for all operations via assembly generation...")
+    if verbose:
+        print("  Analyzing costs for all operations via assembly generation...")
     
     if assembler_seq is None:
         if OASM_AVAILABLE:
-            print("    Warning: No assembler provided. Cost analysis will be skipped.")
+            if verbose:
+                print("    Warning: No assembler provided. Cost analysis will be skipped.")
         else:
-            print("    Warning: OASM modules not available. Skipping cost analysis.")
+            if verbose:
+                print("    Warning: OASM modules not available. Skipping cost analysis.")
         return
 
     for adr, events in events_by_board.items():
-        print(f"    Analyzing costs for board {adr.value}...")
+        if verbose:
+            print(f"    Analyzing costs for board {adr.value}...")
         for event in events:
             # Analyze cost for all operations that have OASM calls
             if event.oasm_calls:
-                event.cost_cycles = _analyze_operation_cost(event, adr, assembler_seq)
-                print(f"      - {event.operation.operation_type.name} at t={event.timestamp_cycles}: {event.cost_cycles} cycles")
+                event.cost_cycles = _analyze_operation_cost(event, adr, assembler_seq, verbose=verbose)
+                if verbose:
+                    print(f"      - {event.operation.operation_type.name} at t={event.timestamp_cycles}: {event.cost_cycles} cycles")
             else:
                 event.cost_cycles = 0
-                print(f"      - {event.operation.operation_type.name} at t={event.timestamp_cycles}: 0 cycles (no OASM calls)")
+                if verbose:
+                    print(f"      - {event.operation.operation_type.name} at t={event.timestamp_cycles}: 0 cycles (no OASM calls)")
 
-def _replace_wait_time_placeholders(events_by_board: Dict[OASMAddress, List[LogicalEvent]]):
+def _replace_wait_time_placeholders(events_by_board: Dict[OASMAddress, List[LogicalEvent]], verbose: bool = False):
     """
     Pass 5 Preview: Replace WAIT_TIME_PLACEHOLDER with calculated master wait times.
     
@@ -373,7 +384,8 @@ def _replace_wait_time_placeholders(events_by_board: Dict[OASMAddress, List[Logi
     - Calculate the maximum end time of all operations in epoch=0
     - Replace TRIG_SLAVE placeholders with the calculated wait time
     """
-    print("Compiler Pass 5 Preview: Replacing WAIT_TIME_PLACEHOLDER with calculated wait times...")
+    if verbose:
+        print("Compiler Pass 5 Preview: Replacing WAIT_TIME_PLACEHOLDER with calculated wait times...")
     
     # Step 1: Calculate maximum end time across all boards
     max_end_time = 0
@@ -403,12 +415,13 @@ def _replace_wait_time_placeholders(events_by_board: Dict[OASMAddress, List[Logi
                         kwargs=call.kwargs
                     )
                     new_calls.append(new_call)
-                    print(f"    Replaced placeholder in {adr.value} with wait time: {master_wait_time} cycles")
+                    if verbose:
+                        print(f"    Replaced placeholder in {adr.value} with wait time: {master_wait_time} cycles")
                 else:
                     new_calls.append(call)
             event.oasm_calls = new_calls
 
-def _pass3_schedule_and_optimize(events_by_board: Dict[OASMAddress, List[LogicalEvent]]):
+def _pass3_schedule_and_optimize(events_by_board: Dict[OASMAddress, List[LogicalEvent]], verbose: bool = False):
     """
     Pass 3: Schedule & Optimize - Pipelining scheduler (New Plan)
     
@@ -416,24 +429,27 @@ def _pass3_schedule_and_optimize(events_by_board: Dict[OASMAddress, List[Logical
     pairs and schedules the LOAD operation as late as possible before the PLAY
     operation, utilizing idle time.
     """
-    print("Compiler Pass 3: Scheduling with pipelining optimization...")
+    if verbose:
+        print("Compiler Pass 3: Scheduling with pipelining optimization...")
     
     for adr, events in events_by_board.items():
         # 1. 识别LOAD和PLAY操作
         # Note: _identify_pipeline_pairs is now used here for the main scheduling logic
-        pipeline_pairs = _identify_pipeline_pairs(events)
+        pipeline_pairs = _identify_pipeline_pairs(events, verbose=verbose)
         if not pipeline_pairs:
             continue
             
-        print(f"  Board {adr.value}: Found {len(pipeline_pairs)} pipeline pairs for optimization")
+        if verbose:
+            print(f"  Board {adr.value}: Found {len(pipeline_pairs)} pipeline pairs for optimization")
         
         # 2. 计算最优调度方案
         # This is the correct scheduling logic as per user's design intent
-        optimized_events = _calculate_optimal_schedule(events, pipeline_pairs)
+        optimized_events = _calculate_optimal_schedule(events, pipeline_pairs, verbose=verbose)
         
         # 3. 更新事件列表
         events_by_board[adr] = optimized_events
-        print(f"    Completed pipelining optimization for board {adr.value}")
+        if verbose:
+            print(f"    Completed pipelining optimization for board {adr.value}")
 
 def _identify_load_play_pairs(load_events: List[LogicalEvent], play_events: List[LogicalEvent]) -> List[Dict]:
     """识别LOAD-PLAY对应关系"""
@@ -464,7 +480,7 @@ def _identify_load_play_pairs(load_events: List[LogicalEvent], play_events: List
     
     return pairs
 
-def _pass4_validate_constraints(events_by_board: Dict[OASMAddress, List[LogicalEvent]]):
+def _pass4_validate_constraints(events_by_board: Dict[OASMAddress, List[LogicalEvent]], verbose: bool = False):
     """
     Pass 4: Constraint Validation (Plan 3)
     
@@ -474,26 +490,29 @@ def _pass4_validate_constraints(events_by_board: Dict[OASMAddress, List[LogicalE
     3. 验证时序一致性 - 无负等待时间，时间线连续
     4. 验证跨epoch边界 - 调度优化没有违反epoch语义
     """
-    print("Compiler Pass 4: Validating constraints after scheduling (Plan 3)...")
+    if verbose:
+        print("Compiler Pass 4: Validating constraints after scheduling (Plan 3)...")
     
     for adr, events in events_by_board.items():
-        print(f"  Validating board {adr.value}...")
+        if verbose:
+            print(f"  Validating board {adr.value}...")
         
         # 1. 验证串行约束
-        _validate_serial_load_constraints(adr, events)
+        _validate_serial_load_constraints(adr, events, verbose=verbose)
         
         # 2. 验证LOAD deadline满足
-        _validate_load_deadlines(adr, events)
+        _validate_load_deadlines(adr, events, verbose=verbose)
         
         # 3. 验证时序一致性
-        _validate_timing_consistency(adr, events)
+        _validate_timing_consistency(adr, events, verbose=verbose)
         
         # 4. 验证跨epoch边界（重用现有实现）
-        _check_cross_epoch_violations_single_board(adr, events)
+        _check_cross_epoch_violations_single_board(adr, events, verbose=verbose)
         
-        print(f"    ✓ All constraints validated for board {adr.value}")
+        if verbose:
+            print(f"    ✓ All constraints validated for board {adr.value}")
 
-def _validate_serial_load_constraints(adr, events: List[LogicalEvent]):
+def _validate_serial_load_constraints(adr, events: List[LogicalEvent], verbose: bool = False):
     """验证LOAD操作确实被串行调度"""
     load_events = [e for e in events if e.operation.operation_type == OperationType.RWG_LOAD_COEFFS]
     
@@ -516,9 +535,10 @@ def _validate_serial_load_constraints(adr, events: List[LogicalEvent]):
                 f"LOAD operations overlap - load1 ends at {current_end}c, load2 starts at {next_start}c"
             )
     
-    print(f"    ✓ Serial LOAD constraints satisfied ({len(load_events)} operations)")
+    if verbose:
+        print(f"    ✓ Serial LOAD constraints satisfied ({len(load_events)} operations)")
 
-def _validate_load_deadlines(adr, events: List[LogicalEvent]):
+def _validate_load_deadlines(adr, events: List[LogicalEvent], verbose: bool = False):
     """验证每个LOAD都在对应PLAY的deadline前完成"""
     load_events = [e for e in events if e.operation.operation_type == OperationType.RWG_LOAD_COEFFS]
     play_events = [e for e in events if e.operation.operation_type == OperationType.RWG_UPDATE_PARAMS]
@@ -542,9 +562,10 @@ def _validate_load_deadlines(adr, events: List[LogicalEvent]):
                 f"LOAD operation ends at {load_end}c but PLAY starts at {play_start}c"
             )
     
-    print(f"    ✓ LOAD deadlines satisfied ({len(load_play_pairs)} pairs)")
+    if verbose:
+        print(f"    ✓ LOAD deadlines satisfied ({len(load_play_pairs)} pairs)")
 
-def _validate_timing_consistency(adr, events: List[LogicalEvent]):
+def _validate_timing_consistency(adr, events: List[LogicalEvent], verbose: bool = False):
     """验证时序一致性 - 无负等待时间，时间线连续"""
     if not events:
         return
@@ -569,9 +590,10 @@ def _validate_timing_consistency(adr, events: List[LogicalEvent]):
             )
         prev_time = event.timestamp_cycles
     
-    print(f"    ✓ Timing consistency validated ({len(events)} events)")
+    if verbose:
+        print(f"    ✓ Timing consistency validated ({len(events)} events)")
 
-def _check_cross_epoch_violations_single_board(adr, events: List[LogicalEvent]):
+def _check_cross_epoch_violations_single_board(adr, events: List[LogicalEvent], verbose: bool = False):
     """验证跨epoch边界 - 单板卡版本"""
     # 按epoch分组
     events_by_epoch = {}
@@ -602,7 +624,8 @@ def _check_cross_epoch_violations_single_board(adr, events: List[LogicalEvent]):
                         f"LOAD operation at epoch {next_epoch} appears to be pipelined from epoch {current_epoch}"
                     )
     
-    print(f"    ✓ Cross-epoch boundaries validated ({len(epochs)} epochs)")
+    if verbose:
+        print(f"    ✓ Cross-epoch boundaries validated ({len(epochs)} epochs)")
 
 # --- Helper Functions for Cost Analysis ---
 
@@ -626,7 +649,7 @@ def _estimate_oasm_cost(assembly_lines: List[str]) -> int:
             
     return total_cost
 
-def _analyze_operation_cost(event: LogicalEvent, adr: OASMAddress, assembler_seq) -> int:
+def _analyze_operation_cost(event: LogicalEvent, adr: OASMAddress, assembler_seq, verbose: bool = False) -> int:
     """
     Analyze the execution cost of a single operation by generating and analyzing
     its OASM assembly code.
@@ -663,7 +686,8 @@ def _analyze_operation_cost(event: LogicalEvent, adr: OASMAddress, assembler_seq
             return 0
             
     except Exception as e:
-        print(f"      Warning: Cost analysis failed for {event.operation.operation_type.name}: {e}")
+        if verbose:
+            print(f"      Warning: Cost analysis failed for {event.operation.operation_type.name}: {e}")
         return 0
 
 @dataclass(frozen=True)
@@ -687,7 +711,7 @@ class PipelinePair:
         """Start time for the PLAY operation."""
         return self.play_event.timestamp_cycles
 
-def _identify_pipeline_pairs(events: List[LogicalEvent]) -> List[PipelinePair]:
+def _identify_pipeline_pairs(events: List[LogicalEvent], verbose: bool = False) -> List[PipelinePair]:
     """
     Identify pipeline pairs (LOAD → PLAY sequences) for optimization.
     
@@ -725,13 +749,14 @@ def _identify_pipeline_pairs(events: List[LogicalEvent]) -> List[PipelinePair]:
                         # Found the corresponding PLAY event
                         pair = PipelinePair(load_event=event, play_event=next_event)
                         pairs.append(pair)
-                        print(f"    Found pipeline pair: LOAD@{event.timestamp_cycles}c → PLAY@{next_event.timestamp_cycles}c on {channel.global_id}")
+                        if verbose:
+                            print(f"    Found pipeline pair: LOAD@{event.timestamp_cycles}c → PLAY@{next_event.timestamp_cycles}c on {channel.global_id}")
                         break
     
     return pairs
 
 
-def _calculate_optimal_schedule(events: List[LogicalEvent], pipeline_pairs: List[PipelinePair]) -> List[LogicalEvent]:
+def _calculate_optimal_schedule(events: List[LogicalEvent], pipeline_pairs: List[PipelinePair], verbose: bool = False) -> List[LogicalEvent]:
     """
     Calculate optimal scheduling for pipeline pairs with conflict avoidance.
     
@@ -750,7 +775,8 @@ def _calculate_optimal_schedule(events: List[LogicalEvent], pipeline_pairs: List
     if not pipeline_pairs:
         return events
 
-    print("    Calculating optimal schedule for pipeline pairs (with conflict avoidance)...")
+    if verbose:
+        print("    Calculating optimal schedule for pipeline pairs (with conflict avoidance)...")
 
     # Create a dictionary for quick access to the events that will be rescheduled.
     # The value will be the new timestamp.
@@ -814,7 +840,8 @@ def _calculate_optimal_schedule(events: List[LogicalEvent], pipeline_pairs: List
         # The next load we schedule (which happens earlier in time) must finish before this one starts.
         next_load_available_ts = new_load_ts
 
-        print(f"      Scheduling LOAD on {pair.channel.global_id}: {load_event.timestamp_cycles}c → {new_load_ts}c")
+        if verbose:
+            print(f"      Scheduling LOAD on {pair.channel.global_id}: {load_event.timestamp_cycles}c → {new_load_ts}c")
 
     # Apply rescheduling to create a new list of events
     optimized_events = []
@@ -838,17 +865,19 @@ def _calculate_optimal_schedule(events: List[LogicalEvent], pipeline_pairs: List
     return optimized_events
 
 
-def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEvent]]) -> Dict[OASMAddress, List[OASMCall]]:
+def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEvent]], verbose: bool = False) -> Dict[OASMAddress, List[OASMCall]]:
     """
     Pass 4: Generates the final scheduled OASM calls from the enriched
     logical events, including intelligent pipeline scheduling optimization.
     """
-    print("Compiler Pass 4: Generating and scheduling OASM calls...")
+    if verbose:
+        print("Compiler Pass 4: Generating and scheduling OASM calls...")
     calls_by_board: Dict[OASMAddress, List[OASMCall]] = {}
     
     # User-managed synchronization: sync operations are explicitly added by user via global_sync()
     board_addresses = list(events_by_board.keys())
-    print(f"  Processing {len(board_addresses)} board(s): {[adr.value for adr in board_addresses]}")
+    if verbose:
+        print(f"  Processing {len(board_addresses)} board(s): {[adr.value for adr in board_addresses]}")
 
     for adr, events in events_by_board.items():
         # Initialize the board's call list
@@ -915,7 +944,7 @@ OASM_FUNCTION_MAP: Dict[OASMFunction, Callable] = {
 
 # --- Main Compiler Entry Point ---
 
-def compile_to_oasm_calls(morphism, assembler_seq=None, _return_internal_events=False) -> Union[Dict[OASMAddress, List[OASMCall]], Dict[OASMAddress, List[LogicalEvent]]]:
+def compile_to_oasm_calls(morphism, assembler_seq=None, _return_internal_events=False, verbose: bool = False) -> Union[Dict[OASMAddress, List[OASMCall]], Dict[OASMAddress, List[LogicalEvent]]]:
     """Drives the Plan 3 five-pass compilation process.
     
     Args:
@@ -923,30 +952,31 @@ def compile_to_oasm_calls(morphism, assembler_seq=None, _return_internal_events=
         assembler_seq: Pre-initialized OASM assembler sequence for cost analysis.
                       If None, cost analysis will be skipped when OASM is not available.
         _return_internal_events: For testing, return internal events instead of calls
+        verbose: If True, print detailed debugging information during compilation.
     """
     
     # Pass 1: Extract events from morphism and translate to OASM calls (Plan 3)
-    events_by_board = _pass1_extract_and_translate(morphism)
+    events_by_board = _pass1_extract_and_translate(morphism, verbose=verbose)
     
     # Pass 2: Cost analysis and epoch detection (Plan 3)
-    _pass2_cost_and_epoch_analysis(events_by_board, assembler_seq)
+    _pass2_cost_and_epoch_analysis(events_by_board, assembler_seq, verbose=verbose)
     
     # Pass 3: Schedule & Optimize (Plan 3 implementation)
-    _pass3_schedule_and_optimize(events_by_board)
+    _pass3_schedule_and_optimize(events_by_board, verbose=verbose)
     
     # Pass 4: Constraint Validation (Plan 3 - pure validation after scheduling)
-    _pass4_validate_constraints(events_by_board)
+    _pass4_validate_constraints(events_by_board, verbose=verbose)
 
     # For testing purposes, allow returning the internal event list
     if _return_internal_events:
         return events_by_board
     
     # Pass 5: Final Code Generation (Plan 3)
-    oasm_calls = _pass5_generate_final_calls(events_by_board)
+    oasm_calls = _pass5_generate_final_calls(events_by_board, verbose=verbose)
     
     return oasm_calls
 
-def _pass5_generate_final_calls(events_by_board: Dict[OASMAddress, List[LogicalEvent]]) -> Dict[OASMAddress, List[OASMCall]]:
+def _pass5_generate_final_calls(events_by_board: Dict[OASMAddress, List[LogicalEvent]], verbose: bool = False) -> Dict[OASMAddress, List[OASMCall]]:
     """
     Pass 5: Final Code Generation (Plan 3)
     
@@ -955,14 +985,16 @@ def _pass5_generate_final_calls(events_by_board: Dict[OASMAddress, List[LogicalE
     2. 替换所有WAIT_TIME_PLACEHOLDER  
     3. 生成最终OASMCall序列
     """
-    print("Compiler Pass 5: Final code generation with placeholder replacement (Plan 3)...")
+    if verbose:
+        print("Compiler Pass 5: Final code generation with placeholder replacement (Plan 3)...")
     
     # Step 1: 替换WAIT_TIME_PLACEHOLDER
-    _replace_wait_time_placeholders(events_by_board)
+    _replace_wait_time_placeholders(events_by_board, verbose=verbose)
     
     # Step 2: 生成最终OASM调用序列（重用现有实现）
-    print("  Generating final OASM call sequence...")
-    oasm_calls = _pass4_generate_oasm_calls(events_by_board)
+    if verbose:
+        print("  Generating final OASM call sequence...")
+    oasm_calls = _pass4_generate_oasm_calls(events_by_board, verbose=verbose)
     
     return oasm_calls
 

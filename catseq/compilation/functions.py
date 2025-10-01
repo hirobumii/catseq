@@ -5,7 +5,7 @@ This module contains the actual OASM DSL functions that will be called
 when executing compiled sequences on the hardware.
 """
 # Import actual OASM functions
-from oasm.rtmq2 import sfs, amk, wait, send_trig_code, wait_rtlk_trig,asm
+from oasm.rtmq2 import sfs, amk, wait, send_trig_code, wait_rtlk_trig, asm, nop
 from oasm.dev.rwg import fte, rwg, sbg
 
 
@@ -65,7 +65,24 @@ def ttl_set(mask, state, board_type="main"):
     # print(f"  -> mask=0b{mask:08b}, state=0b{state:08b}, board_type={board_type}")
 
 def wait_mu(cycles):
-    wait(cycles)
+    """等待指定机器周期数，考虑 timer 设置指令开销
+
+    Args:
+        cycles: 需要等待的机器周期数
+    """
+    if cycles <= 0:
+        return
+
+    # Timer 设置需要 4 条指令的开销：CHI + CLO + AMK + AMK = 4 cycles
+    TIMER_SETUP_OVERHEAD = 4
+
+    if cycles <= TIMER_SETUP_OVERHEAD:
+        # 短等待用 NOP 指令更高效
+        nop(cycles)
+    else:
+        # 长等待使用 timer，减去指令开销
+        actual_wait_cycles = cycles - TIMER_SETUP_OVERHEAD
+        wait(actual_wait_cycles)
 
 def wait_us(duration):
     """等待指定微秒数

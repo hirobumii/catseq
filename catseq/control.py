@@ -10,49 +10,11 @@ from typing import Callable
 from catseq.morphism import Morphism
 from catseq.atomic import oasm_black_box
 from catseq.compilation.compiler import compile_to_oasm_calls, OASM_FUNCTION_MAP
-from catseq.compilation.types import OASMAddress, OASMCall, OASMFunction
+from catseq.compilation.types import OASMFunction
 from catseq.types.common import Channel, State, Board
 
-
-def merge_and_group_values(*dictionaries: dict[Channel, State]) -> dict[Channel, tuple[State, State]]:
-    """
-    Merge start_state and end_state dictionaries for oasm_black_box channel_states.
-
-    This function combines start_state and end_state dictionaries into the format
-    required by oasm_black_box: {channel: (start_state, end_state)}
-
-    Args:
-        *dictionaries: Typically start_state_dict and end_state_dict
-
-    Returns:
-        A dictionary where each channel maps to (start_state, end_state) tuple
-    """
-    # Use a temporary dict to build incomplete tuples
-    temp_dict: dict[Channel, tuple[State, ...]] = {}
-
-    for dictionary in dictionaries:
-        for key, value in dictionary.items():
-            if key not in temp_dict:
-                # First state for this channel
-                temp_dict[key] = (value,)
-            else:
-                # Second state for this channel - complete the tuple
-                existing_value = temp_dict[key]
-                if len(existing_value) == 1:
-                    temp_dict[key] = (existing_value[0], value)
-                else:
-                    # More than 2 states - this shouldn't happen for start/end states
-                    raise ValueError(f"Channel {key} has more than 2 states")
-
-    # Convert to final dict with complete tuples
-    merged_dict: dict[Channel, tuple[State, State]] = {}
-    for key, value in temp_dict.items():
-        if len(value) == 2:
-            merged_dict[key] = value  # type: ignore
-        else:
-            raise ValueError(f"Channel {key} is missing start or end state")
-
-    return merged_dict
+# Import OASM loop control functions
+from oasm.rtmq2 import for_, end, R
 
 
 def extract_channel_states_from_morphism(morphism: Morphism) -> dict[Channel, tuple[State, State]]:
@@ -71,29 +33,6 @@ def extract_channel_states_from_morphism(morphism: Morphism) -> dict[Channel, tu
             channel_states[channel] = (start_state, end_state)
 
     return channel_states
-
-
-def create_precompiled_executor(precompiled_calls: dict[OASMAddress, list[OASMCall]]) -> Callable:
-    """Create an executor function for precompiled OASM calls"""
-
-    def executor():
-        # This function will be executed in the assembler context
-        # Iterate through all board calls (usually only one board)
-        for _board_address, calls in precompiled_calls.items():
-            for call in calls:
-                if call.dsl_func == OASMFunction.USER_DEFINED_FUNC:
-                    # Handle nested user function calls
-                    user_func, user_args, user_kwargs = call.args
-                    user_func(*user_args, **user_kwargs)
-                else:
-                    # Standard OASM function calls
-                    func = OASM_FUNCTION_MAP[call.dsl_func]
-                    if call.kwargs:
-                        func(*call.args, **call.kwargs)
-                    else:
-                        func(*call.args)
-
-    return executor
 
 
 def compile_morphism_to_board_funcs(
@@ -123,8 +62,26 @@ def compile_morphism_to_board_funcs(
         # Precompile to OASM calls
         precompiled_calls = compile_to_oasm_calls(sub_morphism, assembler_seq)
 
-        # Create executor function
-        board_funcs[board] = create_precompiled_executor(precompiled_calls)
+        # Create executor function directly (inline the old create_precompiled_executor)
+        def create_executor(calls):
+            def executor():
+                # Execute all board calls
+                for calls_list in calls.values():
+                    for call in calls_list:
+                        if call.dsl_func == OASMFunction.USER_DEFINED_FUNC:
+                            # Handle nested user function calls
+                            user_func, user_args, user_kwargs = call.args
+                            user_func(*user_args, **user_kwargs)
+                        else:
+                            # Standard OASM function calls
+                            func = OASM_FUNCTION_MAP[call.dsl_func]
+                            if call.kwargs:
+                                func(*call.args, **call.kwargs)
+                            else:
+                                func(*call.args)
+            return executor
+
+        board_funcs[board] = create_executor(precompiled_calls)
 
     return board_funcs
 
@@ -155,7 +112,13 @@ def morphism_to_precompiled_blackbox(
     if get_start_state_func and get_end_state_func:
         start_states = get_start_state_func(morphism)
         end_states = get_end_state_func(morphism)
-        channel_states = merge_and_group_values(start_states, end_states)
+        # Inline merge logic - combine start and end states
+        channel_states = {}
+        for channel in set(start_states.keys()) | set(end_states.keys()):
+            if channel in start_states and channel in end_states:
+                channel_states[channel] = (start_states[channel], end_states[channel])
+            else:
+                raise ValueError(f"Channel {channel} is missing start or end state")
     else:
         channel_states = extract_channel_states_from_morphism(morphism)
 
@@ -173,85 +136,65 @@ def repeat_morphism(
     assembler_seq
 ) -> Morphism:
     """
-    Simply repeat a morphism execution
+    Create a true hardware loop that repeats a morphism execution n times.
+
+    This function creates a blackbox morphism that implements hardware-level looping
+    using OASM for_ and end instructions with correct timing calculation.
 
     Args:
         morphism: Morphism to be repeated
-        count: Number of repetitions
+        count: Number of repetitions (n)
         assembler_seq: OASM assembler sequence
 
     Returns:
-        Precompiled repeated execution blackbox Morphism
+        Blackbox Morphism that repeats the input morphism n times with correct timing
     """
     if count <= 0:
         raise ValueError("Repeat count must be positive")
 
-    # Create repeated morphism
-    repeated_morphism = morphism
-    for _ in range(count - 1):
-        repeated_morphism = repeated_morphism @ morphism
+    # Get morphism timing and channel states
+    t_morphism = morphism.total_duration_cycles
+    channel_states = extract_channel_states_from_morphism(morphism)
 
-    # Get board functions and channel states
-    board_funcs = compile_morphism_to_board_funcs(repeated_morphism, assembler_seq)
-    channel_states = extract_channel_states_from_morphism(repeated_morphism)
+    # Calculate total execution time using the loop timing formula:
+    # Total = 15 + n*(26 + t_morphism)
+    # Where:
+    # - 15: Fixed overhead (2 cycles init + 13 cycles final condition check)
+    # - n: Number of iterations
+    # - 26: Per-iteration overhead (13 cycles condition + 13 cycles increment/jump)
+    # - t_morphism: Morphism execution time per iteration
+    LOOP_FIXED_OVERHEAD = 15
+    LOOP_PER_ITERATION_OVERHEAD = 26
 
-    # Create blackbox Morphism
+    total_duration_cycles = LOOP_FIXED_OVERHEAD + count * (LOOP_PER_ITERATION_OVERHEAD + t_morphism)
+
+    # Get the base board functions from the morphism
+    base_board_funcs = compile_morphism_to_board_funcs(morphism, assembler_seq)
+
+    # Create board functions that implement the hardware loop
+    def create_loop_executor(base_func):
+        """Create executor function that implements the hardware loop using for_ and end"""
+        def loop_executor():
+            # Generate the hardware loop structure:
+            # for_(register, count) - creates loop initialization and condition
+            for_(R[1], count)  # Use register R[1] for loop counter, repeat 'count' times
+
+            # Execute the morphism content inside the loop
+            base_func()
+
+            # Close the loop
+            end()
+
+        return loop_executor
+
+    # Create board functions with loop execution
+    board_funcs = {}
+    for board, base_func in base_board_funcs.items():
+        board_funcs[board] = create_loop_executor(base_func)
+
+    # Create blackbox Morphism with correct timing
     return oasm_black_box(
         channel_states=channel_states,
-        duration_cycles=repeated_morphism.total_duration_cycles,
+        duration_cycles=total_duration_cycles,
         board_funcs=board_funcs
     )
-
-
-def for_loop(
-    body_morphism: Morphism,
-    iterations: int,
-    assembler_seq
-) -> Morphism:
-    """
-    Create a precompiled for loop
-
-    Args:
-        body_morphism: Loop body Morphism
-        iterations: Number of iterations
-        assembler_seq: OASM assembler sequence
-
-    Returns:
-        Precompiled loop blackbox Morphism
-    """
-    if iterations <= 0:
-        raise ValueError("Iterations must be positive")
-
-    # For loop is essentially repeated execution
-    return repeat_morphism(body_morphism, iterations, assembler_seq)
-
-
-def while_loop(
-    condition_morphism: Morphism,
-    body_morphism: Morphism,
-    max_iterations: int,
-    assembler_seq
-) -> Morphism:
-    """
-    Create a precompiled while loop
-
-    Note: This is a simplified implementation that pre-expands the maximum iterations.
-    Real conditional judgment needs to be implemented at runtime through hardware conditions.
-
-    Args:
-        condition_morphism: Condition check Morphism
-        body_morphism: Loop body Morphism
-        max_iterations: Maximum iterations (to prevent infinite loops)
-        assembler_seq: OASM assembler sequence
-
-    Returns:
-        Precompiled loop blackbox Morphism
-    """
-    if max_iterations <= 0:
-        raise ValueError("Max iterations must be positive")
-
-    # Build loop: condition + body repeated execution
-    loop_body = condition_morphism @ body_morphism
-    full_loop = repeat_morphism(loop_body, max_iterations, assembler_seq)
-
-    return full_loop

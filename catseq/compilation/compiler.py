@@ -42,21 +42,28 @@ except ImportError as e:
 
 # --- Cost Analysis Data ---
 
-# Based on RTMQv2 ISA, assuming most instructions take 1 cycle.
-# This is a configurable assumption and may change with hardware implementation.
+# Based on RTMQv2 ISA and StdCohNode implementation.
+# All instructions have 1 cycle base execution cost. Pipeline gap cycles are handled separately.
 RTMQ_INSTRUCTION_COSTS = {
-    # Default cost for unknown instructions will be 1
+    # Type-C Instructions (CSR access)
     'CHI': 1, 'CLO': 1, 'AMK': 1, 'SFS': 1, 'NOP': 1,
+
+    # Type-A Instructions (TCS access)
     'CSR': 1, 'GHI': 1, 'GLO': 1, 'OPL': 1,
-    'PLO': 4,  # Multiplication, estimated cost
-    'PHI': 4,  # Multiplication, estimated cost
-    'DIV': 8,  # Division, estimated cost
-    'MOD': 8,  # Division, estimated cost
+    'PLO': 1, 'PHI': 1, 'DIV': 1, 'MOD': 1,  # Base cost only, gap cycles handled by _calculate_gap_cycles()
+
+    # Arithmetic/Logic Instructions
     'AND': 1, 'IAN': 1, 'BOR': 1, 'XOR': 1, 'SGN': 1,
     'ADD': 1, 'SUB': 1, 'CAD': 1, 'CSB': 1, 'NEQ': 1,
     'EQU': 1, 'LST': 1, 'LSE': 1, 'SHL': 1, 'SHR': 1,
     'ROL': 1, 'SAR': 1,
 }
+
+# Note: Pipeline gap cycles are handled separately by _calculate_gap_cycles():
+# - PHI/PLO after OPL: +7 gap cycles (total 8 cycles for PHI/PLO)
+# - DIV/MOD after OPL: +35 gap cycles (total 36 cycles for DIV/MOD)
+# - CSR read after write: +3 gap cycles
+# - Other pipeline hazards as documented in RTMQv2 StdCohNode spec
 
 # --- Compiler Constants ---
 
@@ -709,24 +716,244 @@ def _check_cross_epoch_violations_single_board(adr, events: List[LogicalEvent], 
 # --- Helper Functions for Cost Analysis ---
 
 def _estimate_oasm_cost(assembly_lines: List[str]) -> int:
-    """Analyzes a list of RTMQ assembly lines to calculate total cycle cost."""
+    """Analyzes a list of RTMQ assembly lines to calculate total cycle cost.
+
+    Args:
+        assembly_lines: List of assembly instructions from disassembler
+                       Format: ['AMK P PTR $FE $FF', 'CLO - $21 $00 $00', ...]
+
+    Returns:
+        Total cycle cost of all instructions
+
+    Note: This function implements timing analysis based on RTMQv2 StdCohNode documentation.
+    Special timing cases handled:
+    - P flag: +6 cycles pause (makes NOP P = 7 cycles total)
+    - Jump instructions (write to PTR with P flag): 10 cycles total
+    - Loop/branch structures: analyzed for iteration patterns
+    - CSR read after write: +3 gap cycles
+    - Subfile read after SFS/write: +5 gap cycles
+    - TCS read after write: +1 gap cycle
+    - TCS operations after STK write: +1/+4 gap cycles
+    - Multiply operations (PHI/PLO after OPL): +7 gap cycles
+    - Divide operations (DIV/MOD after OPL): +35 gap cycles
+    - Cache access: various gap cycles (7-9 cycles)
+    """
+    # Detect loop/branch patterns and estimate iterations
+    loop_info = _analyze_loop_structure(assembly_lines)
+
     total_cost = 0
-    for line in assembly_lines:
-        # Example line: "0000: 09010000    CLO - &01 0x00000"
+    instruction_history = []  # Track recent instructions for gap cycle analysis
+
+    for i, line in enumerate(assembly_lines):
+        parts = line.strip().split()
+        if len(parts) < 1:
+            continue  # Empty line
+
+        instruction = parts[0].upper()
+        flag = parts[1].upper() if len(parts) > 1 else '-'
+        target_reg = parts[2].upper() if len(parts) > 2 else ''
+
+        # Get base instruction cost
+        cost = RTMQ_INSTRUCTION_COSTS.get(instruction, 1)
+
+        # Special case: Jump instructions (write to PTR with P flag) take 10 cycles total
+        if (instruction in ['AMK', 'CLO'] and target_reg == 'PTR' and flag == 'P'):
+            # Check if this is part of a loop structure
+            if i in loop_info.get('jump_instructions', []):
+                # Apply loop iteration multiplier to jump cost
+                loop_multiplier = loop_info.get('estimated_iterations', 1)
+                total_cost += 10 * loop_multiplier
+            else:
+                total_cost += 10  # Single jump cost
+            instruction_history.append(('JUMP_PTR', target_reg, 0))
+            continue
+
+        # Apply loop multiplier to instructions inside loop body
+        loop_multiplier = 1
+        if i in loop_info.get('loop_body_instructions', []):
+            loop_multiplier = loop_info.get('estimated_iterations', 1)
+
+        # Add base instruction cost
+        total_cost += cost * loop_multiplier
+
+        # Check for 'P' flag pause cost
+        if flag == 'P':
+            total_cost += 6 * loop_multiplier  # P flag pause cost
+
+        # Analyze gap cycles based on instruction history
+        gap_cycles = _calculate_gap_cycles(instruction, target_reg, instruction_history)
+        total_cost += gap_cycles * loop_multiplier
+
+        # Track instruction for gap cycle analysis (keep last 3 instructions)
+        instruction_history.append((instruction, target_reg, 0))
+        if len(instruction_history) > 3:
+            instruction_history.pop(0)
+
+    return total_cost
+
+
+def _analyze_loop_structure(assembly_lines: List[str]) -> dict:
+    """Analyze assembly code for loop/branch structures and estimate iterations.
+
+    Args:
+        assembly_lines: List of assembly instructions
+
+    Returns:
+        Dictionary containing loop analysis:
+        - 'estimated_iterations': Number of loop iterations
+        - 'loop_body_instructions': List of instruction indices in loop body
+        - 'jump_instructions': List of jump instruction indices
+        - 'loop_type': 'for_loop', 'while_loop', or 'none'
+    """
+    result = {
+        'estimated_iterations': 1,
+        'loop_body_instructions': [],
+        'jump_instructions': [],
+        'loop_type': 'none'
+    }
+
+    if len(assembly_lines) < 5:
+        return result
+
+    # Look for common loop patterns
+    jumps = []
+    compare_instructions = []
+
+    for i, line in enumerate(assembly_lines):
         parts = line.strip().split()
         if len(parts) < 3:
-            continue # Not a valid instruction line
-        
-        instruction = parts[2].upper()
-        cost = RTMQ_INSTRUCTION_COSTS.get(instruction, 1) # Default to 1 cycle
-        total_cost += cost
-        
-        # Check for 'P' flag, which adds a pause cost.
-        # The exact cost is implementation-defined; we'll estimate it as 4 cycles.
-        if len(parts) > 3 and parts[3].upper() == 'P':
-            total_cost += 4 # Estimated pause cost
-            
-    return total_cost
+            continue
+
+        instruction = parts[0].upper()
+        flag = parts[1].upper() if len(parts) > 1 else '-'
+        target_reg = parts[2].upper() if len(parts) > 2 else ''
+
+        # Track jump instructions
+        if instruction in ['AMK', 'CLO'] and target_reg == 'PTR' and flag == 'P':
+            jumps.append(i)
+
+        # Track comparison instructions that might be loop conditions
+        if instruction in ['LSE', 'LST', 'EQU', 'NEQ']:
+            compare_instructions.append((i, instruction, parts))
+
+    # Analyze for loop pattern like the example:
+    # LSE - $FE 5 $21 (compare counter with limit)
+    # AMK P PTR $FE $FF (conditional jump)
+    # ... loop body ...
+    # AMK P PTR 3.0 $FF (unconditional back jump)
+
+    if len(jumps) >= 2 and compare_instructions:
+        # Look for pattern: compare + conditional jump + body + back jump
+        for comp_idx, comp_instr, comp_parts in compare_instructions:
+            if comp_instr == 'LSE' and len(comp_parts) >= 4:
+                try:
+                    # Extract loop limit from LSE instruction
+                    # LSE - $FE 5 $21 means: loop while counter <= 5
+                    limit_value = int(comp_parts[3]) if comp_parts[3].isdigit() else 5
+
+                    # Find corresponding conditional jump
+                    next_jumps = [j for j in jumps if j > comp_idx]
+                    if next_jumps:
+                        conditional_jump = next_jumps[0]
+
+                        # Find back jump (should be last jump)
+                        if len(jumps) > 1:
+                            back_jump = jumps[-1]
+
+                            # Estimate loop body
+                            loop_start = comp_idx
+                            loop_end = back_jump
+
+                            result.update({
+                                'estimated_iterations': limit_value + 1,  # 0 to limit inclusive
+                                'loop_body_instructions': list(range(loop_start, loop_end + 1)),
+                                'jump_instructions': [conditional_jump, back_jump],
+                                'loop_type': 'for_loop'
+                            })
+                            break
+                except (ValueError, IndexError):
+                    continue
+
+    return result
+
+
+def _calculate_gap_cycles(current_instr: str, current_target: str, history: List[tuple]) -> int:
+    """Calculate gap cycles needed based on RTMQv2 StdCohNode pipeline constraints.
+
+    Args:
+        current_instr: Current instruction opcode
+        current_target: Current instruction target register
+        history: List of recent (instruction, target, gap_offset) tuples
+
+    Returns:
+        Number of gap cycles to add
+    """
+    if not history:
+        return 0
+
+    prev_instr, prev_target, _ = history[-1]
+
+    # CSR read after CSR write: 3 gap cycles
+    if (current_instr == 'CSR' and
+        prev_instr in ['CLO', 'AMK'] and
+        prev_target == current_target):
+        return 3
+
+    # Subfile read after SFS or subfile write: 5 gap cycles
+    if (current_instr == 'CSR' and len(history) >= 2):
+        # Check if previous was SFS or subfile write
+        for prev_instr, prev_target, _ in reversed(history[-2:]):
+            if prev_instr == 'SFS':
+                return 5
+            elif prev_instr in ['CLO', 'AMK'] and _is_subfile_register(prev_target):
+                return 5
+
+    # TCS read after TCS write: 1 gap cycle
+    if (current_instr == 'CSR' and
+        prev_instr in ['GLO', 'GHI'] and
+        _is_tcs_register(current_target)):
+        return 1
+
+    # TCS operations after STK write
+    if prev_instr in ['CLO', 'AMK'] and prev_target == 'STK':
+        if _is_tcs_write(current_instr):
+            return 1  # TCS write after STK write: 1 gap cycle
+        elif current_instr == 'CSR' and _is_tcs_register(current_target):
+            return 4  # TCS read after STK write: 4 gap cycles
+
+    # Multiply operations: PHI/PLO after OPL: 7 gap cycles
+    if current_instr in ['PHI', 'PLO'] and prev_instr == 'OPL':
+        return 7
+
+    # Divide operations: DIV/MOD after OPL: 35 gap cycles
+    if current_instr in ['DIV', 'MOD'] and prev_instr == 'OPL':
+        return 35
+
+    # Cache access gap cycles
+    if current_instr == 'CSR':
+        if current_target == 'DCD' and prev_instr in ['CLO', 'AMK'] and prev_target == 'DCA':
+            return 9  # DCD read after DCA write: 9 gap cycles
+        elif current_target == 'ICD' and prev_instr in ['CLO', 'AMK'] and prev_target == 'ICA':
+            return 7  # ICD read after ICA write: 7 gap cycles
+
+    return 0
+
+
+def _is_subfile_register(reg_name: str) -> bool:
+    """Check if register name refers to a subfile."""
+    # Common subfile names from RTMQv2 docs
+    subfiles = ['NEX', 'SCP', 'WCL', 'WCH']
+    return reg_name in subfiles
+
+
+def _is_tcs_register(reg_name: str) -> bool:
+    """Check if register name refers to TCS (starts with $)."""
+    return reg_name.startswith('$')
+
+
+def _is_tcs_write(instr: str) -> bool:
+    """Check if instruction writes to TCS."""
+    return instr in ['GLO', 'GHI']
 
 def _analyze_operation_cost(event: LogicalEvent, adr: OASMAddress, assembler_seq, verbose: bool = False) -> int:
     """
@@ -765,8 +992,7 @@ def _analyze_operation_cost(event: LogicalEvent, adr: OASMAddress, assembler_seq
             return 0
             
     except Exception as e:
-        if verbose:
-            print(f"      Warning: Cost analysis failed for {event.operation.operation_type.name}: {e}")
+        print(f"      Warning: Cost analysis failed for {event.operation.operation_type.name}: {e}")
         return 0
 
 @dataclass(frozen=True)
@@ -1077,7 +1303,7 @@ def _pass5_generate_final_calls(events_by_board: Dict[OASMAddress, List[LogicalE
     
     return oasm_calls
 
-def execute_oasm_calls(calls_by_board: Dict[OASMAddress, List[OASMCall]], assembler_seq=None, verbose: bool = False):
+def execute_oasm_calls(calls_by_board: Dict[OASMAddress, List[OASMCall]], assembler_seq=None, clear=True, verbose: bool = False):
     """执行 OASM 调用序列并生成实际的 RTMQ 汇编代码
     
     Args:
@@ -1098,7 +1324,8 @@ def execute_oasm_calls(calls_by_board: Dict[OASMAddress, List[OASMCall]], assemb
         print("🔧 Generating actual RTMQ assembly...")
         try:
             call_counter = 0
-            assembler_seq.clear()
+            if clear:
+                assembler_seq.clear()
             # Process each board separately
             for board_adr, board_calls in calls_by_board.items():
                 print(f"📋 Processing {len(board_calls)} calls for board '{board_adr.value}':")

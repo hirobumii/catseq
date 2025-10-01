@@ -371,3 +371,130 @@ class TestIntegrationCompilerFlow:
         assert len(oasm_calls) > 0
         # Should fallback to a valid address (likely RWG0)
         assert all(isinstance(call.adr, OASMAddress) for call in oasm_calls)
+
+
+class TestLoopAnalysisAndTiming:
+    """Test loop analysis and timing calculation for assembly code."""
+
+    def test_for_loop_structure_detection(self):
+        """Test detection of for loop patterns in assembly code."""
+        from catseq.compilation.compiler import _analyze_loop_structure
+
+        # Example assembly with for loop (loop 6 times from 0 to 5)
+        assembly_lines = [
+            'ADD - $21 $00 $00',    # Initialize counter: $21 = 0
+            'NOP -',                # 1 cycle
+            'LSE - $FE 5 $21',      # Compare: $FE = (5 <= $21) ? -1 : 0
+            'GLO - $FF 6',          # Jump target offset = 6
+            'NOP -',                # 1 cycle
+            'AMK P PTR $FE $FF',    # Conditional jump if $FE is true
+            'AMK - LED $01 $00',    # LED operation (loop body)
+            'ADD - $21 $21 1',      # Increment counter: $21++
+            'GLO - $FF -9',         # Back jump offset = -9
+            'NOP -',                # 1 cycle
+            'AMK P PTR 3.0 $FF'     # Unconditional back jump
+        ]
+
+        loop_info = _analyze_loop_structure(assembly_lines)
+
+        # Verify loop detection
+        assert loop_info['loop_type'] == 'for_loop'
+        assert loop_info['estimated_iterations'] == 6  # 0 to 5 inclusive
+        assert len(loop_info['jump_instructions']) == 2  # Conditional + back jump
+        assert len(loop_info['loop_body_instructions']) == 9  # Instructions 2-10
+
+        # Verify jump instruction indices
+        expected_jumps = [5, 10]  # AMK P PTR instructions
+        assert loop_info['jump_instructions'] == expected_jumps
+
+        # Verify loop body covers the right instructions
+        expected_body = list(range(2, 11))  # LSE through final AMK P PTR
+        assert loop_info['loop_body_instructions'] == expected_body
+
+    def test_loop_timing_calculation_exact(self):
+        """Test exact timing calculation for loops with precise cycle counting."""
+        from catseq.compilation.compiler import _estimate_oasm_cost
+
+        # Same for loop example with exact calculation
+        assembly_lines = [
+            'ADD - $21 $00 $00',    # 1 cycle × 1 time = 1
+            'NOP -',                # 1 cycle × 1 time = 1
+            'LSE - $FE 5 $21',      # 1 cycle × 6 times = 6
+            'GLO - $FF 6',          # 1 cycle × 6 times = 6
+            'NOP -',                # 1 cycle × 6 times = 6
+            'AMK P PTR $FE $FF',    # 10 cycles × 6 times = 60
+            'AMK - LED $01 $00',    # 1 cycle × 6 times = 6
+            'ADD - $21 $21 1',      # 1 cycle × 6 times = 6
+            'GLO - $FF -9',         # 1 cycle × 6 times = 6
+            'NOP -',                # 1 cycle × 6 times = 6
+            'AMK P PTR 3.0 $FF'     # 10 cycles × 6 times = 60
+        ]
+
+        total_cost = _estimate_oasm_cost(assembly_lines)
+
+        # Exact calculation:
+        # Instructions 0-1 (outside loop): 2 cycles
+        # Instructions 2-10 (loop body): (1+1+1+10+1+1+1+1+10) × 6 = 27 × 6 = 162 cycles
+        # Total: 2 + 162 = 164 cycles
+        assert total_cost == 164
+
+    def test_single_instruction_no_loop(self):
+        """Test that single instructions are not detected as loops."""
+        from catseq.compilation.compiler import _analyze_loop_structure, _estimate_oasm_cost
+
+        simple_assembly = [
+            'NOP -',
+            'AMK - LED $01 $00',
+            'NOP -'
+        ]
+
+        loop_info = _analyze_loop_structure(simple_assembly)
+
+        # Should not detect any loop
+        assert loop_info['loop_type'] == 'none'
+        assert loop_info['estimated_iterations'] == 1
+        assert len(loop_info['jump_instructions']) == 0
+        assert len(loop_info['loop_body_instructions']) == 0
+
+        # Timing should be exactly 3 cycles
+        total_cost = _estimate_oasm_cost(simple_assembly)
+        assert total_cost == 3  # 3 instructions × 1 cycle each
+
+    def test_jump_without_loop_exact(self):
+        """Test single jump instructions with exact timing."""
+        from catseq.compilation.compiler import _analyze_loop_structure, _estimate_oasm_cost
+
+        jump_assembly = [
+            'NOP -',                # 1 cycle
+            'GLO - $FF 3',          # 1 cycle
+            'AMK P PTR 2.0 $FF',    # 10 cycles (jump instruction)
+            'NOP -',                # 1 cycle
+            'AMK - LED $01 $00'     # 1 cycle
+        ]
+
+        loop_info = _analyze_loop_structure(jump_assembly)
+
+        # Should not detect loop (only one jump)
+        assert loop_info['loop_type'] == 'none'
+        assert loop_info['estimated_iterations'] == 1
+
+        # Timing should be exactly 14 cycles
+        total_cost = _estimate_oasm_cost(jump_assembly)
+        expected = 1 + 1 + 10 + 1 + 1  # Exact cycle count
+        assert total_cost == expected
+        assert total_cost == 14
+
+    def test_edge_case_empty_assembly(self):
+        """Test edge case with empty assembly."""
+        from catseq.compilation.compiler import _analyze_loop_structure, _estimate_oasm_cost
+
+        empty_assembly = []
+
+        loop_info = _analyze_loop_structure(empty_assembly)
+        assert loop_info['loop_type'] == 'none'
+        assert loop_info['estimated_iterations'] == 1
+        assert len(loop_info['jump_instructions']) == 0
+        assert len(loop_info['loop_body_instructions']) == 0
+
+        total_cost = _estimate_oasm_cost(empty_assembly)
+        assert total_cost == 0

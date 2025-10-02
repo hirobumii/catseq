@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Callable, Union, Optional
 
 from ..types.common import (
-    OperationType, AtomicMorphism, Channel, TIMING_CRITICAL_OPERATIONS, OpaqueAtomicMorphism
+    OperationType, AtomicMorphism, Channel, TIMING_CRITICAL_OPERATIONS, BlackBoxAtomicMorphism
 )
 from ..types.timing import LogicalTimestamp, TimestampType, is_same_epoch
 from ..lanes import merge_board_lanes
@@ -331,7 +331,7 @@ def _pass1_extract_and_translate(morphism, verbose: bool = False) -> Dict[OASMAd
                         break # Store the single merged call in the first relevant event
 
             # Handle Opaque OASM Functions (Black Boxes)
-            opaque_events = [e for e in ts_events if isinstance(e.operation, OpaqueAtomicMorphism)]
+            opaque_events = [e for e in ts_events if isinstance(e.operation, BlackBoxAtomicMorphism)]
             if opaque_events:
                 first_op = opaque_events[0].operation
                 func_id = id(first_op.user_func)
@@ -391,7 +391,7 @@ def _pass2_cost_and_epoch_analysis(events_by_board: Dict[OASMAddress, List[Logic
     # First, handle opaque events which don't need an assembler
     for events in events_by_board.values():
         for event in events:
-            if isinstance(event.operation, OpaqueAtomicMorphism):
+            if isinstance(event.operation, BlackBoxAtomicMorphism):
                 event.cost_cycles = event.operation.duration_cycles
                 if verbose:
                     print(f"      - OPAQUE_OASM_FUNC at t={event.timestamp_cycles}: {event.cost_cycles} cycles (user-provided)")
@@ -411,7 +411,7 @@ def _pass2_cost_and_epoch_analysis(events_by_board: Dict[OASMAddress, List[Logic
         if verbose:
             print(f"    Analyzing costs for board {adr.value}...")
         for event in events:
-            if isinstance(event.operation, OpaqueAtomicMorphism):
+            if isinstance(event.operation, BlackBoxAtomicMorphism):
                 continue  # Already handled
 
             if event.oasm_calls:
@@ -566,8 +566,8 @@ def _pass4_validate_constraints(events_by_board: Dict[OASMAddress, List[LogicalE
 def _validate_black_box_exclusivity(adr, events: List[LogicalEvent], verbose: bool = False):
     """验证黑盒操作在执行期间是否独占板卡"""
     # 1. 识别出所有的黑盒事件和其他事件
-    opaque_events = [e for e in events if isinstance(e.operation, OpaqueAtomicMorphism)]
-    other_events = [e for e in events if not isinstance(e.operation, OpaqueAtomicMorphism)]
+    opaque_events = [e for e in events if isinstance(e.operation, BlackBoxAtomicMorphism)]
+    other_events = [e for e in events if not isinstance(e.operation, BlackBoxAtomicMorphism)]
 
     if not opaque_events:
         return

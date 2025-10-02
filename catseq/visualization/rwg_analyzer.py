@@ -76,31 +76,37 @@ def analyze_rwg_timeline(ops: List[PhysicalOperation], curve_type: str) -> List[
                         'rf_on': current_rf_state
                     })
         
-        # Ramp operations
-        elif (op.operation.operation_type == OperationType.RWG_UPDATE_PARAMS and 
-              op.operation.duration_cycles > 0):
-            duration_us = cycles_to_us(op.operation.duration_cycles)
-            
+        # PLAY operations (all RWG_UPDATE_PARAMS, duration is always 0)
+        elif op.operation.operation_type == OperationType.RWG_UPDATE_PARAMS:
             # Find paired LOAD operation to get coefficients
             paired_load = _find_previous_load(ops[:i])
-            ramp_coeffs = None
+            coeffs = None
             if paired_load and hasattr(paired_load.operation.end_state, 'pending_waveforms'):
                 waveforms = paired_load.operation.end_state.pending_waveforms
                 if waveforms:
-                    ramp_coeffs = waveforms[0].freq_coeffs if curve_type == "freq" else waveforms[0].amp_coeffs
-            
+                    coeffs = waveforms[0].freq_coeffs if curve_type == "freq" else waveforms[0].amp_coeffs
+
+            # Find next PLAY operation to determine segment duration
+            next_play_time = None
+            for j in range(i + 1, len(ops)):
+                next_op = ops[j]
+                if next_op.operation.operation_type == OperationType.RWG_UPDATE_PARAMS:
+                    next_play_time = next_op.timestamp_us
+                    break
+
             events.append({
                 'time': op_time,
-                'type': 'ramp_start',
-                'duration': duration_us,
-                'coeffs': ramp_coeffs
+                'type': 'play_start',
+                'coeffs': coeffs,
+                'next_play_time': next_play_time
             })
-            
-            events.append({
-                'time': op_time + duration_us,
-                'type': 'ramp_end',
-                'coeffs': ramp_coeffs  # Keep coeffs to calculate end value
-            })
+
+            # Add segment end event
+            if next_play_time:
+                events.append({
+                    'time': next_play_time,
+                    'type': 'play_end'
+                })
     
     # Sort events by time
     events.sort(key=lambda e: e['time'])
@@ -108,55 +114,53 @@ def analyze_rwg_timeline(ops: List[PhysicalOperation], curve_type: str) -> List[
     
     # Build time segments
     segments = []
-    segment_start = 0.0
-    is_in_ramp = False
     current_rf_state = False  # Re-initialize
-    current_static_value = 0.0
-    current_ramp_coeffs = None
-    
+    current_coeffs = None
+
     # Add timeline end point
     timeline_end = max(op.timestamp_us for op in ops) if ops else 0.0
     events.append({'time': timeline_end, 'type': 'end'})
-    
-    for event in events:
+
+    # Process events to build segments
+    for i, event in enumerate(events):
         event_time = event['time']
-        
-        # Before event occurs, add current state segment (only when RF is ON)
-        if event_time > segment_start and current_rf_state:
-            if is_in_ramp:
-                # Currently in ramp segment
-                segments.append({
-                    'type': 'ramp',
-                    'start_time': segment_start,
-                    'end_time': event_time,
-                    'coeffs': current_ramp_coeffs,
-                    'rf_on': current_rf_state
-                })
+
+        # Process event
+        if event['type'] == 'rf_change':
+            current_rf_state = event['rf_on']
+        elif event['type'] == 'play_start':
+            current_coeffs = event['coeffs']
+            next_play_time = event.get('next_play_time')
+
+            # Create segment from this PLAY to next PLAY (or timeline end)
+            if next_play_time:
+                segment_end_time = next_play_time
             else:
-                # Currently in static segment
+                segment_end_time = timeline_end
+
+            # Only add segment if RF is ON and we have a valid time range
+            if current_rf_state and segment_end_time > event_time:
+                # Calculate the interpolation duration (from this PLAY to next PLAY)
+                interpolation_duration = segment_end_time - event_time
+
+                segments.append({
+                    'type': 'interpolation',  # From current PLAY to next PLAY
+                    'start_time': event_time,
+                    'end_time': segment_end_time,
+                    'coeffs': current_coeffs,
+                    'rf_on': True,
+                    'interpolation_duration': interpolation_duration
+                })
+        elif event['type'] == 'value_change':
+            # Handle static value changes from snapshots
+            # These represent immediate value updates when RF is on
+            if current_rf_state:
                 segments.append({
                     'type': 'static',
-                    'start_time': segment_start,
-                    'end_time': event_time,
-                    'value': current_static_value,
-                    'rf_on': current_rf_state
+                    'start_time': event_time,
+                    'end_time': event_time,  # Instantaneous change
+                    'value': event['value'],
+                    'rf_on': True
                 })
-        
-        # Process event
-        if event['type'] == 'value_change':
-            current_static_value = event['value']
-        elif event['type'] == 'rf_change':
-            current_rf_state = event['rf_on']
-        elif event['type'] == 'ramp_start':
-            is_in_ramp = True
-            current_ramp_coeffs = event['coeffs']
-        elif event['type'] == 'ramp_end':
-            is_in_ramp = False
-            # Calculate the end value of the ramp and update static value
-            if 'coeffs' in event and event['coeffs']:
-                duration = event_time - segment_start  # Duration of the ramp that just ended
-                current_static_value = _evaluate_taylor_series(event['coeffs'], duration)
-        
-        segment_start = event_time
     
     return segments

@@ -1,7 +1,7 @@
 """
 Common, hardware-agnostic types for the CatSeq framework.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable
 
@@ -128,8 +128,9 @@ class AtomicMorphism:
 
 
 @dataclass(frozen=True)
-class OpaqueAtomicMorphism(AtomicMorphism):
+class BlackBoxAtomicMorphism(AtomicMorphism):
     """An atomic morphism that wraps a user-defined OASM function (black box)."""
     user_func: Callable
     user_args: tuple
     user_kwargs: dict
+    metadata: dict = field(default_factory=dict)  # For storing additional information (loop count, type, etc.)

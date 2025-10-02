@@ -7,6 +7,8 @@ run directly for testing and validation.
 """
 
 import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.patches import FancyBboxPatch
 from typing import Dict, List, Tuple, Optional, Any
 from collections import defaultdict
 
@@ -15,6 +17,7 @@ from ..morphism import Morphism
 from ..lanes import merge_board_lanes, PhysicalLane, PhysicalOperation
 from ..time_utils import cycles_to_us
 from ..types import Board, Channel, OperationType
+from ..types.common import BlackBoxAtomicMorphism
 from .rwg_analyzer import analyze_rwg_timeline, _evaluate_taylor_series
 
 
@@ -89,6 +92,75 @@ def _group_by_channel(operations: List[PhysicalOperation]) -> Dict[Channel, List
         ops.sort(key=lambda x: x.timestamp_cycles)
     
     return channel_ops
+
+def _detect_loop_blackbox(ops: List[PhysicalOperation]) -> Dict[str, Any] | None:
+    """检测循环黑盒模式"""
+    # 检查是否只有一个操作且是黑盒操作
+    if len(ops) == 1:
+        op = ops[0].operation
+        if (isinstance(op, BlackBoxAtomicMorphism) and
+            op.operation_type == OperationType.OPAQUE_OASM_FUNC and
+            op.metadata.get('loop_type') == 'repeat'):
+
+            loop_count = op.metadata.get('loop_count', '?')
+            unit_duration = op.metadata.get('unit_duration', 0)
+            unit_duration_us = cycles_to_us(unit_duration)
+
+            return {
+                'type': 'LOOP_BLACKBOX',
+                'loop_count': loop_count,
+                'unit_duration_us': unit_duration_us,
+                'total_duration_us': cycles_to_us(op.duration_cycles),
+                'start_time': ops[0].timestamp_us,
+                'operation_index': 0
+            }
+
+    return None
+
+def _draw_loop_blackbox(ax: plt.Axes, loop_info: Dict[str, Any], y_pos: int, time_mapping: Dict[float, float]):
+    """绘制循环黑盒：用框框出来，右上角标上乘号和次数"""
+    start_display = _map_time_to_display(loop_info['start_time'], time_mapping)
+    end_display = _map_time_to_display(loop_info['start_time'] + loop_info['total_duration_us'], time_mapping)
+    width = max(1.0, end_display - start_display)
+
+    # 绘制带圆角的边框
+    bbox = FancyBboxPatch(
+        (start_display, y_pos - 0.45), width, 0.9,
+        boxstyle="round,pad=0.02",
+        facecolor='lightblue',
+        edgecolor='darkblue',
+        linewidth=2,
+        alpha=0.7
+    )
+    ax.add_patch(bbox)
+
+    # 添加循环标记 - 右上角的乘号和次数
+    loop_count = loop_info['loop_count']
+    unit_duration = loop_info['unit_duration_us']
+
+    # 循环次数标记 - 放在框的右上角
+    ax.text(end_display - width * 0.05, y_pos + 0.35,
+           f"×{loop_count}",
+           ha='right', va='bottom',
+           fontsize=10, fontweight='bold',
+           color='darkred',
+           bbox=dict(boxstyle="round,pad=0.1", facecolor='white', edgecolor='darkred', alpha=0.9))
+
+    # 主标签 - 在框的中央
+    main_label = f"Loop({unit_duration:.1f}μs)"
+    ax.text(start_display + width/2, y_pos,
+           main_label,
+           ha='center', va='center',
+           fontsize=9, fontweight='bold',
+           color='darkblue')
+
+    # 总时长标签 - 在框的下方
+    total_label = f"Total: {loop_info['total_duration_us']:.1f}μs"
+    ax.text(start_display + width/2, y_pos - 0.3,
+           total_label,
+           ha='center', va='center',
+           fontsize=7, style='italic',
+           color='gray')
 
 def _detect_pulse_patterns(ops: List[PhysicalOperation]) -> List[Dict[str, Any]]:
     """检测单个通道的脉冲模式"""
@@ -206,6 +278,12 @@ def _draw_adaptive_channel_operations(ax: plt.Axes, ops: List[PhysicalOperation]
         _draw_taylor_curve(ax, ops, y_pos, time_mapping, style_config["style"])
         return
     
+    # 检测循环黑盒模式
+    loop_blackbox = _detect_loop_blackbox(ops)
+    if loop_blackbox:
+        _draw_loop_blackbox(ax, loop_blackbox, y_pos, time_mapping)
+        return
+
     # 原有的离散操作点逻辑
     pulse_patterns = _detect_pulse_patterns(ops)
     pulse_op_indices = set()
@@ -363,25 +441,52 @@ def _plot_adaptive_timeline(ax: plt.Axes, physical_lanes: Dict[Board, PhysicalLa
     """绘制自适应时间尺度的图表"""
     event_times = _collect_all_event_times(physical_lanes)
     time_mapping = _create_adaptive_time_mapping(event_times)
-    
+
     all_ops = [op for lane in physical_lanes.values() for op in lane.operations]
     ops_by_channel = _group_by_channel(all_ops)
     sorted_channels = sorted(ops_by_channel.keys(), key=lambda ch: (ch.board.id, ch.channel_type.name, ch.local_id))
 
-    for y_pos, channel in enumerate(sorted_channels):
-        ops = ops_by_channel[channel]
-        _draw_adaptive_channel_operations(ax, ops, y_pos, time_mapping, channel=channel, channel_styles=channel_styles)
-    
-    ax.set_yticks(range(len(sorted_channels)))
-    # Use custom names from channel_styles if available, otherwise use global_id
+    # 构建显示通道列表：对于有 freq/amp style 的通道，创建两行
+    display_channels = []
     labels = []
-    for ch in sorted_channels:
-        if channel_styles and ch in channel_styles and 'name' in channel_styles[ch]:
-            labels.append(channel_styles[ch]['name'])
+
+    for channel in sorted_channels:
+        style_config = None
+        if channel_styles and channel in channel_styles:
+            style_config = channel_styles[channel]
+
+        if style_config and style_config.get("style") in ["freq", "amp"]:
+            # 为 freq/amp 通道创建两行
+            # 上行：默认操作显示
+            display_channels.append((channel, "default"))
+            base_name = style_config.get('name', channel.global_id)
+            labels.append(f"{base_name} (ops)")
+
+            # 下行：曲线显示
+            display_channels.append((channel, style_config["style"]))
+            labels.append(f"{base_name} ({style_config['style']})")
         else:
-            labels.append(ch.global_id)
+            # 普通通道：单行显示
+            display_channels.append((channel, "default"))
+            if style_config and 'name' in style_config:
+                labels.append(style_config['name'])
+            else:
+                labels.append(channel.global_id)
+
+    # 绘制所有显示通道
+    for y_pos, (channel, display_mode) in enumerate(display_channels):
+        ops = ops_by_channel[channel]
+
+        if display_mode == "default":
+            # 默认显示：不使用曲线样式
+            _draw_adaptive_channel_operations(ax, ops, y_pos, time_mapping, channel=channel, channel_styles=None)
+        else:
+            # 曲线显示：使用指定的样式
+            _draw_taylor_curve(ax, ops, y_pos, time_mapping, display_mode)
+
+    ax.set_yticks(range(len(display_channels)))
     ax.set_yticklabels(labels)
-    ax.set_ylim(-0.5, len(sorted_channels) - 0.5)
+    ax.set_ylim(-0.5, len(display_channels) - 0.5)
     _setup_adaptive_time_ticks(ax, event_times, time_mapping)
 
 def _get_adaptive_time_mapping(physical_lanes: Dict[Board, PhysicalLane]) -> Dict[float, float]:
@@ -435,9 +540,20 @@ def _generate_text_timeline(physical_lanes: Dict[Board, PhysicalLane], max_width
 
     for channel in sorted_channels:
         channel_ops = ops_by_channel[channel]
+
+        # 检测循环黑盒
+        loop_blackbox = _detect_loop_blackbox(channel_ops)
+        if loop_blackbox:
+            loop_count = loop_blackbox['loop_count']
+            unit_duration = loop_blackbox['unit_duration_us']
+            total_duration = loop_blackbox['total_duration_us']
+            timeline = f"🔁 Loop×{loop_count}({unit_duration:.1f}μs) → Total: {total_duration:.1f}μs"
+            lines.append(f"{channel.global_id:<12} │ {timeline}")
+            continue
+
         patterns = _detect_pulse_patterns(channel_ops)
         op_indices_in_patterns = {idx for p in patterns for idx in p['operation_indices']}
-        
+
         event_strs = []
         # Add patterns first
         for p in patterns:
@@ -645,12 +761,10 @@ def _analyze_rwg_timeline(ops: List[PhysicalOperation], curve_type: str) -> List
     
     return segments
 
-def _draw_taylor_curve(ax: plt.Axes, ops: List[PhysicalOperation], y_pos: int, 
+def _draw_taylor_curve(ax: plt.Axes, ops: List[PhysicalOperation], y_pos: int,
                       time_mapping: Dict[float, float], curve_type: str):
     """绘制基于 Taylor 系数的连续曲线"""
-    import numpy as np
-    from ..types.common import OperationType
-    
+
     # 使用新的时间轴分析
     segments = analyze_rwg_timeline(ops, curve_type)
     
@@ -694,9 +808,9 @@ def _draw_taylor_curve(ax: plt.Axes, ops: List[PhysicalOperation], y_pos: int,
     for segment in segments:
         if segment['type'] == 'static':
             all_values.append(segment['value'])
-        elif segment['type'] == 'ramp' and segment['coeffs']:
-            # 从 ramp 的开始和结束值采样
-            duration = segment['end_time'] - segment['start_time']
+        elif segment['type'] in ['ramp', 'interpolation'] and segment['coeffs']:
+            # 从 ramp/interpolation 的开始和结束值采样
+            duration = segment.get('interpolation_duration', segment['end_time'] - segment['start_time'])
             start_val = _evaluate_taylor_series(segment['coeffs'], 0)
             end_val = _evaluate_taylor_series(segment['coeffs'], duration)
             all_values.extend([start_val, end_val])
@@ -737,20 +851,20 @@ def _draw_taylor_curve(ax: plt.Axes, ops: List[PhysicalOperation], y_pos: int,
             ax.plot([start_display, end_display], [y_value, y_value], 
                    color=curve_color, linewidth=2, linestyle='-', alpha=0.8)
                    
-        elif segment['type'] == 'ramp' and segment['coeffs']:
+        elif segment['type'] in ['ramp', 'interpolation'] and segment['coeffs']:
             # 绘制 Taylor 曲线，使用实际数值
-            duration = segment['end_time'] - segment['start_time']
+            duration = segment.get('interpolation_duration', segment['end_time'] - segment['start_time'])
             num_points = max(50, int(duration * 10))
             t_samples = np.linspace(0, duration, num_points)
-            
+
             # 计算曲线值
             curve_values = [_evaluate_taylor_series(segment['coeffs'], t) for t in t_samples]
-            
+
             # 映射到显示时间和位置
             time_points = [segment['start_time'] + t for t in t_samples]
             display_points = [_map_time_to_display(t, time_mapping) for t in time_points]
             position_points = [value_to_pos(val) for val in curve_values]
-            
+
             # 绘制曲线
             ax.plot(display_points, position_points, color=curve_color, linewidth=3, alpha=0.9)
     
@@ -765,12 +879,8 @@ def _draw_taylor_curve(ax: plt.Axes, ops: List[PhysicalOperation], y_pos: int,
                            facecolor='orange', alpha=0.15, edgecolor=None)
         ax.add_patch(rect)
     
-    # 绘制离散操作点（LOAD 等瞬时操作）
-    for op in ops:
-        if op.operation.operation_type == OperationType.RWG_LOAD_COEFFS:
-            display_pos = _map_time_to_display(op.timestamp_us, time_mapping)
-            color = _get_operation_color(op.operation.operation_type)
-            symbol = _get_operation_symbol_text(op.operation.operation_type)
-            _draw_enhanced_operation(ax, op, display_pos, y_pos, color, symbol)
+    # 在曲线显示模式下，不绘制LOAD等准备操作，只显示纯净的曲线
+    # 用户只想看到连续的amp/freq变化，而不是这些瞬时的准备操作
+    pass
 
 

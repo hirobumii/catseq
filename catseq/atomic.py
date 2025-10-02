@@ -14,7 +14,7 @@ from .types.common import (
     OperationType, 
     AtomicMorphism, 
     State,
-    OpaqueAtomicMorphism
+    BlackBoxAtomicMorphism
 )
 from .types.ttl import TTLState
 from .types.rwg import (
@@ -140,10 +140,11 @@ def oasm_black_box(
     board_funcs: Dict[Board, Callable],
     user_args: tuple = (),
     user_kwargs: dict = {},
+    metadata: dict | None = None,
 ) -> Morphism:
     """Creates a multi-channel, potentially multi-board black-box Morphism.
 
-    This factory creates a single Morphism that contains multiple OpaqueAtomicMorphisms,
+    This factory creates a single Morphism that contains multiple BlackBoxAtomicMorphisms,
     one for each specified channel. It looks up the correct user-defined function
     from the board_funcs dictionary based on the channel's board.
 
@@ -155,6 +156,7 @@ def oasm_black_box(
                      to be executed on that board.
         user_args: Positional arguments to pass to the user_func.
         user_kwargs: Keyword arguments to pass to the user_func.
+        metadata: Additional metadata for the black box (e.g., loop information).
 
     Returns:
         A Morphism object representing the multi-channel black box.
@@ -171,11 +173,15 @@ def oasm_black_box(
                 f"was provided for this board in board_funcs."
             )
 
+    # Handle metadata default value
+    if metadata is None:
+        metadata = {}
+
     for channel, (start_state, end_state) in channel_states.items():
         # Look up the correct function for this channel's board
         board_func = board_funcs[channel.board]
 
-        op = OpaqueAtomicMorphism(
+        op = BlackBoxAtomicMorphism(
             channel=channel,
             start_state=start_state,
             end_state=end_state,
@@ -184,6 +190,7 @@ def oasm_black_box(
             user_func=board_func,
             user_args=user_args,
             user_kwargs=user_kwargs,
+            metadata=metadata,
         )
         lanes[channel] = Lane((op,))
 

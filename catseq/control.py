@@ -192,9 +192,14 @@ def repeat_morphism(
     for board, base_func in base_board_funcs.items():
         board_funcs[board] = create_loop_executor(base_func)
 
-    # Create blackbox Morphism with correct timing
+    # Create blackbox Morphism with correct timing and loop metadata
     return oasm_black_box(
         channel_states=channel_states,
         duration_cycles=total_duration_cycles,
-        board_funcs=board_funcs
+        board_funcs=board_funcs,
+        metadata={
+            'loop_type': 'repeat',
+            'loop_count': count,
+            'unit_duration': t_morphism
+        }
     )

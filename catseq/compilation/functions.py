@@ -51,15 +51,15 @@ def ttl_set(mask, state, board_type="main"):
         state: TTL 状态值，指定选中通道的输出状态 (binary format, e.g., 0b0001)
         board_type: 板卡类型 ("main" 或 "rwg")，默认为 "main"
     """
-    if board_type == "main":
+    # if board_type == "main":
         # Main 板卡：使用 TTL 寄存器（GPIO 子系统）
-        rtmq_mask = binary_to_rtmq_mask(mask)
-        rtmq_state = binary_to_rtmq_mask(state)
-        amk('ttl', rtmq_mask, rtmq_state)
+    rtmq_mask = binary_to_rtmq_mask(mask)
+    rtmq_state = binary_to_rtmq_mask(state)
+    amk('ttl', rtmq_mask, rtmq_state)
         # print(f"TTL_SET (Main) - mask={rtmq_mask}, state={rtmq_state}")
-    else:  # RWG 板卡
-        # RWG 板卡：使用 SBG mark 位，避免与 IO_UPDATE 的流水线延迟错位
-        sbg.ctrl(iou=0, pud=0, mrk=state & 0xF)
+    # else:  # RWG 板卡
+    #     # RWG 板卡：使用 SBG mark 位，避免与 IO_UPDATE 的流水线延迟错位
+    #     sbg.ctrl(iou=0, pud=0, mrk=state & 0xF)
         # print(f"TTL_SET (RWG) - SBG mark bits: 0b{state & 0xF:04b}")
 
     # print(f"  -> mask=0b{mask:08b}, state=0b{state:08b}, board_type={board_type}")
@@ -144,5 +144,5 @@ def rwg_load_waveform(params: WaveformParams):
 
 def rwg_play(pud_mask: int, iou_mask: int):
     """Trigger the waveform playback."""
-    sbg.ctrl(iou=iou_mask, pud=pud_mask, mrk=0)
+    sbg.ctrl(iou=0, pud=pud_mask, mrk=0)
 

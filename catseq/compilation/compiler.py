@@ -210,6 +210,10 @@ def _pass1_extract_and_translate(morphism, verbose: bool = False) -> Dict[OASMAd
     # Step 2: Translate events to OASM calls (original Pass 1 logic with placeholder mechanism)
     if verbose:
         print("  Translating logical events to OASM calls...")
+
+    # Track first play per channel for phase reset logic
+    first_play_tracker: Dict[OASMAddress, set] = {adr: set() for adr in events_by_board.keys()}
+
     for adr, events in events_by_board.items():
         # Group events by timestamp to handle simultaneous operations that might be merged
         events_by_ts: Dict[int, List[LogicalEvent]] = {}
@@ -320,11 +324,15 @@ def _pass1_extract_and_translate(morphism, verbose: bool = False) -> Dict[OASMAd
                 pud_mask, iou_mask = 0, 0
                 play_ops = ops_by_type[OperationType.RWG_UPDATE_PARAMS]
                 duration_us = cycles_to_us(play_ops[0].duration_cycles)
-                
-                for op in play_ops: 
-                    pud_mask |= (1 << op.channel.local_id)
-                    iou_mask |= (1 << op.channel.local_id)
-                
+
+                for op in play_ops:
+                    ch_local_id = op.channel.local_id
+                    # Only reset phase on first play for this channel
+                    if ch_local_id not in first_play_tracker[adr]:
+                        pud_mask |= (1 << ch_local_id)
+                        first_play_tracker[adr].add(ch_local_id)
+                    iou_mask |= (1 << ch_local_id)
+
                 for event in ts_events:
                     if event.operation.operation_type == OperationType.RWG_UPDATE_PARAMS:
                         event.oasm_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.RWG_PLAY, args=(pud_mask, iou_mask)))

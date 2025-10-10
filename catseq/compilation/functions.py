@@ -65,7 +65,20 @@ def ttl_set(mask, state, board_type="main"):
     # print(f"  -> mask=0b{mask:08b}, state=0b{state:08b}, board_type={board_type}")
 
 def wait_mu(cycles):
-    """等待指定机器周期数，考虑 timer 设置指令开销
+    """等待指定机器周期数
+
+    OASM wait(N) 的实现（验证结果）：
+    - wait(N) 生成: CHI-TIM, CLO-TIM(N-1), AMK-EXC, AMK-RSM, NOP H
+    - CLO-TIM 写入后立即启动 timer 倒计数
+    - 总时长 = N cycles (OASM 内部已处理 overhead)
+
+    时序示例 wait(128):
+      Cycle 1: CHI-TIM (timer=0)
+      Cycle 2: CLO-TIM 0x7F (timer=127, 启动倒计数)
+      Cycle 3: AMK-EXC (timer=126)
+      Cycle 4: AMK-RSM (timer=125)
+      Cycle 5+: NOP H 暂停，timer 继续倒计数 125→0
+      总计: 4 + 124 = 128 cycles ✓
 
     Args:
         cycles: 需要等待的机器周期数
@@ -73,26 +86,22 @@ def wait_mu(cycles):
     if cycles <= 0:
         return
 
-    # Timer 设置需要 4 条指令的开销：CHI + CLO + AMK + AMK = 4 cycles
-    TIMER_SETUP_OVERHEAD = 4
-
-    if cycles <= TIMER_SETUP_OVERHEAD:
-        # 短等待用 NOP 指令更高效
+    # OASM wait() 已正确处理时序，无需减去 overhead
+    # 对于极短等待（≤4 cycles），NOP 可能更高效
+    if cycles <= 4:
         nop(cycles)
     else:
-        # 长等待使用 timer，减去指令开销
-        actual_wait_cycles = cycles - TIMER_SETUP_OVERHEAD
-        wait(actual_wait_cycles)
+        wait(cycles)
 
 def wait_us(duration):
     """等待指定微秒数
-    
+
     Args:
         duration: 等待时长（微秒）
     """
     # print(f"OASM: Wait {duration} μs")
-    t = round(duration*250)
-    wait(t)  # 使用转换后的时间单位
+    cycles = round(duration * 250)  # 250 MHz = 250 cycles/μs
+    wait_mu(cycles)  # 使用 wait_mu 以支持短延时优化
 
 def wait_master(cod=None):
     wait_rtlk_trig('c', cod or id(asm.intf))

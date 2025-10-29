@@ -329,9 +329,9 @@ def _pass1_extract_and_translate(morphism, verbose: bool = False) -> Dict[OASMAd
                     ch_local_id = op.channel.local_id
                     # Only reset phase on first play for this channel
                     pud_mask |= (1 << ch_local_id)
-                    if ch_local_id not in first_play_tracker[adr]:
-                        iou_mask |= (1 << ch_local_id)
-                        first_play_tracker[adr].add(ch_local_id)
+                    # if ch_local_id not in first_play_tracker[adr]:
+                    iou_mask |= (1 << ch_local_id)
+                        # first_play_tracker[adr].add(ch_local_id)
 
                 for event in ts_events:
                     if event.operation.operation_type == OperationType.RWG_UPDATE_PARAMS:

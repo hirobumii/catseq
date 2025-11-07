@@ -30,7 +30,7 @@ def us_to_cycles(microseconds: float) -> int:
     Returns:
         对应的时钟周期数
     """
-    return int(microseconds * CYCLES_PER_US)
+    return round(microseconds * CYCLES_PER_US)
 
 
 def cycles_to_us(cycles: int) -> float:
@@ -60,7 +60,7 @@ def time_to_cycles(time_seconds: float) -> int:
         time_to_cycles(1e-6)      -> 250          # 1 microsecond
         time_to_cycles(4e-9)      -> 1            # 1 machine unit
     """
-    return int(time_seconds * CLOCK_FREQ_HZ)
+    return round(time_seconds * CLOCK_FREQ_HZ)
 
 
 def cycles_to_time(cycles: int) -> float:

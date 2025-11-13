@@ -24,6 +24,8 @@ class OASMAddress(Enum):
     RWG5 = "rwg5"
     RWG6 = "rwg6"
     RWG7 = "rwg7"
+    RWG8 = "rwg8"
+    RWG9 = "rwg9"
 
 
 class OASMFunction(Enum):

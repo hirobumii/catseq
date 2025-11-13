@@ -1,6 +1,6 @@
 [project]
 name = "catseq"
-version = "0.2.0"
+version = "0.2.1"
 description = "A Categorical Framework for Hardware Sequence Control"
 requires-python = ">=3.12"
 dependencies = [

@@ -60,38 +60,38 @@
 ```python
 # ========== Morphism 层（底层，时间确定）==========
 
-# 原子 Morphism - 时长: 1 + 2500 + 1 = 2502 cycles
+# 原子 Morphism - 时长: 只有 identity 推进时间 = 2500 cycles
 pulse = ttl_on(ch1) @ identity(ch1, 10e-6) @ ttl_off(ch1)
-print(pulse.total_duration_cycles)  # 2502（编译时已知）
+print(pulse.total_duration_cycles)  # 2500（编译时已知，只计算 identity）
 
-# Morphism 组合 - 时长: 2502 + 2502 = 5004 cycles
+# Morphism 组合 - 时长: 2500 + 2500 = 5000 cycles
 sequence = pulse @ pulse
-print(sequence.total_duration_cycles)  # 5004（编译时已知）
+print(sequence.total_duration_cycles)  # 5000（编译时已知）
 
-# 并行 Morphism - 时长: max(2502, 1251) = 2502 cycles
+# 并行 Morphism - 时长: max(2500, 1250) = 2500 cycles
 parallel = pulse | (ttl_on(ch2) @ identity(ch2, 5e-6) @ ttl_off(ch2))
-print(parallel.total_duration_cycles)  # 2502（编译时已知）
+print(parallel.total_duration_cycles)  # 2500（编译时已知）
 
 # ========== Program 层（高层，时间可能不确定）==========
 
 # 单个 Morphism 提升到 Program - 时长确定
-prog1 = execute(pulse)  # 时长 = 2502 cycles（确定）
+prog1 = execute(pulse)  # 时长 = 2500 cycles（确定）
 
 # 固定次数循环 - 时长确定（编译时展开）
-prog2 = execute(pulse).replicate(100)  # 时长 = 2502 * 100（确定）
+prog2 = execute(pulse).replicate(100)  # 时长 = 2500 * 100（确定）
 
 # 条件分支 - 时长不确定（运行时决定）
 adc_value = var("adc_value", "int32")
 prog3 = cond([
-    (adc_value > 500, execute(pulse)),      # 分支1: 2502 cycles
-    (adc_value > 100, execute(pulse @ pulse))  # 分支2: 5004 cycles
+    (adc_value > 500, execute(pulse)),      # 分支1: 2500 cycles
+    (adc_value > 100, execute(pulse @ pulse))  # 分支2: 5000 cycles
 ], default=execute(identity(ch1, 1e-6)))    # 分支3: 250 cycles
 # prog3 的时长：运行时才知道（取决于 adc_value）
 
 # Program 组合
 experiment = (
-    execute(pulse)              # 确定: 2502 cycles
-    >> prog2                    # 确定: 2502 * 100 cycles
+    execute(pulse)              # 确定: 2500 cycles
+    >> prog2                    # 确定: 2500 * 100 cycles
     >> prog3                    # 不确定: 运行时决定
 )
 # experiment 的总时长：部分确定，部分不确定
@@ -408,10 +408,13 @@ class IfStmt(ProgramNode):
     else_branch: ProgramNode | None = None
 ```
 
-### 变量系统
+### 变量系统设计
 
 **文件**: `catseq/ast/variables.py`
 
+#### 两类变量
+
+**编译时参数 (CompileTimeParam)**：
 ```python
 @dataclass(frozen=True)
 class CompileTimeParam:
@@ -419,13 +422,105 @@ class CompileTimeParam:
     name: str
     value: Any  # int, float, etc.
 
+    # 使用场景：
+    # - 循环次数：replicate(CompileTimeParam("n", 100))
+    # - 配置参数：threshold = CompileTimeParam("threshold", 1000)
+    # 编译时直接替换为具体值
+```
+
+**运行时变量 (RuntimeVar)**：
+```python
 @dataclass(frozen=True)
 class RuntimeVar:
     """运行时变量（RTMQ TCS 寄存器）"""
     name: str
     register_id: int  # TCS 寄存器编号 ($xx)
     var_type: str  # "int32", "bool"
+
+    # 使用场景：
+    # - 测量结果：adc_value = var("adc_value", "int32")
+    # - 条件判断：flag = var("ready", "bool")
+    # - 累加器：counter = var("counter", "int32")
+    # 映射到 RTMQ TCS 寄存器
 ```
+
+#### TCS 寄存器分配策略
+
+**RTMQ TCS 地址空间** (基于 ISA 文档):
+- `$00-$01`: 特殊寄存器（`$00`=0, `$01`=-1）
+- `$02-$1F`: GPR（30个通用寄存器，总是可访问）
+- `$20-$FF`: 栈相对寄存器（需要 STK 管理）
+
+**变量分配器实现**：
+```python
+class TCSAllocator:
+    """TCS 寄存器分配器"""
+
+    def __init__(self):
+        # 从 $20 开始分配（保留 $02-$1F 用于临时变量）
+        self.next_reg = 0x20
+        self.var_map: Dict[str, int] = {}  # 变量名 -> 寄存器 ID
+
+    def allocate(self, var_name: str) -> int:
+        """为变量分配 TCS 寄存器"""
+        if var_name in self.var_map:
+            return self.var_map[var_name]
+
+        if self.next_reg > 0xFF:
+            raise RuntimeError(f"TCS register exhausted (max 256)")
+
+        reg_id = self.next_reg
+        self.var_map[var_name] = reg_id
+        self.next_reg += 1
+        return reg_id
+
+    def get_register(self, var: RuntimeVar) -> str:
+        """获取寄存器名称（OASM 格式）"""
+        return f"${var.register_id:02X}"
+```
+
+**用户 API**：
+```python
+def var(name: str, var_type: str = "int32") -> RuntimeVar:
+    """声明运行时变量（类似 Haskell 的 newIORef）"""
+    allocator = get_current_allocator()  # 从上下文获取
+    register_id = allocator.allocate(name)
+    return RuntimeVar(name, register_id, var_type)
+
+# 使用示例
+adc_value = var("adc_value", "int32")  # 自动分配到 $20
+threshold = var("threshold", "int32")  # 自动分配到 $21
+```
+
+#### 链接器 vs 标签解析器
+
+**结论：不需要传统链接器，只需标签解析**
+
+**原因**：
+1. ✅ **OASM 库已提供标签系统**：`label()` 函数自动管理前向/后向引用
+2. ✅ **单编译单元**：程序在单个模块内编译，无需跨模块链接
+3. ✅ **标签自动解析**：OASM 在生成机器码时自动计算偏移
+
+**标签系统工作流程** (来自 OASM 库):
+```python
+# 1. 定义标签
+label('loop_start')  # 记录当前位置
+
+# 2. 前向引用（标签未定义）
+amk('ptr', condition, label('loop_end', None), P)  # 使用 expr 占位
+
+# 3. 标签定义（解析前向引用）
+label('loop_end')  # 自动回填所有前向引用
+```
+
+**未来可能需要"链接器"的场景**：
+- ❌ 跨模块调用（子程序库）- 目前不需要
+- ❌ 多个编译单元合并 - 目前不需要
+- ❌ 动态代码加载 - 目前不需要
+
+**简化设计**：
+- Phase 5 实现时，直接使用 OASM 的 `label()` / `br()` / `br_if()`
+- 不需要额外的链接器基础设施
 
 ### 纯函数式 Program API（Haskell/Idris 风格）
 
@@ -769,32 +864,93 @@ class IfOp(IRDLOperation):
 
 ### RTMQ 条件分支实现
 
-**硬件支持**：RTMQ 通过 `PTR` 寄存器和 `AMK` 指令实现条件跳转
+**硬件支持**：RTMQ 通过 `PTR` 寄存器（Numeric CSR）和 `AMK` 指令实现条件跳转
 
+**核心机制** (基于 ISA 文档)：
+- PTR 是 Numeric CSR，`AMK P PTR $xx offset` 的行为取决于 `$xx` 的值
+- 如果 `$xx == -1` (0xFFFFFFFF)，则 `$xx[1:0] == 0b11`，触发自增：`PTR = PTR + offset`
+- 否则 `PTR` 保持不变，继续执行下一条指令
+
+**RTMQ 汇编示例**：
 ```rtmq
 % 条件跳转示例
-AMK - $03 3.0 &ADC      % 将 ADC 值加载到 $03
-AMK P PTR $03 -10       % 如果 $03 == -1，跳转到 #else_label
+LST - $03 $10 $20       % $03 = ($10 < $20) ? -1 : 0
+AMK P PTR $03 #else     % 如果 $03 == -1，跳转到 #else
 % then branch
 ...
-CLO P PTR #end_label    % 跳过 else branch
-#else_label:
+CLO P PTR #end          % 无条件跳转（跳过 else）
+#else:
 % else branch
 ...
-#end_label:
+#end:
 ```
+
+**OASM 库支持** (来自 `oasm/rtmq2/__init__.py`):
+
+OASM 已提供完整的标签和控制流系统：
+
+1. **标签系统** (`label()` 函数，第 258-286 行):
+   - 自动管理前向/后向引用
+   - 使用 `expr` 类型处理未解析的标签
+   - 标签定义：`label('loop_start')`
+   - 标签引用：`label('loop_start', None)` 或 `#loop_start`
+
+2. **无条件跳转** (`br()` 函数，第 740-748 行):
+   ```python
+   amk('ptr', '3.0', offset, P)  # 直接赋值模式，无条件跳转
+   ```
+
+3. **条件跳转** (`br_if()` 函数，第 750-762 行):
+   ```python
+   amk('ptr', condition_reg, offset, P)  # 如果 condition_reg == -1 则跳转
+   ```
+
+4. **高层 API** (第 765-814 行):
+   - `if_(cond)` / `else_()` / `elif_(cond)` - if/else 分支
+   - `while_(cond)` - while 循环
+   - `for_(rd, range)` - for 循环
+   - Context Manager 版本：`If()`, `Elif()`, `Else()`, `While()`, `For()`
 
 **Lowering 策略** (`qprog.if → rtmq`):
 
 ```python
 class LowerIfPattern(RewritePattern):
-    """qprog.if → RTMQ 条件跳转"""
+    """qprog.if → RTMQ 条件跳转（使用 OASM 库）"""
     def match_and_rewrite(self, op: IfOp, rewriter):
-        # 1. 生成条件求值（保存到 TCS 寄存器）
-        # 2. 使用 AMK P PTR 实现条件跳转
-        # 3. 生成 then/else 两个分支的代码
-        # 4. 使用 CLO P PTR 实现无条件跳转（跳过 else）
+        # 1. 生成条件求值（比较指令返回 -1/0）
+        #    例如：LST - $03 $10 $20  → $03 = ($10 < $20) ? -1 : 0
+
+        # 2. 使用 OASM br_if() 实现条件跳转
+        #    amk('ptr', condition_reg, else_offset, P)
+
+        # 3. 生成 then 分支代码
+
+        # 4. 使用 OASM br() 跳过 else 分支
+        #    amk('ptr', '3.0', end_offset, P)
+
+        # 5. 生成 else 分支代码（如果存在）
+
+        # 注：可以直接利用 OASM 库的 if_() / else_() 高层 API
         ...
+```
+
+**关键设计决策**：
+- ✅ **OASM 仅作为"目标汇编器"**：只在代码生成阶段使用
+- ❌ **不使用 OASM 高层控制流 API**：`if_()`, `for_()` 会绕过 MLIR 流程
+- ✅ **使用 OASM 底层工具**：
+  - `label()` - 标签管理和前向引用解析
+  - `amk()`, `lst()` 等 - 指令生成函数
+  - `asm` context - 机器码缓冲区管理
+- ✅ **保持 MLIR 完整流程**：所有控制流在 rtmq dialect 层面表示
+- ✅ **比较指令统一返回 -1/0**：NEQ, EQU, LST, LSE, CSB 等指令
+
+**架构边界**：
+```
+MLIR rtmq dialect        →  独立的 IR 表示（可验证、可优化）
+    ↓ Code Generation
+OASM 底层工具            →  标签解析 + 指令编码 + 机器码生成
+    ↓
+RTMQ 机器码             →  最终输出
 ```
 
 ## 实施路线图

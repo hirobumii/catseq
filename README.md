@@ -2,10 +2,10 @@
 
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Version](https://img.shields.io/badge/version-0.2.0-orange.svg)
-![Tests](https://img.shields.io/badge/tests-49%20passed-brightgreen.svg)
+![Version](https://img.shields.io/badge/version-0.2.1-orange.svg)
+![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)
 
-> **A Category Theory-based framework for quantum experiment sequencing** - A mathematically rigorous abstraction for hardware timing in quantum physics experiments.
+> **A Category Theory-based framework for quantum experiment sequencing** - A mathematically rigorous abstraction for hardware timing in quantum physics experiments, powered by xDSL/MLIR compiler infrastructure.
 
 <p align="center">
   <a href="docs/user/01_quickstart.md"><strong>Quickstart</strong></a> ·
@@ -32,20 +32,23 @@
 
 ## Introduction
 
-**CatSeq** (Category Theory-based Quantum Experiment Sequencing) is a hardware control framework designed specifically for quantum physics experiments. It is built upon the mathematical principles of **Monoidal Categories** to provide a rigorous foundation and an intuitive programming abstraction for complex quantum control sequences.
+**CatSeq** (Category Theory-based Quantum Experiment Sequencing) is a hardware control framework designed specifically for quantum physics experiments. Built on **Monoidal Category** theory and **xDSL/MLIR** compiler infrastructure, it provides both mathematical rigor and practical performance for complex quantum control sequences.
 
-In traditional quantum experiment control, coordinating complex timing, managing state, and handling parallel operations often leads to code that is difficult to understand and maintain. CatSeq abstracts these complexities into predictable and verifiable mathematical objects by leveraging the **compositionality** and **type safety** of category theory, making quantum experiment programming both intuitive and powerful.
+CatSeq offers **two programming interfaces**:
+- **Morphism API**: Low-level hardware control with category theory semantics (`@`, `|`, `>>` operators)
+- **Program API**: High-level functional programming with Haskell-style monads (`execute`, `seq`, `repeat`, `cond`)
 
-This framework is particularly well-suited for quantum physics research teams that require **precise timing control** (nanosecond-level precision), **multi-channel coordination**, and **complex waveform synthesis**.
+The framework features a **non-recursive compiler** that handles unlimited nesting depth and compiles directly to RTMQ hardware instructions, making quantum experiment programming both mathematically rigorous and practically efficient.
 
 ## Core Features
 
 * **🧮 Mathematical Rigor**: Based on Monoidal Category theory, providing provably correct operational compositions.
 * **⚡ Precise Timing**: Supports 250MHz clock resolution (4ns), meeting the strict timing requirements of quantum experiments.
-* **🔀 Flexible Composition**: Intuitive sequence composition using the `@` (serial) and `|` (parallel) operators.
+* **🔀 Flexible Composition**: Two APIs - Morphism operators (`@`, `|`, `>>`) and functional combinators (`seq`, `repeat`, `cond`).
 * **🎛️ Multi-Hardware Support**: Unified control over various quantum experiment hardware, such as TTL switches and AWG waveform generators.
 * **🔧 Type Safety**: Compile-time state verification to prevent hardware configuration errors and timing conflicts.
-* **⚙️ OASM Compilation**: Directly compiles to RTMQ hardware instructions, eliminating the need to write low-level assembly code by hand.
+* **⚙️ OASM Compilation**: Directly compiles to RTMQ hardware instructions via xDSL/MLIR compiler infrastructure.
+* **♾️ Unlimited Nesting**: Non-recursive compiler design handles 10,000+ nested operations without stack overflow.
 
 ## Quickstart
 
@@ -118,40 +121,59 @@ The `post_install.py` script automatically detects your Python environment (virt
 
 ### Basic Usage
 
-Here is a basic example of creating a TTL pulse sequence:
+**Morphism API - Category Theory Style:**
 
 ```python
-from catseq import ttl_init, ttl_on, ttl_off, identity
+from catseq import ttl_init, ttl_on, ttl_off, wait
 from catseq.types.common import Board, Channel, ChannelType
 from catseq.compilation import compile_to_oasm_calls
 
-# Define hardware channels
+# Define hardware
 board = Board("RWG_0")
 ttl_ch = Channel(board, 0, ChannelType.TTL)
 
-# Build the sequence: initialize -> on for 10μs -> off
-pulse_sequence = (
-    ttl_init(ttl_ch) @ 
-    ttl_on(ttl_ch) @ 
-    identity(ttl_ch, 10e-6) @ 
-    ttl_off(ttl_ch)
+# Build sequence using operators
+pulse = (
+    ttl_init(ttl_ch) >>      # Auto-inferring composition
+    ttl_on(ttl_ch) >>        # State: OFF → ON
+    wait(ttl_ch, 10e-6) >>   # Wait 10μs
+    ttl_off(ttl_ch)          # State: ON → OFF
 )
 
-# Compile to hardware instructions
-oasm_calls = compile_to_oasm_calls(pulse_sequence)
+# Parallel execution on multiple channels
+ch1_pulse = ttl_on(ch1) @ wait(ch1, 5e-6) @ ttl_off(ch1)
+ch2_pulse = ttl_on(ch2) @ wait(ch2, 8e-6) @ ttl_off(ch2)
+parallel = ch1_pulse | ch2_pulse  # Executes simultaneously
 
-# Execute the sequence (requires RTMQ hardware environment)
-# execute_oasm_calls(oasm_calls)
+# Compile to hardware instructions
+oasm_calls = compile_to_oasm_calls(parallel)
 ```
 
-**Example of parallel operations**:
-```python
-# Create pulses on two different channels
-ch1_pulse = ttl_on(ch1) @ identity(ch1, 5e-6) @ ttl_off(ch1)
-ch2_pulse = ttl_on(ch2) @ identity(ch2, 8e-6) @ ttl_off(ch2)
+**Program API - Functional Style:** 🆕
 
-# Execute in parallel (time is automatically aligned)
-parallel_sequence = ch1_pulse | ch2_pulse  # Total duration will be 8μs
+```python
+from catseq import execute, seq, repeat, cond, var
+
+# Define pulse as morphism
+pulse = ttl_on(ttl_ch) @ wait(ttl_ch, 10e-6) @ ttl_off(ttl_ch)
+
+# Functional composition
+program = (
+    execute(pulse)                    # Execute once
+    >> execute(pulse).replicate(100)  # Repeat 100 times
+)
+
+# Runtime conditional execution
+adc_value = var("adc_value", "int32")
+threshold = 500
+
+conditional = execute(pulse_high).when(adc_value > threshold)
+
+# Multi-way branching
+program = cond([
+    (adc_value > 1000, execute(pulse_very_high)),
+    (adc_value > 500,  execute(pulse_high)),
+], default=execute(pulse_low))
 ```
 
 For more advanced usage and AWG waveform control, please refer to our [Quickstart Guide](docs/user/01_quickstart.md).
@@ -177,17 +199,26 @@ The design of CatSeq is based on the following core principles:
 
 ## Roadmap
 
-We have a clear plan for the future development of CatSeq:
+**Completed:**
+- [x] Monoidal Category-based Morphism API
+- [x] xDSL/MLIR compiler infrastructure
+- [x] Program API (functional programming interface)
+- [x] Non-recursive compiler design (unlimited nesting)
+- [x] 5-stage compilation pipeline
+- [x] Multi-hardware support (TTL, AWG, RF)
 
-**v0.2.0** (Q2 2025)
-- [ ] **Visualization Tools**: Timing diagram generation and an interactive debugging interface.
-- [ ] **Broader Hardware Support**: Support for more types of quantum experiment devices.
-- [ ] **Performance Optimization**: Compilation optimizations for large-scale sequences.
+**In Progress:**
+- [ ] Complete compiler backend (xDSL IR → OASM code generation)
+- [ ] Optimization passes (loop unrolling, dead code elimination)
+- [ ] Runtime condition support (TCS instruction mapping)
 
-**v0.3.0** (Q3 2025)
-- [ ] **Cloud Compilation**: Support for real-time control of remote hardware.
-- [ ] **Machine Learning Integration**: Automated parameter optimization and sequence learning.
-- [ ] **Standard Library Expansion**: A pre-defined library of common quantum experiment operations.
+**Future Work:**
+- [ ] Enhanced visualization tools (interactive timeline debugger)
+- [ ] Performance benchmarks and profiling
+- [ ] Cloud compilation and remote hardware control
+- [ ] Machine learning integration for sequence optimization
+- [ ] Standard library of common quantum operations
+- [ ] Broader hardware support
 
 Feel free to check out our [Issues](https://github.com/hirobumii/catseq/issues) page for more details and to join the discussion.
 
@@ -224,7 +255,7 @@ uv pip install -e .[dev]
 ruff check catseq/
 mypy catseq/
 ```
-Before contributing, please be sure to run the test suite to ensure all 49 tests are passing.
+Before contributing, please be sure to run the test suite to ensure all tests are passing.
 
 ## License
 

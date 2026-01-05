@@ -31,6 +31,31 @@ from .hardware import pulse, initialize, set_high, set_low, hold
 # OASM interface
 from .compilation import compile_to_oasm_calls, execute_oasm_calls, OASMCall
 
+# Program API (Phase 4+5)
+from .program import (
+    Program,
+    execute,
+    seq,
+    repeat,
+    cond,
+    if_then_else,
+    var,
+)
+
+from .ast.variables import (
+    CompileTimeParam,
+    RuntimeVar,
+    reset_allocator,
+)
+
+from .ast.program_ast import (
+    ProgramNode,
+    MorphismStmt,
+    SequenceStmt,
+    ForLoopStmt,
+    IfStmt,
+)
+
 __version__ = "0.1.0"
 
 __all__ = [
@@ -69,4 +94,25 @@ __all__ = [
     'compile_to_oasm_calls',
     'execute_oasm_calls',
     'OASMCall',
+
+    # Program API
+    'Program',
+    'execute',
+    'seq',
+    'repeat',
+    'cond',
+    'if_then_else',
+    'var',
+
+    # Variables
+    'CompileTimeParam',
+    'RuntimeVar',
+    'reset_allocator',
+
+    # Program AST
+    'ProgramNode',
+    'MorphismStmt',
+    'SequenceStmt',
+    'ForLoopStmt',
+    'IfStmt',
 ]

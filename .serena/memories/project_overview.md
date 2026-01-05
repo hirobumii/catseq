@@ -34,9 +34,13 @@ CatSeq 是一个基于范畴论（Category Theory）的量子实验序列控制�
   - `uv` - 现代 Python 包管理器
 
 ## 项目状态
-- **版本**: 0.2.1
-- **测试**: 49 个测试全部通过
+- **版本**: 0.2.1 (xDSL/MLIR Integration)
+- **测试**: 全部通过 (包括 19 个新的 xDSL 相关测试)
 - **许可证**: MIT
+- **新特性**: 
+  - Program API (函数式编程接口)
+  - xDSL/MLIR 编译器基础设施
+  - 非递归设计（支持 10,000+ 层嵌套）
 
 ## 主要模块结构
 ```
@@ -45,6 +49,15 @@ catseq/
 ├── atomic.py       # 原子操作定义（ttl_init, ttl_on, ttl_off, etc.）
 ├── morphism.py     # Morphism 抽象和组合操作
 ├── lanes.py        # Lane 和 PhysicalLane 实现
+├── ast/            # 🆕 Program AST 和 IR 转换
+│   ├── variables.py     # 运行时变量和编译时参数
+│   ├── expressions.py   # 条件表达式 AST
+│   ├── program_ast.py   # Program AST 节点定义
+│   └── ast_to_ir.py     # AST → xDSL IR 非递归转换器
+├── dialects/       # 🆕 xDSL/MLIR Dialects
+│   ├── program_dialect.py  # Program dialect 操作定义
+│   └── program_utils.py    # 非递归遍历工具
+├── program.py      # 🆕 Program Monad API（函数式编程）
 ├── compilation/    # 五阶段编译器实现
 │   ├── compiler.py      # 主编译流程
 │   ├── functions.py     # OASM DSL 函数实现

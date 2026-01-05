@@ -1,9 +1,17 @@
 # CatSeq 架构设计
 
-## 整体架构图
+## 整体架构图（v0.2.1 - xDSL 集成）
 
 ```
-用户代码 (Morphism 组合)
+用户代码 (双层 API)
+    ├─ Morphism API (Category Theory)
+    └─ Program API (Functional Monad) 🆕
+         ↓
+    Program AST 🆕
+         ↓
+    xDSL IR (program dialect) 🆕
+         ↓
+    [未来] Pattern Rewriting & Optimization
          ↓
     编译器 (5 阶段)
          ↓
@@ -13,6 +21,8 @@
          ↓
     硬件执行
 ```
+
+**注**: 虚线框内为 v0.2.1 新增的 xDSL/MLIR 基础设施
 
 ## 层次抽象
 

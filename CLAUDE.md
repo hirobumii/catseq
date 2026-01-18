@@ -372,3 +372,184 @@ def compile_to_oasm(morphism: Morphism) -> Dict[Board, str]:
 1. 实现 `Morphism @ Morphism` 的分配律算法
 2. 完善编译器接口和 OASM 代码生成
 3. 添加更多测试用例和错误处理
+
+## 编码规范
+
+### Python 代码风格
+
+#### Import 语句规范
+**严格禁止将 `import` 语句放在函数内部**
+
+❌ **错误示例**：
+```python
+def oasm_repeated_pulse(channel_id: int):
+    from oasm.rtmq2 import for_, end, R  # 禁止！
+
+    for_(R[1], 10)
+    # ...
+    end()
+```
+
+✅ **正确示例**：
+```python
+from oasm.rtmq2 import for_, end, R
+
+def oasm_repeated_pulse(channel_id: int):
+    for_(R[1], 10)
+    # ...
+    end()
+```
+
+**原因**：
+1. **性能**: 函数每次调用都会重新执行 import，造成不必要的开销
+2. **可读性**: 依赖关系应该在文件顶部清晰声明
+3. **静态分析**: 工具无法正确检测函数内的 import
+4. **调试困难**: import 错误只在函数执行时才暴露
+
+**唯一例外**：
+- 延迟导入用于打破循环依赖（但应该优先重构代码结构）
+- 可选依赖的条件导入（需要明确注释说明原因）
+
+```python
+# 可选依赖示例（需要注释说明）
+def optional_feature():
+    try:
+        import optional_library  # 可选依赖，避免强制安装
+    except ImportError:
+        raise RuntimeError("此功能需要安装 optional_library")
+```
+
+#### 类型标注规范
+**所有公共函数必须标注参数和返回类型**
+
+项目使用 Python 3.12，支持原生的 `Self`、`|` 联合类型等新特性。
+
+❌ **错误示例**：
+```python
+def wrap_erasure_pulse(board, rwg_channel_id, carrier_freq):  # 缺少类型标注
+    """将 erasure pulse 包装为 catseq Morphism"""
+    return oasm_black_box(...)
+```
+
+✅ **正确示例**：
+```python
+from catseq.morphism import Morphism
+from catseq.types.common import Board
+
+def wrap_erasure_pulse(
+    board: Board,
+    rwg_channel_id: int,
+    carrier_freq: float,
+    waveform_duration_us: float,
+    waveform_samples: int
+) -> Morphism:
+    """将 erasure pulse 包装为 catseq Morphism"""
+    return oasm_black_box(...)
+```
+
+**规范要求**：
+
+1. **所有公共函数/方法必须标注**：
+   - 函数参数类型
+   - 返回值类型
+   - 异常情况使用文档字符串说明
+
+2. **内部辅助函数可以省略**：
+   - 以 `_` 开头的私有函数可选标注
+   - 但建议标注以提高代码可维护性
+
+3. **使用具体类型，避免 `Any`**：
+   ```python
+   # ❌ 过于宽泛
+   def process(data: Any) -> Any: ...
+
+   # ✅ 具体类型
+   def process(data: list[int]) -> dict[str, float]: ...
+   ```
+
+4. **利用 Python 3.12 新特性**：
+   ```python
+   # 使用原生联合类型
+   def get_state(channel: Channel) -> TTLState | RWGState:
+       ...
+
+   # 使用 Self 标注返回自身类型的方法
+   class Morphism:
+       def __or__(self, other: Morphism) -> Self:
+           ...
+   ```
+
+5. **类型别名应在模块顶部定义**：
+   ```python
+   from typing import TypeAlias
+
+   ChannelStateMap: TypeAlias = dict[Channel, tuple[State, State]]
+
+   def create_morphism(states: ChannelStateMap) -> Morphism:
+       ...
+   ```
+
+**原因**：
+1. **IDE 支持**: 更好的自动补全和错误检测
+2. **文档化**: 类型即文档，减少歧义
+3. **重构安全**: 类型检查工具可以提前发现错误
+4. **团队协作**: 明确接口契约
+
+#### 时间单位规范
+**严格使用国际单位制（SI），秒（s）作为基准单位**
+
+catseq 遵循国际单位制，所有时间相关的接口必须使用**秒**作为单位。
+
+❌ **错误示例**：
+```python
+# 参数名暗示单位，导致混淆
+def create_pulse(duration_us: float):  # duration_us 暗示输入微秒数值
+    """duration_us: 脉冲持续时间（微秒）"""  # 错误！
+    ...
+
+# 函数内部使用非标准单位
+def process(duration: float):
+    cycles = duration * 250  # 假设 duration 是微秒？不明确！
+```
+
+✅ **正确示例**：
+```python
+from catseq.time_utils import us, ms, s, time_to_cycles
+
+def create_pulse(duration: float):
+    """
+    创建脉冲
+
+    参数：
+        duration: 脉冲持续时间（秒，SI 单位）
+    """
+    cycles = time_to_cycles(duration)
+    ...
+
+# 调用时使用单位常量
+pulse = create_pulse(5*us)      # 5 微秒
+wait = create_pulse(100*ms)     # 100 毫秒
+period = create_pulse(0.5*s)    # 0.5 秒
+```
+
+**可用的时间单位常量**（`catseq.time_utils`）：
+- `s = 1.0` - 秒（SI 基准单位）
+- `ms = 1e-3` - 毫秒
+- `us = 1e-6` - 微秒
+- `ns = 1e-9` - 纳秒
+- `mu = 4e-9` - 机器单位（1 个时钟周期 @ 250MHz）
+
+**转换函数**：
+- `time_to_cycles(seconds: float) -> int` - SI 秒 → 时钟周期
+- `cycles_to_time(cycles: int) -> float` - 时钟周期 → SI 秒
+
+**命名规范**：
+- 参数名应该是 `duration`, `wait_time`, `period` 等中性名称
+- **禁止使用** `duration_us`, `time_ms` 等带单位后缀的命名
+- 在文档字符串中明确说明"（秒，SI 单位）"
+
+**原因**：
+1. **一致性**: 整个项目统一使用 SI 单位
+2. **避免转换错误**: 减少单位混淆导致的 bug
+3. **科学标准**: 符合物理学和工程学惯例
+4. **可读性**: `5*us` 比 `5.0` 更清晰表达意图

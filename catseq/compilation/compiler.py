@@ -1231,6 +1231,9 @@ def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEv
                 if verbose:
                     print(f"{event.operation.operation_type.name} at {ts}c delayed due to prior operation. No wait added.")
                     print(f"{event.timestamp_cycles=} {last_op_end_time=} {wait_cycles=}")
+                if event.operation.operation_type == OperationType.OPAQUE_OASM_FUNC:
+                    print("  Note: This may be due to a black-box operation occupying the board.")
+                    continue
             
             if wait_cycles > 0:
                 board_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.WAIT, args=(wait_cycles,)))

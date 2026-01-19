@@ -1237,6 +1237,9 @@ def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEv
 
             # Add the actual OASM calls for the current event
             board_calls.extend(event.oasm_calls)
+            if verbose:
+                print(f"  Scheduled {event.operation.operation_type.name} at {ts}c with wait of {wait_cycles}c (cost: {event.cost_cycles}c) ")
+                print(event.oasm_calls)
 
             # The next operation can only start after the current one *actually* finishes.
             # The actual start time is the later of its scheduled time or when the board was last free.

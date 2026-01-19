@@ -1211,6 +1211,10 @@ def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEv
                     e.operation.channel.global_id if e.operation.channel else ""
                 )
         )
+        if verbose:
+            print("Pass 5: Final scheduled events:")
+            for event in sorted_events:
+                print(f"    Event: {event.operation.operation_type.name} at {event.timestamp_cycles}c (cost: {event.cost_cycles}c)")
         
         last_op_end_time = 0
         for event in sorted_events:

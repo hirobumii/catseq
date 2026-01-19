@@ -1228,6 +1228,9 @@ def _pass4_generate_oasm_calls(events_by_board: Dict[OASMAddress, List[LogicalEv
                 # a previous operation is still running. We don't wait, but the 
                 # actual start time of this event is pushed to when the board is free.
                 wait_cycles = 0
+                if verbose:
+                    print(f"{event.operation.operation_type.name} at {ts}c delayed due to prior operation. No wait added.")
+                    print(f"{event.timestamp_cycles=} {last_op_end_time=} {wait_cycles=}")
             
             if wait_cycles > 0:
                 board_calls.append(OASMCall(adr=adr, dsl_func=OASMFunction.WAIT, args=(wait_cycles,)))

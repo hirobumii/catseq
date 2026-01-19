@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 from .types import AtomicMorphism, Board, Channel, OperationType
+from .types.common import BlackBoxAtomicMorphism
 from .time_utils import cycles_to_us
 
 
@@ -65,6 +66,8 @@ class PhysicalLane:
 def merge_board_lanes(board: Board, board_lanes: Dict[Channel, Lane]) -> PhysicalLane:
     """将同一板卡的多个通道 Lane 合并为 PhysicalLane
     
+    对于涉及同一板卡多个通道的 blackbox 操作，只保留一个 LogicalEvent。
+    
     Args:
         board: 目标板卡
         board_lanes: 该板卡上的通道-Lane映射
@@ -87,4 +90,42 @@ def merge_board_lanes(board: Board, board_lanes: Dict[Channel, Lane]) -> Physica
     # 按时间戳排序
     physical_ops.sort(key=lambda pop: pop.timestamp_cycles)
     
-    return PhysicalLane(board, tuple(physical_ops))
+    # Deduplicate blackbox operations at the same timestamp
+    # Group operations by timestamp
+    ops_by_timestamp: Dict[int, List[PhysicalOperation]] = {}
+    for pop in physical_ops:
+        ts = pop.timestamp_cycles
+        if ts not in ops_by_timestamp:
+            ops_by_timestamp[ts] = []
+        ops_by_timestamp[ts].append(pop)
+    
+    # Deduplicate blackbox operations within each timestamp group
+    deduplicated_ops: List[PhysicalOperation] = []
+    for ts in sorted(ops_by_timestamp.keys()):
+        ts_ops = ops_by_timestamp[ts]
+        
+        # Separate blackbox and non-blackbox operations
+        blackbox_ops = [pop for pop in ts_ops if isinstance(pop.operation, BlackBoxAtomicMorphism)]
+        non_blackbox_ops = [pop for pop in ts_ops if not isinstance(pop.operation, BlackBoxAtomicMorphism)]
+        
+        # For blackbox operations, group by user_func and keep only one per unique function
+        if blackbox_ops:
+            seen_funcs = set()
+            unique_blackbox_ops = []
+            for pop in blackbox_ops:
+                func_id = id(pop.operation.user_func)
+                if func_id not in seen_funcs:
+                    seen_funcs.add(func_id)
+                    unique_blackbox_ops.append(pop)
+            
+            # Add deduplicated blackbox ops and all non-blackbox ops
+            deduplicated_ops.extend(non_blackbox_ops)
+            deduplicated_ops.extend(unique_blackbox_ops)
+        else:
+            # No blackbox operations, just add all ops
+            deduplicated_ops.extend(ts_ops)
+    
+    # Sort again to maintain timestamp order
+    deduplicated_ops.sort(key=lambda pop: pop.timestamp_cycles)
+    
+    return PhysicalLane(board, tuple(deduplicated_ops))

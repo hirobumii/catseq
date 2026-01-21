@@ -12,6 +12,7 @@ dependencies = [
     "scipy",
     "matplotlib>=3.10.6",
     "dataclasses-json",
+    "maturin>=1.11.5",
 ]
 
 [project.optional-dependencies]

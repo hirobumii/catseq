@@ -1,19 +1,22 @@
 """
-CatSeq Dialect - High-Level Morphism Abstraction
+CatSeq Dialect - High-Level Morphism Abstraction (Simplified)
 
 This dialect represents quantum control operations using Category Theory concepts:
 - Objects: System states (channel configurations)
-- Morphisms: State transformations (physical processes)
+- Morphisms: Time-bounded transformations on channels
 - Composition: Serial execution (@)
 - Tensor Product: Parallel execution (|)
 
-Design based on Monoidal Category Theory with strict verification rules.
+Design Philosophy:
+- catseq layer handles ONLY channels + duration
+- State tracking deferred to qctrl/rtmq lowering passes
+- Simplified type system for easier composition
 """
 
 from __future__ import annotations
 
 from typing import Sequence
-from xdsl.ir import Dialect, ParametrizedAttribute, Data, Operation, SSAValue
+from xdsl.ir import Dialect, ParametrizedAttribute, Attribute, SSAValue
 from xdsl.irdl import (
     irdl_attr_definition,
     irdl_op_definition,
@@ -21,19 +24,14 @@ from xdsl.irdl import (
     param_def,
     operand_def,
     result_def,
-    region_def,
     attr_def,
-    VarOperand,
 )
 from xdsl.dialects.builtin import (
     IntegerAttr,
     StringAttr,
-    DictionaryAttr,
     ArrayAttr,
     IntegerType,
 )
-from xdsl.parser import Parser
-from xdsl.printer import Printer
 
 
 # ============================================================================
@@ -44,32 +42,32 @@ from xdsl.printer import Printer
 @irdl_attr_definition
 class ChannelType(ParametrizedAttribute):
     """Physical channel identification.
-    
+
     Syntax: !catseq.channel<board_type, board_id, local_id, channel_type>
-    
+
     Examples:
         !catseq.channel<"rwg", 0, 0, "ttl">    // RWG_0, TTL channel 0
         !catseq.channel<"rwg", 1, 2, "rwg">    // RWG_1, RWG channel 2
         !catseq.channel<"main", 0, 5, "ttl">   // MAIN, TTL channel 5
-    
+
     Board Types:
         - "rwg" : Radio Wave Generator boards
         - "main" : Main control board
         - "rsp" : Real-time Signal Processor boards
-    
+
     Channel Types:
         - "ttl" : TTL (Transistor-Transistor Logic) channel
         - "rwg" : RWG waveform generation channel
         - "rsp" : RSP signal processing channel
     """
-    
+
     name = "catseq.channel"
-    
+
     board_type: StringAttr = param_def(StringAttr)
     board_id: IntegerAttr = param_def(IntegerAttr)
     local_id: IntegerAttr = param_def(IntegerAttr)
     channel_type: StringAttr = param_def(StringAttr)
-    
+
     def __init__(
         self,
         board_type: str | StringAttr,
@@ -85,28 +83,28 @@ class ChannelType(ParametrizedAttribute):
             local_id = IntegerAttr(local_id, IntegerType(32))
         if isinstance(channel_type, str):
             channel_type = StringAttr(channel_type)
-        
+
         super().__init__(board_type, board_id, local_id, channel_type)
-    
+
     def get_board_type(self) -> str:
         """Get board type as string."""
         return self.board_type.data
-    
+
     def get_board_id(self) -> int:
         """Get board ID as integer."""
         return self.board_id.value.data
-    
+
     def get_local_id(self) -> int:
         """Get local channel ID as integer."""
         return self.local_id.value.data
-    
+
     def get_channel_type(self) -> str:
         """Get channel type as string."""
         return self.channel_type.data
-    
+
     def get_global_id(self) -> str:
         """Get global channel identifier.
-        
+
         Format: "{BOARD_TYPE}_{BOARD_ID}_{CHANNEL_TYPE}_{LOCAL_ID}"
         Example: "RWG_0_TTL_0"
         """
@@ -115,7 +113,7 @@ class ChannelType(ParametrizedAttribute):
         channel_type = self.get_channel_type().upper()
         local_id = self.get_local_id()
         return f"{board_type}_{board_id}_{channel_type}_{local_id}"
-    
+
     def __eq__(self, other: object) -> bool:
         """Channel equality based on all four components."""
         if not isinstance(other, ChannelType):
@@ -126,7 +124,7 @@ class ChannelType(ParametrizedAttribute):
             and self.local_id == other.local_id
             and self.channel_type == other.channel_type
         )
-    
+
     def __hash__(self) -> int:
         return hash((
             self.board_type,
@@ -137,141 +135,100 @@ class ChannelType(ParametrizedAttribute):
 
 
 @irdl_attr_definition
-class StateType(ParametrizedAttribute):
-    """Channel state at a specific time.
-    
-    Syntax: !catseq.state<channel, state_data>
-    
-    Examples:
-        // TTL OFF state
-        !catseq.state<
-            !catseq.channel<"rwg", 0, 0, "ttl">,
-            {value = 0 : i32}
-        >
-        
-        // TTL ON state
-        !catseq.state<
-            !catseq.channel<"rwg", 0, 0, "ttl">,
-            {value = 1 : i32}
-        >
-        
-        // RWG waveform state
-        !catseq.state<
-            !catseq.channel<"rwg", 0, 0, "rwg">,
-            {
-                frequency = 100.0 : f64,
-                amplitude = 0.5 : f64,
-                phase = 0.0 : f64
-            }
-        >
-    
-    State Data Schemas:
-        TTL: {value: 0 or 1}
-        RWG: {frequency, amplitude, phase}
-        RSP: {threshold, gain}
-    """
-    
-    name = "catseq.state"
-    
-    channel: ChannelType = param_def(ChannelType)
-    state_data: DictionaryAttr = param_def(DictionaryAttr)
-    
-    def __init__(
-        self,
-        channel: ChannelType,
-        state_data: DictionaryAttr | dict,
-    ):
-        if isinstance(state_data, dict):
-            # Convert dict to DictionaryAttr
-            state_data = DictionaryAttr(state_data)
-        
-        super().__init__(channel, state_data)
-    
-    def get_channel(self) -> ChannelType:
-        """Get the channel this state refers to."""
-        return self.channel
-    
-    def get_state_data(self) -> DictionaryAttr:
-        """Get the state data dictionary."""
-        return self.state_data
-    
-    def __eq__(self, other: object) -> bool:
-        """State equality requires same channel and same state data."""
-        if not isinstance(other, StateType):
-            return False
-        return (
-            self.channel == other.channel
-            and self.state_data == other.state_data
-        )
-    
-    def __hash__(self) -> int:
-        return hash((self.channel, self.state_data))
-
-
-@irdl_attr_definition
 class MorphismType(ParametrizedAttribute):
-    """State transformation (morphism in Category Theory).
-    
-    Syntax: !catseq.morphism<domain, codomain, duration>
-    
+    """Time-bounded transformation on a channel (simplified).
+
+    Syntax: !catseq.morphism<channel, duration>
+
     Examples:
-        // TTL pulse: OFF → ON, 1 cycle (4ns @ 250MHz)
+        // TTL operation on channel 0, 1 cycle (4ns @ 250MHz)
         !catseq.morphism<
-            !catseq.state<!catseq.channel<"rwg", 0, 0, "ttl">, {value = 0}>,
-            !catseq.state<!catseq.channel<"rwg", 0, 0, "ttl">, {value = 1}>,
+            !catseq.channel<"rwg", 0, 0, "ttl">,
             1
         >
-        
-        // Wait: ON → ON, 2500 cycles (10μs)
+
+        // Wait operation, 2500 cycles (10μs)
         !catseq.morphism<
-            !catseq.state<!catseq.channel<"rwg", 0, 0, "ttl">, {value = 1}>,
-            !catseq.state<!catseq.channel<"rwg", 0, 0, "ttl">, {value = 1}>,
+            !catseq.channel<"rwg", 0, 0, "ttl">,
             2500
         >
-    
+
+    Design Note:
+        This simplified model removes state tracking from catseq layer.
+        States are inferred during catseq → qctrl lowering.
+
     Time Unit: Clock cycles (250 MHz = 4ns per cycle)
     Conversion: 1μs = 250 cycles
     """
-    
+
     name = "catseq.morphism"
-    
-    domain: StateType = param_def(StateType)
-    codomain: StateType = param_def(StateType)
+
+    channel: ChannelType = param_def(ChannelType)
     duration: IntegerAttr = param_def(IntegerAttr)
-    
+
     def __init__(
         self,
-        domain: StateType,
-        codomain: StateType,
+        channel: ChannelType,
         duration: int | IntegerAttr,
     ):
         if isinstance(duration, int):
             duration = IntegerAttr(duration, IntegerType(64))
-        
-        super().__init__(domain, codomain, duration)
-    
-    def get_domain(self) -> StateType:
-        """Get input state."""
-        return self.domain
-    
-    def get_codomain(self) -> StateType:
-        """Get output state."""
-        return self.codomain
-    
+
+        super().__init__(channel, duration)
+
+    def get_channel(self) -> ChannelType:
+        """Get the channel this morphism operates on."""
+        return self.channel
+
     def get_duration(self) -> int:
         """Get duration in clock cycles."""
         return self.duration.value.data
-    
-    def get_channel(self) -> ChannelType:
-        """Get the channel this morphism operates on.
-        
-        Note: domain and codomain must have same channel (enforced by verification).
-        """
-        return self.domain.get_channel()
-    
-    def verify_state_continuity(self) -> bool:
-        """Verify domain and codomain refer to same channel."""
-        return self.domain.get_channel() == self.codomain.get_channel()
+
+
+@irdl_attr_definition
+class CompositeMorphismType(ParametrizedAttribute):
+    """Multi-channel morphism (result of tensor product).
+
+    Syntax: !catseq.composite<[morphism1, morphism2, ...]>
+
+    Examples:
+        // Parallel operations on two channels
+        !catseq.composite<[
+            !catseq.morphism<!catseq.channel<"rwg", 0, 0, "ttl">, 100>,
+            !catseq.morphism<!catseq.channel<"rwg", 0, 1, "ttl">, 200>
+        ]>
+
+    Design Note:
+        This type represents the result of tensor product (|).
+        All morphisms in the list must have disjoint channels.
+        Duration is the maximum of all component durations (with auto-padding).
+    """
+
+    name = "catseq.composite"
+
+    morphisms: ArrayAttr = param_def(ArrayAttr)
+
+    def __init__(self, morphisms: list[MorphismType] | ArrayAttr):
+        if isinstance(morphisms, list):
+            morphisms = ArrayAttr(morphisms)
+
+        super().__init__(morphisms)
+
+    def get_morphisms(self) -> list[MorphismType]:
+        """Get list of component morphisms."""
+        return [m for m in self.morphisms.data]
+
+    def get_channels(self) -> set[ChannelType]:
+        """Get all channels involved in this composite morphism."""
+        channels = set()
+        for m in self.get_morphisms():
+            assert isinstance(m, MorphismType)
+            channels.add(m.get_channel())
+        return channels
+
+    def get_duration(self) -> int:
+        """Get total duration (max of all component durations)."""
+        return max(m.get_duration() for m in self.get_morphisms())
 
 
 # ============================================================================
@@ -282,175 +239,251 @@ class MorphismType(ParametrizedAttribute):
 @irdl_op_definition
 class ComposOp(IRDLOperation):
     """Serial composition of morphisms (@).
-    
-    Syntax: %result = catseq.compos %lhs, %rhs : !catseq.morphism<...>
-    
+
+    Syntax: %result = catseq.compos %lhs, %rhs
+
     Category Theory: Function composition (g ∘ f)
-    Verification: lhs.codomain must equal rhs.domain (state continuity)
+    Verification: Channels must be compatible
+        - For simple morphisms: lhs.channel == rhs.channel
+        - For composite morphisms: lhs.channels == rhs.channels
     Duration: lhs.duration + rhs.duration
-    
+
+    Supports:
+        - MorphismType @ MorphismType → MorphismType
+        - CompositeMorphismType @ CompositeMorphismType → CompositeMorphismType
+
     Example:
-        // ttl_on @ wait @ ttl_off
+        // Simple: ttl_on @ wait @ ttl_off (all on same channel)
         %on = catseq.atomic<"ttl_on"> ...
         %wait = catseq.identity ...
         %off = catseq.atomic<"ttl_off"> ...
         %seq1 = catseq.compos %on, %wait
         %pulse = catseq.compos %seq1, %off
+
+        // Composite: (A | B) @ (C | D) where A,C on ch0 and B,D on ch1
+        %parallel1 = catseq.tensor %A, %B
+        %parallel2 = catseq.tensor %C, %D
+        %sequence = catseq.compos %parallel1, %parallel2
     """
-    
+
     name = "catseq.compos"
-    
-    lhs = operand_def(MorphismType)
-    rhs = operand_def(MorphismType)
-    result = result_def(MorphismType)
-    
+
+    lhs = operand_def(MorphismType | CompositeMorphismType)
+    rhs = operand_def(MorphismType | CompositeMorphismType)
+    result = result_def(MorphismType | CompositeMorphismType)
+
     def __init__(self, lhs: SSAValue, rhs: SSAValue):
-        # Extract types
         lhs_type = lhs.type
         rhs_type = rhs.type
-        
-        assert isinstance(lhs_type, MorphismType)
-        assert isinstance(rhs_type, MorphismType)
-        
-        # Result: domain of lhs, codomain of rhs, sum of durations
-        result_type = MorphismType(
-            domain=lhs_type.get_domain(),
-            codomain=rhs_type.get_codomain(),
-            duration=lhs_type.get_duration() + rhs_type.get_duration(),
-        )
-        
+
+        # Case 1: Both are simple morphisms
+        if isinstance(lhs_type, MorphismType) and isinstance(rhs_type, MorphismType):
+            result_type = MorphismType(
+                channel=lhs_type.get_channel(),
+                duration=lhs_type.get_duration() + rhs_type.get_duration(),
+            )
+
+        # Case 2: Both are composite morphisms
+        elif isinstance(lhs_type, CompositeMorphismType) and isinstance(rhs_type, CompositeMorphismType):
+            # Compose each morphism pairwise (assuming channel alignment)
+            lhs_morphisms = lhs_type.get_morphisms()
+            rhs_morphisms = rhs_type.get_morphisms()
+
+            # Create new morphisms with combined durations
+            new_morphisms = []
+            for lhs_m in lhs_morphisms:
+                # Find corresponding rhs morphism with same channel
+                matching_rhs = None
+                for rhs_m in rhs_morphisms:
+                    if lhs_m.get_channel() == rhs_m.get_channel():
+                        matching_rhs = rhs_m
+                        break
+
+                if matching_rhs is None:
+                    raise ValueError(f"No matching channel in rhs for {lhs_m.get_channel().get_global_id()}")
+
+                # Compose: same channel, sum durations
+                new_morphisms.append(MorphismType(
+                    channel=lhs_m.get_channel(),
+                    duration=lhs_m.get_duration() + matching_rhs.get_duration(),
+                ))
+
+            result_type = CompositeMorphismType(new_morphisms)
+
+        # Case 3: Mixed types (not supported yet)
+        else:
+            raise ValueError(
+                f"ComposOp requires both operands to be of same type "
+                f"(both MorphismType or both CompositeMorphismType)"
+            )
+
         super().__init__(
             operands=[lhs, rhs],
             result_types=[result_type],
         )
-    
+
     def verify_(self) -> None:
-        """Verify state continuity: lhs.codomain == rhs.domain."""
+        """Verify channel compatibility."""
         lhs_type = self.lhs.type
         rhs_type = self.rhs.type
-        
-        assert isinstance(lhs_type, MorphismType)
-        assert isinstance(rhs_type, MorphismType)
-        
-        if lhs_type.get_codomain() != rhs_type.get_domain():
+
+        # Case 1: Both simple morphisms
+        if isinstance(lhs_type, MorphismType) and isinstance(rhs_type, MorphismType):
+            if lhs_type.get_channel() != rhs_type.get_channel():
+                raise ValueError(
+                    f"Composition requires same channel: "
+                    f"lhs.channel = {lhs_type.get_channel().get_global_id()}, "
+                    f"rhs.channel = {rhs_type.get_channel().get_global_id()}"
+                )
+
+        # Case 2: Both composite morphisms
+        elif isinstance(lhs_type, CompositeMorphismType) and isinstance(rhs_type, CompositeMorphismType):
+            lhs_channels = lhs_type.get_channels()
+            rhs_channels = rhs_type.get_channels()
+
+            if lhs_channels != rhs_channels:
+                raise ValueError(
+                    f"Composition requires same channel sets: "
+                    f"lhs.channels = {[ch.get_global_id() for ch in lhs_channels]}, "
+                    f"rhs.channels = {[ch.get_global_id() for ch in rhs_channels]}"
+                )
+
+        # Case 3: Mixed types
+        else:
             raise ValueError(
-                f"Composition requires state continuity: "
-                f"lhs.codomain = {lhs_type.get_codomain()}, "
-                f"rhs.domain = {rhs_type.get_domain()}"
+                f"ComposOp requires both operands to be of same type"
             )
 
 
 @irdl_op_definition
 class TensorOp(IRDLOperation):
     """Parallel composition of morphisms (|).
-    
-    Syntax: %result = catseq.tensor %lhs, %rhs : !catseq.morphism<...>
-    
+
+    Syntax: %result = catseq.tensor %lhs, %rhs
+
     Category Theory: Tensor product (f ⊗ g)
-    Verification: Channels must be disjoint (no overlap)
-    Duration: max(lhs.duration, rhs.duration) with automatic identity padding
-    
+    Verification: All channels must be disjoint (no overlap)
+    Duration: max(all morphism durations) with automatic identity padding
+
+    Supports:
+        - MorphismType | MorphismType → CompositeMorphismType
+        - MorphismType | CompositeMorphismType → CompositeMorphismType
+        - CompositeMorphismType | MorphismType → CompositeMorphismType
+        - CompositeMorphismType | CompositeMorphismType → CompositeMorphismType
+
     Example:
-        // pulse1 | pulse2 (different channels)
+        // Simple: pulse1 | pulse2 (different channels)
         %pulse1 = ... // channel 0
         %pulse2 = ... // channel 1
         %parallel = catseq.tensor %pulse1, %pulse2
+
+        // Recursive: (A | B) | C
+        %parallel_ab = catseq.tensor %A, %B
+        %parallel_abc = catseq.tensor %parallel_ab, %C
     """
-    
+
     name = "catseq.tensor"
-    
-    lhs = operand_def(MorphismType)
-    rhs = operand_def(MorphismType)
-    result = result_def(MorphismType)
-    
+
+    lhs = operand_def(MorphismType | CompositeMorphismType)
+    rhs = operand_def(MorphismType | CompositeMorphismType)
+    result = result_def(CompositeMorphismType)
+
     def __init__(self, lhs: SSAValue, rhs: SSAValue):
-        # For tensor product, we create a composite morphism type
-        # This is a simplified representation; full implementation would
-        # need a CompositeMorphismType or similar
-        
         lhs_type = lhs.type
         rhs_type = rhs.type
-        
-        assert isinstance(lhs_type, MorphismType)
-        assert isinstance(rhs_type, MorphismType)
-        
-        # For now, use a placeholder result type
-        # In full implementation, this would be a product type
-        max_duration = max(lhs_type.get_duration(), rhs_type.get_duration())
-        
-        # Use lhs domain/codomain as placeholder
-        result_type = MorphismType(
-            domain=lhs_type.get_domain(),
-            codomain=lhs_type.get_codomain(),
-            duration=max_duration,
-        )
-        
+
+        # Collect all morphisms from both operands
+        all_morphisms = []
+
+        # Extract morphisms from lhs
+        if isinstance(lhs_type, MorphismType):
+            all_morphisms.append(lhs_type)
+        elif isinstance(lhs_type, CompositeMorphismType):
+            all_morphisms.extend(lhs_type.get_morphisms())
+        else:
+            raise TypeError(f"Unexpected lhs type: {type(lhs_type)}")
+
+        # Extract morphisms from rhs
+        if isinstance(rhs_type, MorphismType):
+            all_morphisms.append(rhs_type)
+        elif isinstance(rhs_type, CompositeMorphismType):
+            all_morphisms.extend(rhs_type.get_morphisms())
+        else:
+            raise TypeError(f"Unexpected rhs type: {type(rhs_type)}")
+
+        # Create composite morphism with all morphisms
+        result_type = CompositeMorphismType(all_morphisms)
+
         super().__init__(
             operands=[lhs, rhs],
             result_types=[result_type],
         )
-    
+
     def verify_(self) -> None:
-        """Verify channels are disjoint (no tensor product with self)."""
+        """Verify all channels are disjoint (no tensor product with self)."""
         lhs_type = self.lhs.type
         rhs_type = self.rhs.type
-        
-        assert isinstance(lhs_type, MorphismType)
-        assert isinstance(rhs_type, MorphismType)
-        
-        lhs_channel = lhs_type.get_channel()
-        rhs_channel = rhs_type.get_channel()
-        
-        if lhs_channel == rhs_channel:
+
+        # Collect all channels from lhs
+        lhs_channels = set()
+        if isinstance(lhs_type, MorphismType):
+            lhs_channels.add(lhs_type.get_channel())
+        elif isinstance(lhs_type, CompositeMorphismType):
+            lhs_channels = lhs_type.get_channels()
+
+        # Collect all channels from rhs
+        rhs_channels = set()
+        if isinstance(rhs_type, MorphismType):
+            rhs_channels.add(rhs_type.get_channel())
+        elif isinstance(rhs_type, CompositeMorphismType):
+            rhs_channels = rhs_type.get_channels()
+
+        # Check for intersection
+        intersection = lhs_channels & rhs_channels
+        if intersection:
             raise ValueError(
                 f"Tensor product requires disjoint channels, "
-                f"but both operands use {lhs_channel.get_global_id()}"
+                f"but found overlapping channels: {[ch.get_global_id() for ch in intersection]}"
             )
 
 
 @irdl_op_definition
 class IdentityOp(IRDLOperation):
     """Identity morphism (wait/hold).
-    
+
     Syntax: %result = catseq.identity %channel {duration = N} : !catseq.morphism<...>
-    
+
     Category Theory: Identity morphism (id_A)
     Semantics: Maintain current state for specified duration
-    
+
     Example:
-        // wait(10μs) = 2500 cycles
-        %ch = ... // channel
-        %state = ... // current state
-        %wait = catseq.identity %channel {duration = 2500} : ...
+        // wait(10μs) = 2500 cycles on channel 0
+        %ch = !catseq.channel<"rwg", 0, 0, "ttl">
+        %wait = catseq.identity %channel {duration = 2500}
     """
-    
+
     name = "catseq.identity"
-    
+
     channel = attr_def(ChannelType)
-    state = attr_def(StateType)
     duration = attr_def(IntegerAttr)
     result = result_def(MorphismType)
-    
+
     def __init__(
         self,
         channel: ChannelType,
-        state: StateType,
         duration: int | IntegerAttr,
     ):
         if isinstance(duration, int):
             duration = IntegerAttr(duration, IntegerType(64))
-        
-        # Identity: domain == codomain
+
         result_type = MorphismType(
-            domain=state,
-            codomain=state,
+            channel=channel,
             duration=duration,
         )
-        
+
         super().__init__(
             attributes={
                 "channel": channel,
-                "state": state,
                 "duration": duration,
             },
             result_types=[result_type],
@@ -460,68 +493,60 @@ class IdentityOp(IRDLOperation):
 @irdl_op_definition
 class AtomicOp(IRDLOperation):
     """Atomic operation (ttl_on, ttl_off, rwg_load, etc.).
-    
-    Syntax: %result = catseq.atomic<"op_name"> %channel {params = {...}} : !catseq.morphism<...>
-    
+
+    Syntax: %result = catseq.atomic<"op_name"> %channel {duration = N, params = <attr>}
+
     Atomic Operations:
-        - "ttl_init" : Initialize TTL channel (any → OFF)
-        - "ttl_on" : Turn on TTL (OFF → ON)
-        - "ttl_off" : Turn off TTL (ON → OFF)
+        - "ttl_init" : Initialize TTL channel
+        - "ttl_on" : Turn on TTL
+        - "ttl_off" : Turn off TTL
         - "rwg_load" : Load RWG waveform
         - "rwg_play" : Play RWG waveform
-    
+
     Example:
         // ttl_on(channel_0)
-        %ch = ... // !catseq.channel<"rwg", 0, 0, "ttl">
-        %off_state = ... // {value = 0}
-        %on_state = ... // {value = 1}
+        %ch = !catseq.channel<"rwg", 0, 0, "ttl">
         %ttl_on = catseq.atomic<"ttl_on"> %channel {
-            domain = %off_state,
-            codomain = %on_state,
-            duration = 1
-        } : !catseq.morphism<...>
+            duration = 1,
+            params = #catseq.ttl_state<...>
+        }
+
+    Note: params now accepts any Attribute type, enabling strong typing
+          (e.g., StaticWaveformAttr, TTLStateAttr, etc.)
     """
-    
+
     name = "catseq.atomic"
-    
+
     op_name = attr_def(StringAttr)
     channel = attr_def(ChannelType)
-    domain = attr_def(StateType)
-    codomain = attr_def(StateType)
     duration = attr_def(IntegerAttr)
-    params = attr_def(DictionaryAttr)
+    params = attr_def(Attribute)
     result = result_def(MorphismType)
-    
+
     def __init__(
         self,
         op_name: str | StringAttr,
         channel: ChannelType,
-        domain: StateType,
-        codomain: StateType,
         duration: int | IntegerAttr,
-        params: dict | DictionaryAttr | None = None,
+        params: Attribute | None = None,
     ):
         if isinstance(op_name, str):
             op_name = StringAttr(op_name)
         if isinstance(duration, int):
             duration = IntegerAttr(duration, IntegerType(64))
         if params is None:
-            params = DictionaryAttr({})
-        elif isinstance(params, dict):
-            params = DictionaryAttr(params)
-        
+            # Use empty string as default (xDSL requires an attribute)
+            params = StringAttr("")
+
         result_type = MorphismType(
-            domain=domain,
-            codomain=codomain,
+            channel=channel,
             duration=duration,
         )
-        
+
         super().__init__(
             attributes={
                 "op_name": op_name,
                 "channel": channel,
-                "domain": domain,
-                "codomain": codomain,
                 "duration": duration,
                 "params": params,
             },
@@ -536,18 +561,18 @@ class AtomicOp(IRDLOperation):
 
 class CatseqDialect(Dialect):
     """CatSeq dialect for high-level morphism abstractions."""
-    
+
     name = "catseq"
-    
+
     operations = frozenset([
         ComposOp,
         TensorOp,
         IdentityOp,
         AtomicOp,
     ])
-    
+
     attributes = frozenset([
         ChannelType,
-        StateType,
         MorphismType,
+        CompositeMorphismType,
     ])

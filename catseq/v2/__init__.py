@@ -18,8 +18,8 @@ __version__ = "0.3.0-dev"
 from .dialects.catseq_dialect import (
     CatseqDialect,
     ChannelType,
-    StateType,
     MorphismType,
+    CompositeMorphismType,
     ComposOp,
     TensorOp,
     IdentityOp,
@@ -50,8 +50,8 @@ __all__ = [
     "CatseqDialect",
     # Types
     "ChannelType",
-    "StateType",
     "MorphismType",
+    "CompositeMorphismType",
     # Operations
     "ComposOp",
     "TensorOp",

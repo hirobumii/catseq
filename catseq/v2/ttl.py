@@ -115,7 +115,8 @@ def ttl_off() -> OpenMorphism:
             raise TypeError(f"ttl_off() 需要 TTLOn 状态，得到 {type(state).__name__}")
 
         channel_id = encode_channel_id(channel)
-        node = ctx.atomic(channel_id, 1, OpCode.TTL_OFF, b"")
+        # duration = 0：瞬时操作
+        node = ctx.atomic(channel_id, 0, OpCode.TTL_OFF, b"")
 
         return Morphism(node.node_id, TTLOff())
 
@@ -164,7 +165,8 @@ def ttl_init() -> OpenMorphism:
         state: HardwareState,
     ) -> Morphism:
         channel_id = encode_channel_id(channel)
-        node = ctx.atomic(channel_id, 1, OpCode.TTL_INIT, b"")
+        # duration = 0：瞬时操作
+        node = ctx.atomic(channel_id, 0, OpCode.TTL_INIT, b"")
 
         return Morphism(node.node_id, TTLOff())
 

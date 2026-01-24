@@ -92,9 +92,10 @@ def test_compile_via_node():
     ctx = catseq_rs.CompilerContext()
 
     # 直接创建节点
-    n1 = ctx.atomic(0, 1, OpCode.TTL_ON, b"")
+    # ttl_on/ttl_off 是瞬时操作 (duration=0)
+    n1 = ctx.atomic(0, 0, OpCode.TTL_ON, b"")
     n2 = ctx.atomic(0, 2500, OpCode.IDENTITY, b"")
-    n3 = ctx.atomic(0, 1, OpCode.TTL_OFF, b"")
+    n3 = ctx.atomic(0, 0, OpCode.TTL_OFF, b"")
 
     # 组合
     seq = n1 @ n2 @ n3
@@ -104,11 +105,11 @@ def test_compile_via_node():
 
     assert len(events) == 3
     # events 格式: [(time, channel_id, opcode, data), ...]
-    assert events[0][0] == 0      # time = 0
+    assert events[0][0] == 0      # time = 0 (ttl_on, 瞬时)
     assert events[0][2] == OpCode.TTL_ON
-    assert events[1][0] == 1      # time = 1 (after ttl_on)
+    assert events[1][0] == 0      # time = 0 (wait 开始，ttl_on 是瞬时的)
     assert events[1][2] == OpCode.IDENTITY
-    assert events[2][0] == 2501   # time = 1 + 2500
+    assert events[2][0] == 2500   # time = 0 + 2500 (ttl_off)
     assert events[2][2] == OpCode.TTL_OFF
 
 
@@ -132,6 +133,43 @@ def test_opcode_values():
     assert OpCode.TTL_ON == 0x0101
     assert OpCode.TTL_OFF == 0x0102
     assert OpCode.IDENTITY == 0x0000
+
+
+def test_parallel_operator_raises_error():
+    """验证 | 操作符正确报错"""
+    pulse1 = ttl_pulse(10*us)
+    pulse2 = ttl_pulse(20*us)
+
+    try:
+        _ = pulse1 | pulse2
+        assert False, "应该抛出 TypeError"
+    except TypeError as e:
+        assert "parallel()" in str(e)
+
+
+def test_parallel_multi_channel():
+    """测试多通道并行组合"""
+    from catseq.v2.open_morphism import parallel
+
+    ctx = catseq_rs.CompilerContext()
+    ch0 = Channel(Board("RWG_0"), 0, ChannelType.TTL)
+    ch1 = Channel(Board("RWG_0"), 1, ChannelType.TTL)
+
+    # 创建两个通道的脉冲
+    pulse0 = ttl_init() >> ttl_on() >> wait(10*us) >> ttl_off()
+    pulse1 = ttl_init() >> ttl_on() >> wait(20*us) >> ttl_off()
+
+    # 并行组合
+    combined = parallel({ch0: pulse0, ch1: pulse1})
+
+    # 物化
+    result = combined(ctx, {ch0: TTLOff(), ch1: TTLOff()})
+
+    # 验证结果
+    assert ch0 in result.end_states
+    assert ch1 in result.end_states
+    assert isinstance(result.end_states[ch0], TTLOff)
+    assert isinstance(result.end_states[ch1], TTLOff)
 
 
 if __name__ == "__main__":

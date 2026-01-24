@@ -156,46 +156,26 @@ class OpenMorphism:
         )
 
     def __or__(self, other: OpenMorphism) -> OpenMorphism:
-        """并行组合
+        """并行组合（不支持）
 
-        语法: par = op1 | op2
+        OpenMorphism 是单通道操作，不支持 | 操作符。
+        请使用 parallel() 进行多通道并行组合：
 
-        语义:
-            op1(s0) -> Morphism(n1, s1)
-            op2(s0) -> Morphism(n2, s2)  # 都从 s0 开始
-            return Morphism(parallel(n1, n2), merge(s1, s2))
+            from catseq.v2.open_morphism import parallel
 
-        注意: 对于单通道操作，这通常用于不同通道。
+            combined = parallel({
+                ch0: ttl_pulse(10*us),
+                ch1: ttl_pulse(20*us),
+            })
+
+        Raises:
+            TypeError: 始终抛出，引导用户使用 parallel()
         """
-        left = self
-        right = other
-
-        def parallel_kleisli(
-            ctx: catseq_rs.CompilerContext,
-            channel: Channel,
-            s0: HardwareState,
-        ) -> Morphism:
-            # 两个分支都从相同状态开始
-            m1 = left._kleisli(ctx, channel, s0)
-            m2 = right._kleisli(ctx, channel, s0)
-
-            # 状态合并：相同类型时使用右侧状态
-            if type(m1.end_state) == type(m2.end_state):
-                s_final = m2.end_state
-            else:
-                raise TypeError(
-                    f"并行组合产生了不兼容的状态: "
-                    f"{type(m1.end_state).__name__} vs {type(m2.end_state).__name__}"
-                )
-
-            # 在 Rust 中并行组合
-            combined_id = ctx.parallel_compose(m1.node_id, m2.node_id)
-
-            return Morphism(combined_id, s_final)
-
-        return OpenMorphism(
-            parallel_kleisli,
-            name=f"({left.name} | {right.name})"
+        raise TypeError(
+            f"OpenMorphism 不支持 | 操作符（单通道无法并行）。\n"
+            f"请使用 parallel() 进行多通道并行组合：\n"
+            f"    from catseq.v2.open_morphism import parallel\n"
+            f"    combined = parallel({{ch0: {self.name}, ch1: {other.name}}})"
         )
 
     def __repr__(self) -> str:

@@ -24,10 +24,13 @@ class Channel:
     board: Board
     local_id: int
     channel_type: ChannelType
+    latency_cycles: int = 0  # 硬件触发延迟 (cycles)
 
     def __post_init__(self):
         if self.local_id < 0:
             raise ValueError(f"Channel local_id must be non-negative, got {self.local_id}")
+        if self.latency_cycles < 0:
+            raise ValueError(f"Channel latency_cycles must be non-negative, got {self.latency_cycles}")
 
     @property
     def global_id(self) -> str:

@@ -10,10 +10,13 @@ V2 架构变更：
 
 from typing import Dict, List, Tuple, Optional, Union
 import catseq_rs
-from catseq_rs import CompilerContext as RustContext, Node as RustNode
+from catseq_rs import CompilerContext as RustContext, Node as RustNode, ProgramArena
 from catseq.types.common import Channel, ChannelType
 from catseq.v2.opcodes import OpCode
 
+# 类型别名，增强代码可读性
+NodeId = int
+ValueId = int
 
 def pack_channel_id(channel: Channel) -> int:
     """将 Channel 打包为 u32
@@ -132,3 +135,124 @@ class RustMorphism:
 
     def __repr__(self) -> str:
         return f"<RustMorphism duration={self.total_duration_cycles}>"
+
+
+class RustProgram:
+    """Rust-backed Program Arena Wrapper
+
+    Provides Pythonic access to the ProgramArena (Control Flow Layer).
+    """
+
+    def __init__(self, capacity_nodes: int = 1024, capacity_values: int = 1024):
+        self._arena = ProgramArena.with_capacity(capacity_nodes, capacity_values)
+
+    @property
+    def node_count(self) -> int:
+        return self._arena.node_count()
+
+    @property
+    def value_count(self) -> int:
+        return self._arena.value_count()
+
+    @property
+    def var_count(self) -> int:
+        return self._arena.var_count()
+
+    def clear(self) -> None:
+        self._arena.clear()
+
+    # --- Value Creation ---
+
+    def literal(self, value: int) -> ValueId:
+        """创建整数字面量"""
+        return self._arena.literal(value)
+
+    def literal_float(self, value: float) -> ValueId:
+        """创建浮点数字面量"""
+        return self._arena.literal_float(value)
+
+    def variable(self, name: str, type_hint: str = "int32") -> ValueId:
+        """创建或获取变量"""
+        return self._arena.variable(name, type_hint)
+
+    def binary_expr(self, lhs: ValueId, op: str, rhs: ValueId) -> ValueId:
+        """创建二元表达式 (lhs op rhs)"""
+        return self._arena.binary_expr(lhs, op, rhs)
+
+    def unary_expr(self, op: str, operand: ValueId) -> ValueId:
+        """创建一元表达式 (op operand)"""
+        return self._arena.unary_expr(op, operand)
+
+    def condition(self, lhs: ValueId, op: str, rhs: ValueId) -> ValueId:
+        """创建条件表达式 (lhs op rhs)"""
+        return self._arena.condition(lhs, op, rhs)
+
+    def logical_expr(self, lhs: ValueId, op: str, rhs: Optional[ValueId] = None) -> ValueId:
+        """创建逻辑表达式 (lhs op rhs)"""
+        return self._arena.logical_expr(lhs, op, rhs)
+
+    # --- Node Creation ---
+
+    def lift(self, morphism_ref: int, params: Dict[str, ValueId]) -> NodeId:
+        """将 Morphism 提升到 Program 层"""
+        return self._arena.lift(morphism_ref, params)
+
+    def delay(self, duration: ValueId, max_hint: Optional[int] = None) -> NodeId:
+        """创建延时节点"""
+        return self._arena.delay(duration, max_hint)
+
+    def set_var(self, target: ValueId, value: ValueId) -> NodeId:
+        """创建变量赋值节点"""
+        return self._arena.set_var(target, value)
+
+    def chain(self, left: NodeId, right: NodeId) -> NodeId:
+        """创建顺序组合节点"""
+        return self._arena.chain(left, right)
+
+    def loop_node(self, count: ValueId, body: NodeId) -> NodeId:
+        """创建循环节点"""
+        return self._arena.loop_(count, body)
+
+    def match_node(self, subject: ValueId, cases: Dict[int, NodeId], default: Optional[NodeId] = None) -> NodeId:
+        """创建模式匹配 (Switch) 节点"""
+        return self._arena.match_(subject, cases, default)
+
+    def apply(self, func: NodeId, args: List[ValueId]) -> NodeId:
+        """创建函数调用节点"""
+        return self._arena.apply(func, args)
+
+    def func_def(self, name: str, params: List[ValueId], body: NodeId) -> NodeId:
+        """创建函数定义节点"""
+        return self._arena.func_def(name, params, body)
+
+    def measure(self, target: ValueId, source: int) -> NodeId:
+        """创建测量节点"""
+        return self._arena.measure(target, source)
+
+    def identity(self) -> NodeId:
+        """创建 Identity 节点"""
+        return self._arena.identity()
+
+    def chain_sequence(self, nodes: List[NodeId]) -> Optional[NodeId]:
+        """批量顺序组合（自动构建平衡树）"""
+        return self._arena.chain_sequence(nodes)
+
+    # --- Queries ---
+
+    def is_literal(self, value_id: ValueId) -> bool:
+        return self._arena.is_literal(value_id)
+
+    def is_variable(self, value_id: ValueId) -> bool:
+        return self._arena.is_variable(value_id)
+
+    def get_literal_int(self, value_id: ValueId) -> Optional[int]:
+        return self._arena.get_literal_int(value_id)
+
+    def get_literal_float(self, value_id: ValueId) -> Optional[float]:
+        return self._arena.get_literal_float(value_id)
+
+    def get_variable_name(self, value_id: ValueId) -> Optional[str]:
+        return self._arena.get_variable_name(value_id)
+
+    def __repr__(self) -> str:
+        return f"<RustProgram nodes={self.node_count} values={self.value_count}>"

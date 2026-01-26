@@ -9,10 +9,14 @@ use std::cell::RefCell;
 mod arena;
 mod compiler;
 mod incremental;
+mod path;
+mod program;
 
 use arena::{ArenaContext, NodeId};
 use compiler::compile;
 use incremental::IncrementalCompiler;
+use path::{MorphismPath, PathIterator};
+use program::ProgramArena;
 
 /// Python 持有的编译器上下文
 ///
@@ -151,6 +155,78 @@ impl CompilerContext {
             .borrow_mut()
             .parallel(a, b)
             .map_err(|e| PyValueError::new_err(e))
+    }
+
+    /// 批量串行组合（构建平衡树）
+    ///
+    /// 将线性 NodeId 列表构建为平衡的 Sequential 树，
+    /// 避免右偏树导致的递归深度问题。
+    ///
+    /// Args:
+    ///     nodes: NodeId 列表
+    ///
+    /// Returns:
+    ///     int | None: 组合后的根节点 ID，空列表返回 None
+    fn compose_sequence(&self, nodes: Vec<u32>) -> Option<u32> {
+        self.arena.borrow_mut().compose_sequence(nodes)
+    }
+
+    /// 批量并行组合（构建平衡树）
+    ///
+    /// 将多个节点并行组合为平衡树。
+    /// 要求所有节点的通道互不相交。
+    ///
+    /// Args:
+    ///     nodes: NodeId 列表
+    ///
+    /// Returns:
+    ///     int | None: 组合后的根节点 ID
+    ///
+    /// Raises:
+    ///     ValueError: 如果任意两个节点的通道有交集
+    fn parallel_compose_many(&self, nodes: Vec<u32>) -> PyResult<Option<u32>> {
+        self.arena
+            .borrow_mut()
+            .compose_parallel(nodes)
+            .map_err(|e| PyValueError::new_err(e))
+    }
+
+    /// 创建原子操作并直接返回 NodeId
+    ///
+    /// 与 atomic() 类似，但直接返回 u32 而非 Node 对象。
+    /// 适用于只需要 NodeId 的场景（如 BoundMorphism replay）。
+    fn atomic_id(
+        &self,
+        channel_id: u32,
+        duration: u64,
+        opcode: u16,
+        data: Vec<u8>,
+    ) -> u32 {
+        self.arena.borrow_mut().atomic(channel_id, duration, opcode, data)
+    }
+
+    /// 编译指定节点为事件列表
+    ///
+    /// 直接通过 NodeId 编译，无需创建 Node 对象。
+    ///
+    /// Args:
+    ///     node_id: 要编译的节点 ID
+    ///
+    /// Returns:
+    ///     List[Tuple[int, int, int, bytes]]: [(time, channel_id, opcode, data), ...]
+    fn compile_graph(&self, node_id: u32) -> Vec<(u64, u32, u16, Vec<u8>)> {
+        let arena = self.arena.borrow();
+
+        let events = if let Some(inc) = self.incremental.borrow_mut().as_mut() {
+            inc.compile(&arena, node_id)
+        } else {
+            compile(&arena, node_id)
+        };
+
+        events
+            .into_iter()
+            .map(|e| (e.time, e.channel_id, e.opcode, (*e.data).clone()))
+            .collect()
     }
 
     /// 获取节点时长（通过 NodeId）
@@ -328,6 +404,9 @@ impl Node {
 fn catseq_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CompilerContext>()?;
     m.add_class::<Node>()?;
+    m.add_class::<MorphismPath>()?;
+    m.add_class::<PathIterator>()?;
+    m.add_class::<ProgramArena>()?;
     Ok(())
 }
 

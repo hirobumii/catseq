@@ -10,14 +10,17 @@
 - Kleisli: Callable[[CompilerContext, Channel, HardwareState], Morphism]
 
 使用示例：
-    >>> ctx = catseq_rs.CompilerContext()
+    >>> from catseq.v2.ttl import ttl_on, ttl_off, wait, TTLOff
+    >>> from catseq.types.common import Board, Channel, ChannelType
+    >>> from catseq.time_utils import us
+    >>>
     >>> ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
     >>>
     >>> # 定义 OpenMorphism（惰性）
     >>> pulse = ttl_on() >> wait(10*us) >> ttl_off()
     >>>
-    >>> # 物化（执行）
-    >>> result = pulse(ctx, ch, TTLOff())
+    >>> # 物化（使用全局 ctx）
+    >>> result = pulse(ch, TTLOff())
     >>> print(result.node_id, result.end_state)
 """
 
@@ -27,6 +30,7 @@ from abc import ABC, abstractmethod
 from typing import Callable, NamedTuple, TYPE_CHECKING
 
 from catseq.types.common import Channel
+from catseq.v2.context import get_context
 
 if TYPE_CHECKING:
     import catseq_rs
@@ -103,22 +107,24 @@ class OpenMorphism:
 
     def __call__(
         self,
-        ctx: catseq_rs.CompilerContext,
         channel: Channel,
         start_state: HardwareState,
+        ctx: catseq_rs.CompilerContext | None = None,
     ) -> Morphism:
         """物化 OpenMorphism
 
         执行内部的 Kleisli 函数，在 Rust Arena 中创建节点。
 
         Args:
-            ctx: Rust CompilerContext
             channel: 目标硬件通道
             start_state: 起始硬件状态
+            ctx: Rust CompilerContext（可选，默认使用全局上下文）
 
         Returns:
             Morphism(node_id, end_state)
         """
+        if ctx is None:
+            ctx = get_context()
         return self._kleisli(ctx, channel, start_state)
 
     def __rshift__(self, other: OpenMorphism) -> OpenMorphism:
@@ -224,24 +230,27 @@ class MultiChannelOpenMorphism:
 
     def __call__(
         self,
-        ctx: catseq_rs.CompilerContext,
         states: MultiChannelState,
+        ctx: catseq_rs.CompilerContext | None = None,
     ) -> MultiChannelMorphism:
         """物化多通道 OpenMorphism
 
         Args:
-            ctx: Rust CompilerContext
             states: 每个通道的起始状态
+            ctx: Rust CompilerContext（可选，默认使用全局上下文）
 
         Returns:
             MultiChannelMorphism(node_id, end_states)
         """
+        if ctx is None:
+            ctx = get_context()
+
         results: list[Morphism] = []
         end_states: MultiChannelState = {}
 
         for channel, op in self._ops.items():
             start_state = states[channel]
-            m = op(ctx, channel, start_state)
+            m = op(channel, start_state, ctx)  # 使用新的参数顺序
             results.append(m)
             end_states[channel] = m.end_state
 

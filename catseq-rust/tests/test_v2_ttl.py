@@ -19,72 +19,69 @@ from catseq.v2.ttl import (
     wait,
 )
 from catseq.v2.opcodes import OpCode
+from catseq.v2.context import get_context, reset_context
+from catseq.v2.open_morphism import parallel
 
 
 def test_ttl_on_basic():
     """测试基本的 ttl_on 操作"""
-    ctx = catseq_rs.CompilerContext()
+    reset_context()
     ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
 
     op = ttl_on()
-    result = op(ctx, ch, TTLOff())
+    result = op(ch, TTLOff())
 
     assert isinstance(result.end_state, TTLOn)
-    assert result.node_id == 0  # 第一个节点
+    assert result.node_id == 0
 
 
 def test_ttl_off_basic():
     """测试基本的 ttl_off 操作"""
-    ctx = catseq_rs.CompilerContext()
+    reset_context()
     ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
 
     op = ttl_off()
-    result = op(ctx, ch, TTLOn())
+    result = op(ch, TTLOn())
 
     assert isinstance(result.end_state, TTLOff)
 
 
 def test_ttl_sequence():
     """测试 TTL 序列组合"""
-    ctx = catseq_rs.CompilerContext()
+    reset_context()
     ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
 
     # ttl_on >> wait >> ttl_off
     seq = ttl_on() >> wait(10 * us) >> ttl_off()
-    result = seq(ctx, ch, TTLOff())
+    result = seq(ch, TTLOff())
 
     assert isinstance(result.end_state, TTLOff)
-
     # 验证节点数量：3 个原子 + 2 个组合
-    assert ctx.node_count() == 5
+    assert get_context().node_count() == 5
 
 
 def test_ttl_pulse():
     """测试 ttl_pulse 便捷函数"""
-    ctx = catseq_rs.CompilerContext()
+    reset_context()
     ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
 
     pulse = ttl_pulse(10 * us)
-    result = pulse(ctx, ch, TTLOff())
+    result = pulse(ch, TTLOff())
 
     assert isinstance(result.end_state, TTLOff)
 
 
 def test_compile_events():
     """测试编译输出"""
-    ctx = catseq_rs.CompilerContext()
+    reset_context()
     ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
 
     # 创建简单序列
     seq = ttl_on() >> wait(2500) >> ttl_off()  # 2500 cycles = 10us
-    result = seq(ctx, ch, TTLOff())
-
-    # 获取编译后的事件
-    node = ctx.atomic(0, 0, 0, b"")  # 创建虚拟节点来获取 Node 对象
-    # 实际上我们需要通过 Node 对象编译
+    result = seq(ch, TTLOff())
 
     # 直接检查 arena 内容
-    assert ctx.node_count() > 0
+    assert get_context().node_count() > 0
 
 
 def test_compile_via_node():
@@ -115,14 +112,14 @@ def test_compile_via_node():
 
 def test_state_type_checking():
     """测试状态类型检查"""
-    ctx = catseq_rs.CompilerContext()
+    reset_context()
     ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
 
     op = ttl_on()
 
     # 应该报错：ttl_on 需要 TTLOff 状态
     try:
-        op(ctx, ch, TTLOn())
+        op(ch, TTLOn())
         assert False, "应该抛出 TypeError"
     except TypeError as e:
         assert "TTLOff" in str(e)
@@ -149,9 +146,7 @@ def test_parallel_operator_raises_error():
 
 def test_parallel_multi_channel():
     """测试多通道并行组合"""
-    from catseq.v2.open_morphism import parallel
-
-    ctx = catseq_rs.CompilerContext()
+    reset_context()
     ch0 = Channel(Board("RWG_0"), 0, ChannelType.TTL)
     ch1 = Channel(Board("RWG_0"), 1, ChannelType.TTL)
 
@@ -163,7 +158,7 @@ def test_parallel_multi_channel():
     combined = parallel({ch0: pulse0, ch1: pulse1})
 
     # 物化
-    result = combined(ctx, {ch0: TTLOff(), ch1: TTLOff()})
+    result = combined({ch0: TTLOff(), ch1: TTLOff()})
 
     # 验证结果
     assert ch0 in result.end_states

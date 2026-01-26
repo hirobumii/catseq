@@ -1,21 +1,18 @@
-"""CatSeq Rust 后端包装层
+"""CatSeq Rust 后端包装层 (V2 Hybrid Architecture)
 
-提供与现有 Python API 兼容的接口，内部使用 Rust 加速编译器。
+提供与 Rust 底层库 (catseq_rs) 的 Python 绑定。
 
-架构设计：
-- Rust: 纯代数引擎（只关心 @ 和 | 的代数规则）
-- Python: 语义层（理解操作的具体含义）
-
-使用前提：
-- 必须先编译安装 catseq-rust 包（cd catseq-rust && maturin develop）
-- 如果未安装，导入时会报 ImportError
+V2 架构变更：
+1. 移除 OperationType 枚举检查，全面支持 u16 OpCode。
+2. 移除自动 Pickle 序列化，直接传递 bytes payload。
+3. 移除全局上下文管理（由 catseq.v2.context 接管）。
 """
 
-from typing import Dict, List, Tuple, Optional
-import pickle
-
+from typing import Dict, List, Tuple, Optional, Union
+import catseq_rs
 from catseq_rs import CompilerContext as RustContext, Node as RustNode
-from catseq.types.common import Channel, ChannelType, OperationType
+from catseq.types.common import Channel, ChannelType
+from catseq.v2.opcodes import OpCode
 
 
 def pack_channel_id(channel: Channel) -> int:
@@ -23,30 +20,38 @@ def pack_channel_id(channel: Channel) -> int:
 
     布局:
     - bits [31:16]: board_id
-    - bits [15:8]: channel_type (TTL=0, RWG=1, DAC=2)
-    - bits [7:0]: local_id
+    - bits [15:14]: channel_type (TTL=0, RWG=1)
+    - bits [13:0]:  local_id
     """
     type_map = {ChannelType.TTL: 0, ChannelType.RWG: 1}
+    
+    try:
+        # 解析 "RWG_0" -> 0
+        board_id = int(channel.board.id.split("_")[-1])
+    except (ValueError, IndexError):
+        board_id = 0
 
-    board_id = int(channel.board.id.split("_")[-1])  # "RWG_0" -> 0
-    channel_type = type_map[channel.channel_type]
+    # === 修正点：使用 channel.channel_type 而非 channel.type ===
+    c_type = getattr(channel, "channel_type", ChannelType.TTL)
+    channel_type = type_map.get(c_type, 0)
+    
     local_id = channel.local_id
 
-    return (board_id << 16) | (channel_type << 8) | local_id
+    return (board_id << 16) | (channel_type << 14) | local_id
 
 
 def unpack_channel_id(packed: int) -> Tuple[int, int, int]:
     """解包 u32 为 (board_id, channel_type, local_id)"""
     board_id = (packed >> 16) & 0xFFFF
-    channel_type = (packed >> 8) & 0xFF
-    local_id = packed & 0xFF
+    channel_type = (packed >> 14) & 0x3
+    local_id = packed & 0x3FFF
     return board_id, channel_type, local_id
 
 
 class RustMorphism:
-    """Rust-backed Morphism
+    """Rust-backed Morphism Wrapper
 
-    用户友好的包装层，兼容现有 Morphism API
+    轻量级包装器，不再包含旧的业务逻辑检查。
     """
 
     def __init__(self, rust_node: RustNode):
@@ -54,14 +59,7 @@ class RustMorphism:
 
     @staticmethod
     def create_context(capacity: int = 100_000) -> RustContext:
-        """创建编译器上下文
-
-        Args:
-            capacity: Arena 预分配容量（节点数）
-
-        Returns:
-            RustContext: 上下文对象
-        """
+        """创建一个新的编译器上下文"""
         return RustContext.with_capacity(capacity)
 
     @staticmethod
@@ -69,31 +67,29 @@ class RustMorphism:
         ctx: RustContext,
         channel: Channel,
         duration_cycles: int,
-        op_type: OperationType,
-        params: Optional[Dict] = None,
+        opcode: Union[int, OpCode],
+        payload: bytes,
     ) -> "RustMorphism":
         """创建原子操作
 
         Args:
             ctx: 编译器上下文
             channel: 通道对象
-            duration_cycles: 持续时间（时钟周期）
-            op_type: 操作类型枚举（OperationType.TTL_ON 等）
-            params: 可选参数字典（如 RWG 的频率、幅度）
+            duration_cycles: 持续时间
+            opcode: 操作码 (u16)
+            payload: 数据载荷 (bytes)
 
         Returns:
-            RustMorphism: 新创建的 Morphism
+            RustMorphism: 包装后的节点
         """
-        if not isinstance(op_type, OperationType):
-            raise TypeError(f"op_type must be OperationType, got {type(op_type).__name__}")
-
         channel_id = pack_channel_id(channel)
+        
+        # 确保 opcode 是 int 类型
+        opcode_int = int(opcode)
 
-        # 将操作语义编码为 payload
-        payload_dict = {"op_type": op_type, "params": params or {}}
-        payload = pickle.dumps(payload_dict)
-
-        rust_node = ctx.atomic(channel_id, duration_cycles, payload)
+        # 调用 Rust 接口
+        rust_node = ctx.atomic(channel_id, duration_cycles, opcode_int, payload)
+        
         return RustMorphism(rust_node)
 
     def __matmul__(self, other: "RustMorphism") -> "RustMorphism":
@@ -116,72 +112,23 @@ class RustMorphism:
         """获取涉及的通道列表（packed channel_id）"""
         return self._node.channels
 
-    def compile(self) -> List[Tuple[int, int, bytes]]:
+    def compile(self) -> List[Tuple[int, int, int, bytes]]:
         """编译为扁平事件列表
 
         Returns:
-            List[Tuple[int, int, bytes]]: [(time, channel_id, payload), ...]
+            List[Tuple[int, int, int, bytes]]: 
+            [(time, channel_id, opcode, payload), ...]
         """
         return self._node.compile()
 
-    def compile_by_board(self) -> Dict[int, List[Tuple[int, int, bytes]]]:
+    def compile_by_board(self) -> Dict[int, List[Tuple[int, int, int, bytes]]]:
         """编译并按板卡分组
 
         Returns:
-            Dict[int, List[Tuple[int, int, bytes]]]:
-                board_id -> [(time, channel_id, payload), ...]
+            Dict[int, List[Tuple[int, int, int, bytes]]]:
+                board_id -> [(time, channel_id, opcode, payload), ...]
         """
         return self._node.compile_by_board()
 
-    def to_flat_events(self) -> List[Tuple[int, Channel, str, Dict]]:
-        """编译并解析 payload
-
-        Returns:
-            List[Tuple[int, Channel, str, Dict]]:
-                [(time_cycles, channel, op_type, params), ...]
-        """
-        from catseq.types.common import Board
-
-        events = self.compile()
-        result = []
-
-        for time, channel_id, payload in events:
-            # 解包 channel_id
-            board_id, channel_type_int, local_id = unpack_channel_id(channel_id)
-
-            # 重建 Channel 对象
-            channel_type_map = {0: ChannelType.TTL, 1: ChannelType.RWG}
-            channel = Channel(
-                board=Board(f"RWG_{board_id}"),
-                local_id=local_id,
-                channel_type=channel_type_map[channel_type_int],
-            )
-
-            # 解析 payload（Rust 返回 list，需要转换为 bytes）
-            payload_bytes = bytes(payload) if isinstance(payload, list) else payload
-            payload_dict = pickle.loads(payload_bytes)
-            op_type = payload_dict["op_type"]
-            params = payload_dict["params"]
-
-            result.append((time, channel, op_type, params))
-
-        return result
-
     def __repr__(self) -> str:
         return f"<RustMorphism duration={self.total_duration_cycles}>"
-
-
-# ===== 全局上下文（可选）=====
-
-_GLOBAL_CONTEXT: Optional[RustContext] = None
-
-
-def get_or_create_global_context() -> RustContext:
-    """获取或创建全局上下文（用于快速原型）
-
-    注意：生产环境建议显式管理上下文生命周期
-    """
-    global _GLOBAL_CONTEXT
-    if _GLOBAL_CONTEXT is None:
-        _GLOBAL_CONTEXT = RustMorphism.create_context()
-    return _GLOBAL_CONTEXT

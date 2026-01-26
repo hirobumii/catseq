@@ -3,7 +3,7 @@
 This file provides type hints for IDE autocompletion and static type checking.
 """
 
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 
 class CompilerContext:
     """编译器上下文 - 管理 Arena 分配的节点。
@@ -12,7 +12,7 @@ class CompilerContext:
 
     Example:
         >>> ctx = CompilerContext()
-        >>> node = ctx.atomic(0, 100, b"payload")
+        >>> node = ctx.atomic(0, 100, 0x01, b"payload")
         >>> ctx.node_count()
         1
     """
@@ -56,6 +56,29 @@ class CompilerContext:
             >>> node = ctx.atomic(0, 250, 0x0100, b"\\x01")
             >>> node.duration
             250
+        """
+        ...
+
+    def atomic_id(
+        self,
+        channel_id: int,
+        duration: int,
+        opcode: int,
+        data: bytes,
+    ) -> int:
+        """创建原子操作并直接返回 NodeId。
+
+        与 atomic() 类似，但直接返回 u32 而非 Node 对象。
+        适用于只需要 NodeId 的场景（如 BoundMorphism Replay Pass）。
+
+        Args:
+            channel_id: 通道标识符（u32）。
+            duration: 持续时间。
+            opcode: 操作码（u16）。
+            data: 数据载荷。
+
+        Returns:
+            NodeId (int).
         """
         ...
 
@@ -109,6 +132,20 @@ class CompilerContext:
         """
         ...
 
+    def compose_sequence(self, nodes: List[int]) -> Optional[int]:
+        """批量串行组合（构建平衡树）。
+
+        将线性 NodeId 列表构建为平衡的 Sequential 树，
+        避免右偏树导致的递归深度问题。
+
+        Args:
+            nodes: NodeId 列表。
+
+        Returns:
+            组合后的根节点 ID，空列表返回 None。
+        """
+        ...
+
     def parallel_compose(self, a: int, b: int) -> int:
         """并行组合两个节点（通过 NodeId）。
 
@@ -123,6 +160,36 @@ class CompilerContext:
 
         Raises:
             ValueError: 如果两个节点的通道有交集
+        """
+        ...
+
+    def parallel_compose_many(self, nodes: List[int]) -> Optional[int]:
+        """批量并行组合（构建平衡树）。
+
+        将多个节点并行组合为平衡树。
+        要求所有节点的通道互不相交。
+
+        Args:
+            nodes: NodeId 列表。
+
+        Returns:
+            组合后的根节点 ID，空列表返回 None。
+
+        Raises:
+            ValueError: 如果任意两个节点的通道有交集。
+        """
+        ...
+
+    def compile_graph(self, node_id: int) -> List[Tuple[int, int, int, bytes]]:
+        """编译指定节点为事件列表。
+
+        直接通过 NodeId 编译，无需创建 Node 对象。
+
+        Args:
+            node_id: 要编译的节点 ID。
+
+        Returns:
+            List[Tuple[int, int, int, bytes]]: [(time, channel_id, opcode, data), ...]
         """
         ...
 
@@ -149,8 +216,8 @@ class Node:
 
     Example:
         >>> ctx = CompilerContext()
-        >>> a = ctx.atomic(0, 100, b"A")
-        >>> b = ctx.atomic(0, 50, b"B")
+        >>> a = ctx.atomic(0, 100, 0x01, b"A")
+        >>> b = ctx.atomic(0, 50, 0x02, b"B")
         >>> seq = a @ b  # 串行：总时长 150
         >>> seq.duration
         150
@@ -237,4 +304,78 @@ class Node:
         """获取树的最大深度。"""
         ...
 
-    def __repr__(self) -> str: ...
+    def __repr__(self) -> str: 
+        ...
+
+
+class MorphismPath:
+    """线性指令缓冲区 (Phase 2)。
+
+    用于 BoundMorphism 的后端存储，支持 O(1) append 和 O(N) extend。
+    """
+
+    channel_id: int
+    total_duration: int
+
+    def __init__(self, channel_id: int) -> None:
+        """创建空的 MorphismPath。"""
+        ...
+
+    @staticmethod
+    def with_capacity(channel_id: int, capacity: int) -> "MorphismPath":
+        """创建带预分配容量的 MorphismPath。"""
+        ...
+
+    def append(self, duration: int, opcode: int, payload: bytes) -> None:
+        """追加单个操作。"""
+        ...
+
+    def extend(self, other: "MorphismPath") -> None:
+        """扩展（拼接）另一个 Path。"""
+        ...
+
+    @staticmethod
+    def identity(channel_id: int, duration: int, opcode: int) -> "MorphismPath":
+        """创建恒等态射 (Wait)。
+
+        Args:
+            channel_id: 通道 ID
+            duration: 持续时间
+            opcode: Wait 操作码
+        """
+        ...
+
+    def align(self, target_duration: int, opcode: int) -> None:
+        """对齐时间边界。
+
+        如果在末尾追加 Wait 操作，直到 total_duration 达到 target_duration。
+
+        Args:
+            target_duration: 目标时长
+            opcode: Wait 操作码
+        """
+        ...
+
+    def __len__(self) -> int: 
+        ...
+    def __iter__(self) -> "PathIterator": 
+        ...
+    def __copy__(self) -> "MorphismPath": 
+        ...
+    def __deepcopy__(self, memo: Any) -> "MorphismPath": 
+        ...
+    def __repr__(self) -> str: 
+        ...
+
+
+class PathIterator:
+    """MorphismPath 的迭代器。
+
+    用于 Python 端的 Replay Pass。
+    """
+
+    def __iter__(self) -> "PathIterator": 
+        ...
+    def __next__(self) -> Tuple[int, int, bytes]:
+        """返回 (duration, opcode, payload)。"""
+        ...

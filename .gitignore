@@ -39,6 +39,7 @@ __pycache__/
 /build/
 /dist/
 /*.egg-info/
+target/
 
 # 测试产物
 .pytest_cache/

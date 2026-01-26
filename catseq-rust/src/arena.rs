@@ -219,6 +219,77 @@ impl ArenaContext {
         count
     }
 
+    /// 将线性 NodeId 列表构建为平衡 Sequential 树
+    ///
+    /// 避免生成右偏树 (A @ (B @ (C...))) 导致后续编译阶段递归过深。
+    /// 使用二分归约：[A, B, C, D] -> [(A@B), (C@D)] -> [((A@B)@(C@D))]
+    ///
+    /// 树深度: O(log N) vs 右偏树的 O(N)
+    pub fn compose_sequence(&mut self, nodes: Vec<NodeId>) -> Option<NodeId> {
+        if nodes.is_empty() {
+            return None;
+        }
+        if nodes.len() == 1 {
+            return Some(nodes[0]);
+        }
+
+        // 二分归约：每轮将相邻节点两两组合
+        let mut current = nodes;
+        while current.len() > 1 {
+            let mut next = Vec::with_capacity((current.len() + 1) / 2);
+
+            let mut i = 0;
+            while i < current.len() {
+                if i + 1 < current.len() {
+                    // 组合相邻两个节点
+                    let combined = self.sequential(current[i], current[i + 1]);
+                    next.push(combined);
+                    i += 2;
+                } else {
+                    // 奇数个节点，最后一个直接保留
+                    next.push(current[i]);
+                    i += 1;
+                }
+            }
+            current = next;
+        }
+
+        Some(current[0])
+    }
+
+    /// 将多个节点并行组合为平衡树
+    ///
+    /// 与 compose_sequence 类似，但使用 parallel 而非 sequential。
+    /// 要求所有节点的通道互不相交。
+    pub fn compose_parallel(&mut self, nodes: Vec<NodeId>) -> Result<Option<NodeId>, String> {
+        if nodes.is_empty() {
+            return Ok(None);
+        }
+        if nodes.len() == 1 {
+            return Ok(Some(nodes[0]));
+        }
+
+        let mut current = nodes;
+        while current.len() > 1 {
+            let mut next = Vec::with_capacity((current.len() + 1) / 2);
+
+            let mut i = 0;
+            while i < current.len() {
+                if i + 1 < current.len() {
+                    let combined = self.parallel(current[i], current[i + 1])?;
+                    next.push(combined);
+                    i += 2;
+                } else {
+                    next.push(current[i]);
+                    i += 1;
+                }
+            }
+            current = next;
+        }
+
+        Ok(Some(current[0]))
+    }
+
     /// 计算树的最大深度（使用显式栈）
     pub fn max_depth(&self, root: NodeId) -> usize {
         let mut stack = vec![(root, 1usize)];

@@ -379,3 +379,130 @@ class PathIterator:
     def __next__(self) -> Tuple[int, int, bytes]:
         """返回 (duration, opcode, payload)。"""
         ...
+
+
+class ProgramArena:
+    """Program Arena - 存储所有 Program AST 节点和 Value。
+
+    这是 Handle-based 架构的核心：
+    - Python 对象只持有 `node_id` 或 `value_id`
+    - 所有数据存储在这个 Arena 中
+    - 支持高效的节点共享和内存管理
+    """
+
+    def __init__(self) -> None:
+        """创建空的 ProgramArena。"""
+        ...
+
+    @staticmethod
+    def with_capacity(node_capacity: int, value_capacity: int) -> "ProgramArena":
+        """创建带预分配容量的 ProgramArena。"""
+        ...
+
+    def node_count(self) -> int:
+        """获取节点数量。"""
+        ...
+
+    def value_count(self) -> int:
+        """获取 Value 数量。"""
+        ...
+
+    def var_count(self) -> int:
+        """获取变量数量。"""
+        ...
+
+    def clear(self) -> None:
+        """清空 Arena（用于重置）。"""
+        ...
+
+    def literal(self, value: int) -> int:
+        """创建整数字面量。"""
+        ...
+
+    def literal_float(self, value: float) -> int:
+        """创建浮点数字面量。"""
+        ...
+
+    def variable(self, name: str, type_hint: str) -> int:
+        """创建或获取变量。"""
+        ...
+
+    def binary_expr(self, lhs: int, op: str, rhs: int) -> int:
+        """创建二元表达式。"""
+        ...
+
+    def unary_expr(self, op: str, operand: int) -> int:
+        """创建一元表达式。"""
+        ...
+
+    def condition(self, lhs: int, op: str, rhs: int) -> int:
+        """创建条件表达式。"""
+        ...
+
+    def logical_expr(self, lhs: int, op: str, rhs: Optional[int] = None) -> int:
+        """创建逻辑表达式。"""
+        ...
+
+    def lift(self, morphism_ref: int, params: Dict[str, int]) -> int:
+        """创建 Lift 节点。"""
+        ...
+
+    def delay(self, duration: int, max_hint: Optional[int] = None) -> int:
+        """创建 Delay 节点。"""
+        ...
+
+    def set_var(self, target: int, value: int) -> int:
+        """创建 Set 节点。"""
+        ...
+
+    def chain(self, left: int, right: int) -> int:
+        """创建 Chain 节点。"""
+        ...
+
+    def loop_(self, count: int, body: int) -> int:
+        """创建 Loop 节点。"""
+        ...
+
+    def match_(self, subject: int, cases: Dict[int, int], default: Optional[int] = None) -> int:
+        """创建 Match 节点。"""
+        ...
+
+    def apply(self, func: int, args: List[int]) -> int:
+        """创建 Apply 节点。"""
+        ...
+
+    def func_def(self, name: str, params: List[int], body: int) -> int:
+        """创建 FuncDef 节点。"""
+        ...
+
+    def measure(self, target: int, source: int) -> int:
+        """创建 Measure 节点。"""
+        ...
+
+    def identity(self) -> int:
+        """创建 Identity 节点。"""
+        ...
+
+    def chain_sequence(self, nodes: List[int]) -> Optional[int]:
+        """批量 Chain 组合。"""
+        ...
+
+    def is_literal(self, value_id: int) -> bool:
+        """检查 ValueId 是否为字面量。"""
+        ...
+
+    def is_variable(self, value_id: int) -> bool:
+        """检查 ValueId 是否为变量。"""
+        ...
+
+    def get_literal_int(self, value_id: int) -> Optional[int]:
+        """获取字面量的整数值。"""
+        ...
+
+    def get_literal_float(self, value_id: int) -> Optional[float]:
+        """获取字面量的浮点值。"""
+        ...
+
+    def get_variable_name(self, value_id: int) -> Optional[str]:
+        """获取变量名。"""
+        ...

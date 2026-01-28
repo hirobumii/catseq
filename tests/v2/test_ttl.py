@@ -17,10 +17,6 @@ from catseq.v2.ttl import (
     wait,
     # 组合操作
     ttl_pulse,
-    # Hybrid API
-    on,
-    off,
-    pulse,
     # 状态
     TTLOff,
     TTLOn,
@@ -136,48 +132,6 @@ def test_full_pipeline():
 
 # =============================================================================
 # Hybrid API 测试
-# =============================================================================
-
-def test_hybrid_on():
-    """测试 on() Hybrid API"""
-    reset_context()
-    ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
-
-    # 模版模式
-    template = on()
-    assert isinstance(template, OpenMorphism)
-
-    # 构建模式
-    bound = on(ch)
-    assert isinstance(bound, BoundMorphism)
-
-
-def test_hybrid_off():
-    """测试 off() Hybrid API"""
-    reset_context()
-    ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
-
-    template = off()
-    assert isinstance(template, OpenMorphism)
-
-    bound = off(ch)
-    assert isinstance(bound, BoundMorphism)
-
-
-def test_hybrid_pulse():
-    """测试 pulse() Hybrid API"""
-    reset_context()
-    ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
-
-    # 模版模式
-    template = pulse(10 * us)
-    assert isinstance(template, OpenMorphism)
-
-    # 构建模式
-    bound = pulse(ch, 10 * us)
-    assert isinstance(bound, BoundMorphism)
-
-
 # =============================================================================
 # 并行组合测试
 # =============================================================================
@@ -340,14 +294,6 @@ if __name__ == "__main__":
     print("✓ test_materialize_to_morphism")
     test_full_pipeline()
     print("✓ test_full_pipeline")
-
-    # Hybrid API
-    test_hybrid_on()
-    print("✓ test_hybrid_on")
-    test_hybrid_off()
-    print("✓ test_hybrid_off")
-    test_hybrid_pulse()
-    print("✓ test_hybrid_pulse")
 
     # 并行组合
     test_parallel_channels()

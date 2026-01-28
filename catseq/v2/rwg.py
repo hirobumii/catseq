@@ -293,27 +293,4 @@ def linear_ramp(
     )
 
 
-# =============================================================================
-# Hybrid API (可选：支持直接绑定通道)
-# =============================================================================
 
-@overload
-def init(carrier_freq: float) -> OpenMorphism: ...
-@overload
-def init(channel: Channel, carrier_freq: float) -> BoundMorphism: ...
-
-
-def init(
-    arg1: Union[Channel, float],
-    arg2: float | None = None
-) -> Union[OpenMorphism, BoundMorphism]:
-    """初始化 RWG (Hybrid API)
-
-    用法 A: init(carrier_freq) -> OpenMorphism
-    用法 B: init(channel, carrier_freq) -> BoundMorphism
-    """
-    if isinstance(arg1, Channel):
-        om = initialize(arg2 if arg2 is not None else 0.0)
-        return om(arg1)
-    else:
-        return initialize(float(arg1))

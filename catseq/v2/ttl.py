@@ -108,42 +108,4 @@ def ttl_pulse(duration: float) -> OpenMorphism:
     return ttl_on() >> wait(duration) >> ttl_off()
 
 
-# =============================================================================
-# Hybrid API (可选：支持直接绑定通道)
-# =============================================================================
 
-def on(channel: Channel | None = None) -> Union[OpenMorphism, BoundMorphism]:
-    """TTL ON (Hybrid API)
-
-    用法 A: on() -> OpenMorphism
-    用法 B: on(channel) -> BoundMorphism
-    """
-    om = ttl_on()
-    return om if channel is None else om(channel)
-
-
-def off(channel: Channel | None = None) -> Union[OpenMorphism, BoundMorphism]:
-    """TTL OFF (Hybrid API)
-
-    用法 A: off() -> OpenMorphism
-    用法 B: off(channel) -> BoundMorphism
-    """
-    om = ttl_off()
-    return om if channel is None else om(channel)
-
-
-def pulse(
-    arg1: Union[Channel, float],
-    arg2: float | None = None
-) -> Union[OpenMorphism, BoundMorphism]:
-    """TTL 脉冲 (Hybrid API)
-
-    用法 A: pulse(duration) -> OpenMorphism
-    用法 B: pulse(channel, duration) -> BoundMorphism
-    """
-    if isinstance(arg1, Channel):
-        channel = arg1
-        duration = arg2 if arg2 is not None else 0.0
-        return ttl_pulse(duration)(channel)
-    else:
-        return ttl_pulse(float(arg1))

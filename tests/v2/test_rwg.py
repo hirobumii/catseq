@@ -25,7 +25,6 @@ from catseq.v2.rwg import (
     rf_off,
     rf_pulse,
     linear_ramp,
-    init,
     # 状态和数据类型
     RWGUninitialized,
     RWGReady,
@@ -187,20 +186,6 @@ def test_materialize_to_morphism():
 
     assert isinstance(result, Morphism)
     assert ch in result.end_states
-
-
-def test_hybrid_init_api():
-    """测试 Hybrid API: init()"""
-    reset_context()
-    ch = Channel(Board("RWG_0"), 0, ChannelType.RWG)
-
-    # 模版模式
-    template = init(100.0)
-    assert isinstance(template, OpenMorphism)
-
-    # 构建模式
-    bound = init(ch, 100.0)
-    assert isinstance(bound, BoundMorphism)
 
 
 # =============================================================================
@@ -380,8 +365,6 @@ if __name__ == "__main__":
     print("✓ test_bind_to_channel")
     test_materialize_to_morphism()
     print("✓ test_materialize_to_morphism")
-    test_hybrid_init_api()
-    print("✓ test_hybrid_init_api")
 
     # 并行组合
     test_parallel_rwg_channels()

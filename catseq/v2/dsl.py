@@ -32,7 +32,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, Union
+from typing import Callable, Optional, TYPE_CHECKING, Union
 
 from catseq.v2.context import get_arena
 from catseq.v2.program import Program
@@ -41,26 +41,35 @@ from catseq.v2.values import Condition, Value, Variable, _ensure_value_id, Numer
 # Re-export from values for convenience
 from catseq.v2.values import literal, var  # noqa: F401
 
+if TYPE_CHECKING:
+    from catseq.v2.morphism import Morphism
+
 
 # =============================================================================
 # Primitive Builders
 # =============================================================================
 
-def lift(morphism: Any, **params: Union[Value, Numeric]) -> Program:
+def lift(morphism: Morphism, **params: Union[Value, Numeric]) -> Program:
     """Lift: 将 Morphism 提升到 Program
 
     物理语义：执行一个预定义的硬件操作序列。
     代数语义：return :: a -> M a
 
+    注意：只有 Morphism（状态已验证、节点已构建）才能被 lift。
+    OpenMorphism 和 BoundMorphism 需要先调用 (__call__) 物化为 Morphism。
+
     Args:
-        morphism: Morphism 对象或引用
+        morphism: Morphism 对象（已物化的 Morphism）
         **params: 参数绑定（变量名 -> Value 或字面量）
 
     Returns:
         Program: 新创建的 Program Handle
 
     Example:
-        >>> pulse = lift(ttl_pulse, duration=t, amplitude=0.5)
+        >>> # 先物化 OpenMorphism
+        >>> pulse_closed = ttl_pulse(ch, TTLOff())
+        >>> # 然后 lift 到 Program
+        >>> prog = lift(pulse_closed, duration=t)
     """
     arena = get_arena()
     # 将参数转换为 ValueId
@@ -207,7 +216,7 @@ def repeat(n: int, body: Program) -> Program:
 
 def match_(
     subject: Union[Value, Condition],
-    cases: dict[Any, Program],
+    cases: dict[Union[int, bool], Program],
     default: Optional[Program] = None,
 ) -> Program:
     """Match: 模式匹配
@@ -272,7 +281,7 @@ def if_(
     Example:
         >>> result = if_(x > 0, do_positive(), do_negative())
     """
-    cases: dict[Any, Program] = {True: then_}
+    cases: dict[Union[int, bool], Program] = {True: then_}
     if else_:
         cases[False] = else_
     return match_(condition, cases, default=else_)
@@ -349,9 +358,8 @@ def subroutine(func: Callable[..., Program]) -> Callable[..., Program]:
         >>> result = pulse_and_wait(100)  # 调用子程序
     """
     import inspect
-    
+
     sig = inspect.signature(func)
-    arena = get_arena()
 
     # 为每个参数创建 Variable
     args: list[Variable] = []

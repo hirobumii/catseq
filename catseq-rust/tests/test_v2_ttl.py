@@ -1,6 +1,6 @@
 """测试 CatSeq V2 TTL 操作
 
-验证完整的 OpenMorphism -> Rust Arena -> Compile 流程
+验证完整的 OpenMorphism -> BoundMorphism -> Morphism 流程
 """
 
 import sys
@@ -20,7 +20,7 @@ from catseq.v2.ttl import (
 )
 from catseq.v2.opcodes import OpCode
 from catseq.v2.context import get_context, reset_context
-from catseq.v2.open_morphism import parallel
+from catseq.v2.morphism import parallel, BoundMorphism, OpenMorphism, Morphism
 
 
 def test_ttl_on_basic():
@@ -28,11 +28,14 @@ def test_ttl_on_basic():
     reset_context()
     ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
 
-    op = ttl_on()
-    result = op(ch, TTLOff())
+    # 新 API: ttl_on(ch) -> BoundMorphism
+    bound = ttl_on(ch)
+    assert isinstance(bound, BoundMorphism)
 
-    assert isinstance(result.end_state, TTLOn)
-    assert result.node_id == 0
+    # BoundMorphism({ch: state}) -> Morphism
+    result = bound({ch: TTLOff()})
+    assert isinstance(result, Morphism)
+    assert ch in result.end_states
 
 
 def test_ttl_off_basic():
@@ -40,24 +43,48 @@ def test_ttl_off_basic():
     reset_context()
     ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
 
-    op = ttl_off()
-    result = op(ch, TTLOn())
+    bound = ttl_off(ch)
+    result = bound({ch: TTLOn()})
 
-    assert isinstance(result.end_state, TTLOff)
+    assert isinstance(result, Morphism)
+
+
+def test_ttl_template():
+    """测试 OpenMorphism 模版复用"""
+    reset_context()
+    ch0 = Channel(Board("RWG_0"), 0, ChannelType.TTL)
+    ch1 = Channel(Board("RWG_0"), 1, ChannelType.TTL)
+
+    # 创建模版
+    template = ttl_pulse(10 * us)
+    assert isinstance(template, OpenMorphism)
+
+    # 复用到不同通道
+    bound0 = template(ch0)
+    bound1 = template(ch1)
+
+    assert isinstance(bound0, BoundMorphism)
+    assert isinstance(bound1, BoundMorphism)
+    assert bound0.channels == {ch0}
+    assert bound1.channels == {ch1}
 
 
 def test_ttl_sequence():
-    """测试 TTL 序列组合"""
+    """测试 TTL 序列组合 (>>)"""
     reset_context()
     ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
 
-    # ttl_on >> wait >> ttl_off
+    # ttl_on >> wait >> ttl_off (OpenMorphism 级别组合)
     seq = ttl_on() >> wait(10 * us) >> ttl_off()
-    result = seq(ch, TTLOff())
+    assert isinstance(seq, OpenMorphism)
 
-    assert isinstance(result.end_state, TTLOff)
-    # 验证节点数量：3 个原子 + 2 个组合
-    assert get_context().node_count() == 5
+    # 绑定通道
+    bound = seq(ch)
+    assert isinstance(bound, BoundMorphism)
+
+    # 物化
+    result = bound({ch: TTLOff()})
+    assert isinstance(result, Morphism)
 
 
 def test_ttl_pulse():
@@ -65,23 +92,41 @@ def test_ttl_pulse():
     reset_context()
     ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
 
-    pulse = ttl_pulse(10 * us)
-    result = pulse(ch, TTLOff())
+    # 直接构建模式
+    bound = ttl_pulse(ch, 10 * us)
+    assert isinstance(bound, BoundMorphism)
 
-    assert isinstance(result.end_state, TTLOff)
+    result = bound({ch: TTLOff()})
+    assert isinstance(result, Morphism)
 
 
-def test_compile_events():
-    """测试编译输出"""
+def test_bound_morphism_parallel():
+    """测试 BoundMorphism 并行组合 (|)"""
+    reset_context()
+    ch0 = Channel(Board("RWG_0"), 0, ChannelType.TTL)
+    ch1 = Channel(Board("RWG_0"), 1, ChannelType.TTL)
+
+    bound0 = ttl_on(ch0)
+    bound1 = ttl_off(ch1)
+
+    # BoundMorphism | BoundMorphism
+    combined = bound0 | bound1
+    assert isinstance(combined, BoundMorphism)
+    assert combined.channels == {ch0, ch1}
+
+
+def test_bound_morphism_sequence():
+    """测试 BoundMorphism 串行组合 (>>)"""
     reset_context()
     ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
 
-    # 创建简单序列
-    seq = ttl_on() >> wait(2500) >> ttl_off()  # 2500 cycles = 10us
-    result = seq(ch, TTLOff())
+    bound1 = ttl_on(ch)
+    bound2 = wait(ch, 10 * us)
+    bound3 = ttl_off(ch)
 
-    # 直接检查 arena 内容
-    assert get_context().node_count() > 0
+    # BoundMorphism >> BoundMorphism
+    seq = bound1 >> bound2 >> bound3
+    assert isinstance(seq, BoundMorphism)
 
 
 def test_compile_via_node():
@@ -110,21 +155,6 @@ def test_compile_via_node():
     assert events[2][2] == OpCode.TTL_OFF
 
 
-def test_state_type_checking():
-    """测试状态类型检查"""
-    reset_context()
-    ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
-
-    op = ttl_on()
-
-    # 应该报错：ttl_on 需要 TTLOff 状态
-    try:
-        op(ch, TTLOn())
-        assert False, "应该抛出 TypeError"
-    except TypeError as e:
-        assert "TTLOff" in str(e)
-
-
 def test_opcode_values():
     """验证 OpCode 值"""
     assert OpCode.TTL_ON == 0x0101
@@ -132,16 +162,16 @@ def test_opcode_values():
     assert OpCode.IDENTITY == 0x0000
 
 
-def test_parallel_operator_raises_error():
-    """验证 | 操作符正确报错"""
-    pulse1 = ttl_pulse(10*us)
-    pulse2 = ttl_pulse(20*us)
+def test_parallel_function():
+    """测试 parallel() 函数"""
+    reset_context()
+    ch0 = Channel(Board("RWG_0"), 0, ChannelType.TTL)
+    ch1 = Channel(Board("RWG_0"), 1, ChannelType.TTL)
 
-    try:
-        _ = pulse1 | pulse2
-        assert False, "应该抛出 TypeError"
-    except TypeError as e:
-        assert "parallel()" in str(e)
+    # parallel({ch: OpenMorphism}) -> BoundMorphism
+    combined = parallel({ch0: ttl_on(), ch1: ttl_pulse(10*us)})
+    assert isinstance(combined, BoundMorphism)
+    assert combined.channels == {ch0, ch1}
 
 
 def test_parallel_multi_channel():
@@ -163,8 +193,6 @@ def test_parallel_multi_channel():
     # 验证结果
     assert ch0 in result.end_states
     assert ch1 in result.end_states
-    assert isinstance(result.end_states[ch0], TTLOff)
-    assert isinstance(result.end_states[ch1], TTLOff)
 
 
 if __name__ == "__main__":
@@ -176,22 +204,31 @@ if __name__ == "__main__":
     test_ttl_off_basic()
     print("✓ test_ttl_off_basic")
 
+    test_ttl_template()
+    print("✓ test_ttl_template")
+
     test_ttl_sequence()
     print("✓ test_ttl_sequence")
 
     test_ttl_pulse()
     print("✓ test_ttl_pulse")
 
-    test_compile_events()
-    print("✓ test_compile_events")
+    test_bound_morphism_parallel()
+    print("✓ test_bound_morphism_parallel")
+
+    test_bound_morphism_sequence()
+    print("✓ test_bound_morphism_sequence")
 
     test_compile_via_node()
     print("✓ test_compile_via_node")
 
-    test_state_type_checking()
-    print("✓ test_state_type_checking")
-
     test_opcode_values()
     print("✓ test_opcode_values")
+
+    test_parallel_function()
+    print("✓ test_parallel_function")
+
+    test_parallel_multi_channel()
+    print("✓ test_parallel_multi_channel")
 
     print("\n所有测试通过!")

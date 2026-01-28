@@ -44,6 +44,16 @@ from .dialects.catseq_dialect import (
 # V2 Compiler entry point
 # from .compiler_v2 import compile_to_oasm_calls_v2
 
+# Morphism system
+from .morphism import (
+    HardwareState,
+    Morphism,
+    BoundMorphism,
+    OpenMorphism,
+    parallel,
+    encode_channel_id,
+)
+
 __all__ = [
     "__version__",
     # Dialects
@@ -57,4 +67,11 @@ __all__ = [
     "TensorOp",
     "IdentityOp",
     "AtomicOp",
+    # Morphism system
+    "HardwareState",
+    "Morphism",
+    "BoundMorphism",
+    "OpenMorphism",
+    "parallel",
+    "encode_channel_id",
 ]

@@ -1,36 +1,36 @@
-"""CatSeq V2 BoundMorphism - 通道已绑定的操作缓冲区
+"""CatSeq V2 Morphism - Three-Phase Architecture
 
-BoundMorphism 是 Phase 2 (Assembly) 的核心类型，实现严格的 Monoidal Category 语义：
-- 通道已绑定，数据存储在 Rust Vec 中
-- 组合操作自动执行矩形对齐（Rectangularization）
-- 调用 (__call__) 时执行 Replay Pass，进行状态验证和节点构建
-
-矩形化规则：
-- 并行组合 (|): 短通道末尾补 Identity 对齐到最长时长
-- 串行组合 (>>): 缺失通道补 Identity 填充时间空隙
+类型转换链：
+    OpenMorphism ──(绑定通道)──> BoundMorphism ──(绑定初始状态)──> Morphism
+      (模版)                      (通道已绑定)                   (完全物化)
 
 使用示例：
-    >>> from catseq.v2.bound_morphism import BoundMorphism
+    >>> from catseq.v2.morphism import OpenMorphism, BoundMorphism, parallel
+    >>> from catseq.v2.ttl import ttl_on, ttl_pulse, TTLOff
     >>> from catseq.types.common import Board, Channel, ChannelType
+    >>> from catseq.time_utils import us
     >>>
     >>> ch0 = Channel(Board("RWG_0"), 0, ChannelType.TTL)
     >>> ch1 = Channel(Board("RWG_0"), 1, ChannelType.TTL)
     >>>
-    >>> # 创建两个不同时长的操作
-    >>> bm0 = BoundMorphism(ch0)
-    >>> bm0.append(100, 0x0101, b"")  # 100 cycles
+    >>> # 用法 A: 直接构建
+    >>> bound = ttl_on(ch0)
+    >>> result = bound({ch0: TTLOff()})
     >>>
-    >>> bm1 = BoundMorphism(ch1)
-    >>> bm1.append(200, 0x0101, b"")  # 200 cycles
+    >>> # 用法 B: 模版复用
+    >>> template = ttl_pulse(10*us)
+    >>> bound0 = template(ch0)
+    >>> bound1 = template(ch1)
     >>>
-    >>> # 并行组合：自动对齐到 200 cycles
-    >>> par = bm0 | bm1
-    >>> assert par.duration == 200
+    >>> # 用法 C: 多通道并行
+    >>> bound = parallel({ch0: ttl_on(), ch1: ttl_pulse(10*us)})
+    >>> result = bound({ch0: TTLOff(), ch1: TTLOff()})
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from abc import ABC, abstractmethod
+from typing import Callable, Iterator, TYPE_CHECKING
 
 import catseq_rs
 
@@ -39,20 +39,50 @@ from catseq.v2.context import get_context
 from catseq.v2.opcodes import OpCode
 
 if TYPE_CHECKING:
-    from catseq.v2.open_morphism import HardwareState
+    pass
+
+
+# =============================================================================
+# Hardware State (抽象基类)
+# =============================================================================
+
+class HardwareState(ABC):
+    """硬件状态基类 (必须不可变)
+
+    子类代表具体的硬件状态：TTLOn, TTLOff, RWGActive 等。
+    """
+
+    @abstractmethod
+    def is_compatible_with(self, other: HardwareState) -> bool:
+        """检查是否可以转换到另一个状态"""
+        ...
+
+
+# =============================================================================
+# 辅助函数
+# =============================================================================
+
+def encode_channel_id(channel: Channel) -> int:
+    """将 Channel 编码为 u32
+
+    编码格式: (board_num << 16) | local_id
+    """
+    board_num = int(channel.board.id.split("_")[-1])
+    return (board_num << 16) | channel.local_id
+
 
 # Identity/Wait 操作码
 OP_IDENTITY = OpCode.IDENTITY  # 0x0000
 
 
-def encode_channel_id(channel: Channel) -> int:
-    """将 Channel 编码为 u32"""
-    board_num = int(channel.board.id.split("_")[-1])
-    return (board_num << 16) | channel.local_id
+# =============================================================================
+# Morphism (Phase 3: 最终结果)
+# =============================================================================
 
-
-class ClosedMorphism:
+class Morphism:
     """Phase 3: 状态已验证，物理节点已构建
+
+    这是完全物化的 Morphism，可以直接编译到 OASM。
 
     Attributes:
         node_id: Arena 中的根节点 ID
@@ -77,8 +107,12 @@ class ClosedMorphism:
 
     def __repr__(self) -> str:
         channels = ", ".join(str(ch) for ch in self.end_states.keys())
-        return f"<ClosedMorphism node_id={self.node_id} channels=[{channels}]>"
+        return f"<Morphism node_id={self.node_id} channels=[{channels}]>"
 
+
+# =============================================================================
+# BoundMorphism (Phase 2: 通道已绑定)
+# =============================================================================
 
 class BoundMorphism:
     """Phase 2: 通道已绑定的操作缓冲区
@@ -227,7 +261,7 @@ class BoundMorphism:
         self,
         start_states: dict[Channel, HardwareState],
         ctx: catseq_rs.CompilerContext | None = None,
-    ) -> ClosedMorphism:
+    ) -> Morphism:
         """Replay Pass: 延迟验证与物化
 
         遍历 Rust Path，运行状态检查，创建 Arena 节点。
@@ -237,7 +271,7 @@ class BoundMorphism:
             ctx: CompilerContext（可选，默认使用全局）
 
         Returns:
-            ClosedMorphism: 包含根节点 ID 和结束状态
+            Morphism: 包含根节点 ID 和结束状态
 
         Raises:
             ValueError: 如果缺少起始状态或状态转换非法
@@ -285,7 +319,7 @@ class BoundMorphism:
             if root_id is None:
                 raise ValueError("并行组合失败")
 
-        return ClosedMorphism(root_id, final_end_states)
+        return Morphism(root_id, final_end_states)
 
     def __len__(self) -> int:
         """获取总步骤数"""
@@ -296,3 +330,99 @@ class BoundMorphism:
             f"{ch.global_id}:{len(p)}" for ch, p in self._paths.items()
         )
         return f"<BoundMorphism [{channels}] duration={self.duration}>"
+
+
+# =============================================================================
+# OpenMorphism (Phase 1: 惰性模版)
+# =============================================================================
+
+# 操作生成器类型：yields (duration, opcode, payload)
+DataGenerator = Callable[[], Iterator[tuple[int, int, bytes]]]
+
+
+class OpenMorphism:
+    """Phase 1: State Transformer Function (惰性模版)
+
+    OpenMorphism 包装一个数据生成器，在绑定通道时即时生成操作。
+    这允许模版复用和惰性组合。
+
+    组合操作符：
+        >> : 串行组合（生成器拼接）
+    """
+
+    __slots__ = ('_gen', 'name')
+
+    def __init__(self, gen: DataGenerator, name: str = "anon"):
+        """创建 OpenMorphism
+
+        Args:
+            gen: 数据生成器函数，调用时 yields (duration, opcode, payload)
+            name: 调试用名称
+        """
+        self._gen = gen
+        self.name = name
+
+    def __call__(self, channel: Channel) -> BoundMorphism:
+        """绑定通道，即时生成操作到 BoundMorphism
+
+        Args:
+            channel: 目标硬件通道
+
+        Returns:
+            BoundMorphism: 通道已绑定的操作缓冲区
+        """
+        bm = BoundMorphism(channel)
+        for duration, opcode, payload in self._gen():
+            bm.append(duration, opcode, payload, channel)
+        return bm
+
+    def __rshift__(self, other: OpenMorphism) -> OpenMorphism:
+        """串行组合 (>>): 生成器级别的拼接
+
+        语法: seq = op1 >> op2
+
+        语义: 执行 op1 的所有操作，然后执行 op2 的所有操作
+        """
+        left_gen = self._gen
+        right_gen = other._gen
+
+        def composed_gen() -> Iterator[tuple[int, int, bytes]]:
+            yield from left_gen()
+            yield from right_gen()
+
+        return OpenMorphism(
+            composed_gen,
+            name=f"({self.name} >> {other.name})"
+        )
+
+    def __repr__(self) -> str:
+        return f"<OpenMorphism: {self.name}>"
+
+
+# =============================================================================
+# parallel() 函数
+# =============================================================================
+
+def parallel(ops: dict[Channel, OpenMorphism]) -> BoundMorphism:
+    """将多通道 OpenMorphism 并行组合为 BoundMorphism
+
+    Args:
+        ops: 通道到 OpenMorphism 的映射
+
+    Returns:
+        BoundMorphism: 多通道操作缓冲区，自动矩形对齐
+
+    Example:
+        >>> bound = parallel({ch0: ttl_on(), ch1: ttl_pulse(10*us)})
+        >>> result = bound({ch0: TTLOff(), ch1: TTLOff()})
+    """
+    if not ops:
+        raise ValueError("parallel() 需要至少一个操作")
+
+    result: BoundMorphism | None = None
+    for ch, op in ops.items():
+        bm = op(ch)  # OpenMorphism -> BoundMorphism
+        result = bm if result is None else result | bm
+
+    assert result is not None
+    return result

@@ -136,6 +136,18 @@ def test_full_pipeline():
 # 并行组合测试
 # =============================================================================
 
+def test_parallel_single_channel():
+    """测试单通道 parallel（等价于直接绑定）"""
+    reset_context()
+    ch = Channel(Board("RWG_0"), 0, ChannelType.TTL)
+
+    # parallel 单通道等价于 op(ch)
+    bound = parallel({ch: ttl_pulse(10 * us)})
+
+    assert isinstance(bound, BoundMorphism)
+    assert bound.channels == {ch}
+
+
 def test_parallel_channels():
     """测试多通道并行"""
     reset_context()
@@ -296,6 +308,8 @@ if __name__ == "__main__":
     print("✓ test_full_pipeline")
 
     # 并行组合
+    test_parallel_single_channel()
+    print("✓ test_parallel_single_channel")
     test_parallel_channels()
     print("✓ test_parallel_channels")
     test_bound_morphism_parallel()

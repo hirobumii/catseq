@@ -290,6 +290,20 @@ impl ArenaContext {
         Ok(Some(current[0]))
     }
 
+    /// 在节点末尾追加 Identity padding
+    ///
+    /// 等价于 Sequential(node_id, Atomic(Identity, duration))
+    /// 如果 duration == 0，直接返回原节点
+    pub fn pad_end(&mut self, node_id: NodeId, duration: Time, identity_opcode: u16) -> NodeId {
+        if duration == 0 {
+            return node_id;
+        }
+        // 获取节点的第一个通道作为 Identity 的通道
+        let channel_id = self.get(node_id).channels()[0];
+        let identity = self.atomic(channel_id, duration, identity_opcode, vec![]);
+        self.sequential(node_id, identity)
+    }
+
     /// 计算树的最大深度（使用显式栈）
     pub fn max_depth(&self, root: NodeId) -> usize {
         let mut stack = vec![(root, 1usize)];

@@ -229,6 +229,14 @@ impl CompilerContext {
             .collect()
     }
 
+    /// 在节点末尾追加 Identity padding
+    ///
+    /// 等价于 Sequential(node_id, Identity(duration))
+    /// 如果 duration == 0，直接返回原节点
+    fn pad_end(&self, node_id: u32, duration: u64, opcode: u16) -> u32 {
+        self.arena.borrow_mut().pad_end(node_id, duration, opcode)
+    }
+
     /// 获取节点时长（通过 NodeId）
     fn get_duration(&self, node_id: u32) -> u64 {
         self.arena.borrow().get(node_id).duration()

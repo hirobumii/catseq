@@ -80,34 +80,68 @@ OP_IDENTITY = OpCode.IDENTITY  # 0x0000
 # =============================================================================
 
 class Morphism:
-    """Phase 3: 状态已验证，物理节点已构建
-
-    这是完全物化的 Morphism，可以直接编译到 OASM。
-
-    Attributes:
-        node_id: Arena 中的根节点 ID
-        end_states: 各通道的结束状态
+    """Phase 3: Arena Graph Node Wrapper
+    
+    这是不可变的、轻量级的句柄，指向 Rust Arena 中的节点。
+    所有的组合操作都是 O(1) 的图节点创建。
     """
-
     __slots__ = ("node_id", "end_states")
 
     def __init__(self, node_id: int, end_states: dict[Channel, HardwareState]):
         self.node_id = node_id
         self.end_states = end_states
 
-    def compile(self, ctx: catseq_rs.CompilerContext | None = None):
-        """编译为事件列表
+    def __rshift__(self, other: Morphism) -> Morphism:
+        """Sequential Composition (@)"""
+        if not isinstance(other, Morphism):
+            return NotImplemented
+            
+        ctx = get_context()
+        # Rust 调用：创建一个指向这两个旧节点的新节点
+        new_id = ctx.compose(self.node_id, other.node_id)
+        
+        # 状态追踪：覆盖旧状态
+        new_states = {**self.end_states, **other.end_states}
+        return Morphism(new_id, new_states)
 
-        Returns:
-            List[Tuple[int, int, int, bytes]]: [(time, channel_id, opcode, data), ...]
-        """
+    def __or__(self, other: Morphism) -> Morphism:
+        """Parallel Composition (|)"""
+        if not isinstance(other, Morphism):
+            return NotImplemented
+            
+        ctx = get_context()
+        # Rust 调用：可能抛出 ValueError (如果通道冲突)
+        new_id = ctx.parallel(self.node_id, other.node_id)
+        
+        # 状态追踪：合并状态
+        new_states = {**self.end_states, **other.end_states}
+        return Morphism(new_id, new_states)
+    
+    # --- 进阶优化：支持 sum() 或 reduce 的批量操作 ---
+    
+    @staticmethod
+    def sequential_all(morphisms: list[Morphism]) -> Morphism:
+        """批量串行组合，生成平衡树而非偏斜树"""
+        if not morphisms:
+            raise ValueError("Empty list")
+        
+        ctx = get_context()
+        ids = [m.node_id for m in morphisms]
+        
+        # 调用 Rust 的 compose_sequence 进行 O(N) 的平衡树构建
+        root_id = ctx.compose_sequence(ids)
+        
+        # 简单合并所有状态（假设后面的覆盖前面的）
+        final_states = {}
+        for m in morphisms:
+            final_states.update(m.end_states)
+            
+        return Morphism(root_id, final_states)
+
+    def compile(self, ctx=None):
         if ctx is None:
             ctx = get_context()
         return ctx.compile_graph(self.node_id)
-
-    def __repr__(self) -> str:
-        channels = ", ".join(str(ch) for ch in self.end_states.keys())
-        return f"<Morphism node_id={self.node_id} channels=[{channels}]>"
 
 
 # =============================================================================
@@ -115,27 +149,34 @@ class Morphism:
 # =============================================================================
 
 class BoundMorphism:
-    """Phase 2: 通道已绑定的操作缓冲区
+    """Phase 2: 通道已绑定，直接持有 Rust Arena 节点 ID
 
     实现严格的 Monoidal Category 语义，所有组合操作保证矩形对齐。
-    内部维护 Dict[Channel, MorphismPath]，组合操作在 Rust 内存中完成。
+    内部维护 Dict[Channel, int] (Rust NodeId)，所有图构建在 append 时即时完成。
     """
 
-    __slots__ = ("_paths",)
+    __slots__ = ("_nodes", "_durations")
 
-    def __init__(self, data: Channel | dict[Channel, catseq_rs.MorphismPath]):
+    def __init__(
+        self,
+        data: Channel | dict[Channel, int],
+        durations: dict[Channel, int] | None = None,
+    ):
         """创建 BoundMorphism
 
         Args:
-            data: 单个 Channel（自动创建空 Path）或已有的 paths 字典
+            data: 单个 Channel（自动创建 Identity(0) 节点）或已有的 nodes 字典
+            durations: 各通道时长缓存（仅 dict 模式使用）
         """
         if isinstance(data, Channel):
+            ctx = get_context()
             channel_id = encode_channel_id(data)
-            self._paths: dict[Channel, catseq_rs.MorphismPath] = {
-                data: catseq_rs.MorphismPath(channel_id)
-            }
+            node_id = ctx.atomic_id(channel_id, 0, OP_IDENTITY, b"")
+            self._nodes: dict[Channel, int] = {data: node_id}
+            self._durations: dict[Channel, int] = {data: 0}
         else:
-            self._paths = data
+            self._nodes = data
+            self._durations = durations if durations is not None else {}
 
     def append(
         self,
@@ -144,7 +185,7 @@ class BoundMorphism:
         payload: bytes,
         channel: Channel | None = None,
     ) -> None:
-        """追加操作到指定通道
+        """追加操作到指定通道（即时构建 Rust 图节点）
 
         Args:
             duration: 持续时间（时钟周期）
@@ -158,28 +199,35 @@ class BoundMorphism:
         target_ch = channel
 
         if target_ch is None:
-            if len(self._paths) == 1:
-                target_ch = next(iter(self._paths))
+            if len(self._nodes) == 1:
+                target_ch = next(iter(self._nodes))
             else:
                 raise ValueError("多通道 BoundMorphism 必须指定 channel")
 
-        if target_ch not in self._paths:
-            channel_id = encode_channel_id(target_ch)
-            self._paths[target_ch] = catseq_rs.MorphismPath(channel_id)
+        ctx = get_context()
+        ch_id = encode_channel_id(target_ch)
 
-        self._paths[target_ch].append(duration, opcode, payload)
+        if target_ch not in self._nodes:
+            # 新通道：创建初始 Identity(0) 节点
+            self._nodes[target_ch] = ctx.atomic_id(ch_id, 0, OP_IDENTITY, b"")
+            self._durations[target_ch] = 0
+
+        # 创建原子节点并串行组合
+        atom_id = ctx.atomic_id(ch_id, duration, opcode, payload)
+        self._nodes[target_ch] = ctx.compose(self._nodes[target_ch], atom_id)
+        self._durations[target_ch] += duration
 
     @property
     def channels(self) -> set[Channel]:
         """获取涉及的通道集合"""
-        return set(self._paths.keys())
+        return set(self._nodes.keys())
 
     @property
     def duration(self) -> int:
         """获取矩形时长（最长通道的持续时间）"""
-        if not self._paths:
+        if not self._durations:
             return 0
-        return max(p.total_duration for p in self._paths.values())
+        return max(self._durations.values())
 
     def __or__(self, other: BoundMorphism) -> BoundMorphism:
         """并行组合 (|): 矩形对齐
@@ -192,27 +240,26 @@ class BoundMorphism:
         Raises:
             ValueError: 如果通道有交集
         """
-        overlap = set(self._paths.keys()) & set(other._paths.keys())
+        overlap = set(self._nodes.keys()) & set(other._nodes.keys())
         if overlap:
             raise ValueError(f"并行组合通道冲突: {overlap}")
 
-        # 计算目标对齐边界
         target_duration = max(self.duration, other.duration)
-        new_paths: dict[Channel, catseq_rs.MorphismPath] = {}
+        ctx = get_context()
+        new_nodes: dict[Channel, int] = {}
+        new_durations: dict[Channel, int] = {}
 
-        # 处理 Self 的通道：对齐边界
-        for ch, path in self._paths.items():
-            new_p = path.clone()
-            new_p.align(target_duration, OP_IDENTITY)
-            new_paths[ch] = new_p
+        for ch, nid in self._nodes.items():
+            gap = target_duration - self._durations[ch]
+            new_nodes[ch] = ctx.pad_end(nid, gap, OP_IDENTITY)
+            new_durations[ch] = target_duration
 
-        # 处理 Other 的通道：对齐边界
-        for ch, path in other._paths.items():
-            new_p = path.clone()
-            new_p.align(target_duration, OP_IDENTITY)
-            new_paths[ch] = new_p
+        for ch, nid in other._nodes.items():
+            gap = target_duration - other._durations[ch]
+            new_nodes[ch] = ctx.pad_end(nid, gap, OP_IDENTITY)
+            new_durations[ch] = target_duration
 
-        return BoundMorphism(new_paths)
+        return BoundMorphism(new_nodes, new_durations)
 
     def __rshift__(self, other: BoundMorphism) -> BoundMorphism:
         """串行组合 (>>): 填充与拼接
@@ -228,43 +275,47 @@ class BoundMorphism:
         dur_a = self.duration
         dur_b = other.duration
 
-        all_channels = set(self._paths.keys()) | set(other._paths.keys())
-        new_paths: dict[Channel, catseq_rs.MorphismPath] = {}
+        all_channels = set(self._nodes.keys()) | set(other._nodes.keys())
+        ctx = get_context()
+        new_nodes: dict[Channel, int] = {}
+        new_durations: dict[Channel, int] = {}
 
         for ch in all_channels:
-            path_a = self._paths.get(ch)
-            path_b = other._paths.get(ch)
+            node_a = self._nodes.get(ch)
+            node_b = other._nodes.get(ch)
 
-            if path_a and path_b:
+            if node_a is not None and node_b is not None:
                 # Case 1: A >> B（都存在）
-                new_p = path_a.clone()
-                new_p.align(dur_a, OP_IDENTITY)  # 确保 A 内部对齐
-                new_p.extend(path_b)
-                new_paths[ch] = new_p
+                # 先对齐 A 到 dur_a
+                gap_a = dur_a - self._durations[ch]
+                padded_a = ctx.pad_end(node_a, gap_a, OP_IDENTITY)
+                # 拼接 B
+                new_nodes[ch] = ctx.compose(padded_a, node_b)
+                new_durations[ch] = dur_a + other._durations[ch]
 
-            elif path_a:
+            elif node_a is not None:
                 # Case 2: A >> Id_B（A 存在，B 缺失）
-                new_p = path_a.clone()
-                new_p.align(dur_a + dur_b, OP_IDENTITY)  # 直接对齐到总时长
-                new_paths[ch] = new_p
+                gap = (dur_a - self._durations[ch]) + dur_b
+                new_nodes[ch] = ctx.pad_end(node_a, gap, OP_IDENTITY)
+                new_durations[ch] = dur_a + dur_b
 
             else:
                 # Case 3: Id_A >> B（A 缺失，B 存在）
-                ch_id = other._paths[ch].channel_id
-                new_p = catseq_rs.MorphismPath.identity(ch_id, dur_a, OP_IDENTITY)
-                new_p.extend(path_b)
-                new_paths[ch] = new_p
+                ch_id = encode_channel_id(ch)
+                id_node = ctx.atomic_id(ch_id, dur_a, OP_IDENTITY, b"")
+                new_nodes[ch] = ctx.compose(id_node, node_b)
+                new_durations[ch] = dur_a + other._durations[ch]
 
-        return BoundMorphism(new_paths)
+        return BoundMorphism(new_nodes, new_durations)
 
     def __call__(
         self,
         start_states: dict[Channel, HardwareState],
         ctx: catseq_rs.CompilerContext | None = None,
     ) -> Morphism:
-        """Replay Pass: 延迟验证与物化
+        """Finalize: 验证状态并创建 Morphism
 
-        遍历 Rust Path，运行状态检查，创建 Arena 节点。
+        图节点已在 append/compose 时构建完毕，此处仅做状态检查和并行组合。
 
         Args:
             start_states: 各通道的起始状态
@@ -274,7 +325,7 @@ class BoundMorphism:
             Morphism: 包含根节点 ID 和结束状态
 
         Raises:
-            ValueError: 如果缺少起始状态或状态转换非法
+            ValueError: 如果缺少起始状态或 BoundMorphism 为空
         """
         if ctx is None:
             ctx = get_context()
@@ -282,34 +333,15 @@ class BoundMorphism:
         final_nodes: list[int] = []
         final_end_states: dict[Channel, HardwareState] = {}
 
-        # 对每个通道执行重放
-        for ch, path in self._paths.items():
+        for ch, node_id in self._nodes.items():
             state = start_states.get(ch)
             if state is None:
                 raise ValueError(f"缺少通道 {ch} 的起始状态")
 
-            # 单通道 Replay Loop
-            channel_nodes: list[int] = []
-            for duration, opcode, payload in path:
-                # 1. Python 状态检查
-                # TODO: 实现通用的状态转换检查
-                # state = state.next_state(opcode, payload)
-
-                # 2. Rust 节点创建（使用 atomic_id 直接获取 int）
-                node_id = ctx.atomic_id(path.channel_id, duration, opcode, payload)
-                channel_nodes.append(node_id)
-
-            # 3. Rust 批量组合（构建平衡树）
-            if channel_nodes:
-                seq_id = ctx.compose_sequence(channel_nodes)
-                if seq_id is not None:
-                    final_nodes.append(seq_id)
-
-            # 更新结束状态（简化：保持起始状态）
+            final_nodes.append(node_id)
             # TODO: 实现完整的状态追踪
             final_end_states[ch] = state
 
-        # 4. 并行组合所有通道的结果
         if len(final_nodes) == 0:
             raise ValueError("BoundMorphism 为空")
         elif len(final_nodes) == 1:
@@ -321,13 +353,10 @@ class BoundMorphism:
 
         return Morphism(root_id, final_end_states)
 
-    def __len__(self) -> int:
-        """获取总步骤数"""
-        return sum(len(p) for p in self._paths.values())
-
     def __repr__(self) -> str:
         channels = ", ".join(
-            f"{ch.global_id}:{len(p)}" for ch, p in self._paths.items()
+            f"{ch.global_id}:dur={self._durations.get(ch, 0)}"
+            for ch in self._nodes
         )
         return f"<BoundMorphism [{channels}] duration={self.duration}>"
 

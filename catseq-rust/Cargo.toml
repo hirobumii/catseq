@@ -9,6 +9,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.23", features = ["extension-module"] }
+pliron = "0.13"
+pliron-derive = "0.13"
 
 [profile.release]
 lto = true

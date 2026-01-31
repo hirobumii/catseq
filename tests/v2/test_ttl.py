@@ -18,6 +18,7 @@ from catseq.v2.ttl import (
     # 组合操作
     ttl_pulse,
     # 状态
+    TTLUninitialized,
     TTLOff,
     TTLOn,
 )
@@ -200,7 +201,7 @@ def test_parallel_multi_channel_materialize():
     pulse1 = ttl_init() >> ttl_on() >> wait(20 * us) >> ttl_off()
 
     combined = parallel({ch0: pulse0, ch1: pulse1})
-    result = combined({ch0: TTLOff(), ch1: TTLOff()})
+    result = combined({ch0: TTLUninitialized(), ch1: TTLUninitialized()})
 
     assert ch0 in result.end_states
     assert ch1 in result.end_states

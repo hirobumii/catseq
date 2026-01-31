@@ -10,5 +10,3 @@ pub mod nodes;
 pub mod values;
 
 pub use arena::ProgramArena;
-pub use nodes::{AluOp, CmpOp, NodeData, NodeId};
-pub use values::{LogicalOp, TypeHint, UnaryOp, ValueData, ValueId};

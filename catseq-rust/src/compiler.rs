@@ -89,28 +89,21 @@ pub fn compile_by_board(
 // Per-Board Timeline Flattening
 // =============================================================================
 
-/// 时间线事件（保留 duration）
+/// 时间线事件（保留 duration 和 channel_id）
 #[derive(Debug, Clone)]
 pub struct TimelineEvent {
     pub time: Time,
     pub duration: Time,
+    pub channel_id: ChannelId,
     pub opcode: u16,
     pub payload: Vec<u8>,
 }
 
-/// 单通道时间线
-#[derive(Debug, Clone)]
-pub struct ChannelTimeline {
-    pub channel_id: ChannelId,
-    pub events: Vec<TimelineEvent>,
-    pub total_duration: Time,
-}
-
-/// 单板卡时间线
+/// 单板卡时间线（所有通道事件按时间排序合并）
 #[derive(Debug, Clone)]
 pub struct BoardTimeline {
     pub board_id: u16,
-    pub channels: Vec<ChannelTimeline>,
+    pub events: Vec<TimelineEvent>,
     pub total_duration: Time,
 }
 
@@ -139,6 +132,7 @@ pub fn flatten_to_boards(arena: &ArenaContext, root: NodeId) -> Vec<BoardTimelin
                     .push(TimelineEvent {
                         time: start_time,
                         duration: *duration,
+                        channel_id: *channel_id,
                         opcode: payload.opcode,
                         payload: (*payload.data).clone(),
                     });
@@ -155,53 +149,33 @@ pub fn flatten_to_boards(arena: &ArenaContext, root: NodeId) -> Vec<BoardTimelin
         }
     }
 
-    // Step 2: 按 board 分组
-    let mut board_channels: std::collections::HashMap<u16, Vec<(ChannelId, Vec<TimelineEvent>)>> =
+    // Step 2: 按 board 分组，合并所有通道事件
+    let mut board_events: std::collections::HashMap<u16, Vec<TimelineEvent>> =
         std::collections::HashMap::new();
 
-    for (channel_id, mut events) in channel_events {
+    for (channel_id, events) in channel_events {
         let board_id = (channel_id >> 16) as u16;
-        events.sort_by_key(|e| e.time);
-        board_channels
-            .entry(board_id)
-            .or_default()
-            .push((channel_id, events));
+        board_events.entry(board_id).or_default().extend(events);
     }
 
     // Step 3: 构建 BoardTimeline
     let root_duration = arena.get(root).duration();
 
-    let mut boards: Vec<BoardTimeline> = board_channels
+    let mut boards: Vec<BoardTimeline> = board_events
         .into_iter()
-        .map(|(board_id, mut ch_list)| {
-            ch_list.sort_by_key(|(ch_id, _)| *ch_id);
+        .map(|(board_id, mut events)| {
+            events.sort_by(|a, b| a.time.cmp(&b.time).then(a.channel_id.cmp(&b.channel_id)));
 
-            let channels: Vec<ChannelTimeline> = ch_list
-                .into_iter()
-                .map(|(channel_id, events)| {
-                    let ch_dur = events
-                        .iter()
-                        .map(|e| e.time + e.duration)
-                        .max()
-                        .unwrap_or(0)
-                        .max(root_duration);
-                    ChannelTimeline {
-                        channel_id,
-                        events,
-                        total_duration: ch_dur,
-                    }
-                })
-                .collect();
-
-            let board_dur = channels
+            let board_dur = events
                 .iter()
-                .map(|c| c.total_duration)
+                .map(|e| e.time + e.duration)
                 .max()
-                .unwrap_or(0);
+                .unwrap_or(0)
+                .max(root_duration);
 
             BoardTimeline {
                 board_id,
-                channels,
+                events,
                 total_duration: board_dur,
             }
         })
@@ -363,18 +337,15 @@ mod tests {
         let boards = flatten_to_boards(&arena, seq);
         assert_eq!(boards.len(), 1);
         assert_eq!(boards[0].board_id, 0);
-        assert_eq!(boards[0].channels.len(), 1);
-
-        let ch = &boards[0].channels[0];
-        assert_eq!(ch.channel_id, 0);
-        assert_eq!(ch.events.len(), 2);
-        assert_eq!(ch.events[0].time, 0);
-        assert_eq!(ch.events[0].duration, 100);
-        assert_eq!(ch.events[0].opcode, 0x01);
-        assert_eq!(ch.events[1].time, 100);
-        assert_eq!(ch.events[1].duration, 50);
-        assert_eq!(ch.events[1].opcode, 0x02);
-        assert_eq!(ch.total_duration, 150);
+        assert_eq!(boards[0].events.len(), 2);
+        assert_eq!(boards[0].events[0].time, 0);
+        assert_eq!(boards[0].events[0].duration, 100);
+        assert_eq!(boards[0].events[0].channel_id, 0);
+        assert_eq!(boards[0].events[0].opcode, 0x01);
+        assert_eq!(boards[0].events[1].time, 100);
+        assert_eq!(boards[0].events[1].duration, 50);
+        assert_eq!(boards[0].events[1].opcode, 0x02);
+        assert_eq!(boards[0].total_duration, 150);
     }
 
     #[test]
@@ -398,17 +369,17 @@ mod tests {
         let boards = flatten_to_boards(&arena, root);
         assert_eq!(boards.len(), 2);
 
-        // board 0
+        // board 0: 2 events (ch0 + ch1), sorted by time then channel_id
         assert_eq!(boards[0].board_id, 0);
-        assert_eq!(boards[0].channels.len(), 2);
-        assert_eq!(boards[0].channels[0].channel_id, ch0_b0);
-        assert_eq!(boards[0].channels[1].channel_id, ch1_b0);
+        assert_eq!(boards[0].events.len(), 2);
+        assert_eq!(boards[0].events[0].channel_id, ch0_b0);
+        assert_eq!(boards[0].events[1].channel_id, ch1_b0);
 
-        // board 1
+        // board 1: 2 events
         assert_eq!(boards[1].board_id, 1);
-        assert_eq!(boards[1].channels.len(), 2);
-        assert_eq!(boards[1].channels[0].channel_id, ch0_b1);
-        assert_eq!(boards[1].channels[1].channel_id, ch1_b1);
+        assert_eq!(boards[1].events.len(), 2);
+        assert_eq!(boards[1].events[0].channel_id, ch0_b1);
+        assert_eq!(boards[1].events[1].channel_id, ch1_b1);
 
         // board 0 duration = max(100, 200) = 200
         assert_eq!(boards[0].total_duration, 200);
@@ -429,20 +400,20 @@ mod tests {
 
         let boards = flatten_to_boards(&arena, root);
         assert_eq!(boards.len(), 1);
-        assert_eq!(boards[0].channels.len(), 2);
+        // 3 events total: A@t=0(ch0), B@t=0(ch1), C@t=100(ch0)
+        assert_eq!(boards[0].events.len(), 3);
 
-        // ch0: A@t=0(dur=100), C@t=100(dur=30)
-        let ch0 = &boards[0].channels[0];
-        assert_eq!(ch0.channel_id, 0);
-        assert_eq!(ch0.events.len(), 2);
-        assert_eq!(ch0.events[0].time, 0);
-        assert_eq!(ch0.events[1].time, 100);
-        assert_eq!(ch0.events[1].opcode, 0x03);
+        // sorted by time, then channel_id: A(t=0,ch0), B(t=0,ch1), C(t=100,ch0)
+        assert_eq!(boards[0].events[0].time, 0);
+        assert_eq!(boards[0].events[0].channel_id, 0);
+        assert_eq!(boards[0].events[0].opcode, 0x01);
 
-        // ch1: B@t=0(dur=50)
-        let ch1 = &boards[0].channels[1];
-        assert_eq!(ch1.channel_id, 1);
-        assert_eq!(ch1.events.len(), 1);
-        assert_eq!(ch1.events[0].time, 0);
+        assert_eq!(boards[0].events[1].time, 0);
+        assert_eq!(boards[0].events[1].channel_id, 1);
+        assert_eq!(boards[0].events[1].opcode, 0x02);
+
+        assert_eq!(boards[0].events[2].time, 100);
+        assert_eq!(boards[0].events[2].channel_id, 0);
+        assert_eq!(boards[0].events[2].opcode, 0x03);
     }
 }

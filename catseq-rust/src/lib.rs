@@ -238,26 +238,19 @@ impl CompilerContext {
     fn flatten_by_board(
         &self,
         node_id: u32,
-    ) -> Vec<(u16, u64, Vec<(u32, u64, Vec<(u64, u64, u16, Vec<u8>)>)>)> {
+    ) -> Vec<(u16, u64, Vec<(u64, u64, u32, u16, Vec<u8>)>)> {
         let arena = self.arena.borrow();
         let boards = compiler::flatten_to_boards(&arena, node_id);
 
         boards
             .into_iter()
             .map(|b| {
-                let channels = b
-                    .channels
+                let events = b
+                    .events
                     .into_iter()
-                    .map(|c| {
-                        let events = c
-                            .events
-                            .into_iter()
-                            .map(|e| (e.time, e.duration, e.opcode, e.payload))
-                            .collect();
-                        (c.channel_id, c.total_duration, events)
-                    })
+                    .map(|e| (e.time, e.duration, e.channel_id, e.opcode, e.payload))
                     .collect();
-                (b.board_id, b.total_duration, channels)
+                (b.board_id, b.total_duration, events)
             })
             .collect()
     }

@@ -203,10 +203,10 @@ class CompilerContext:
 
     def flatten_by_board(
         self, node_id: int
-    ) -> List[Tuple[int, int, List[Tuple[int, int, List[Tuple[int, int, int, bytes]]]]]]:
+    ) -> List[Tuple[int, int, List[Tuple[int, int, int, int, bytes]]]]:
         """按板卡展平 Morphism 树为时间线。
 
-        DFS 遍历 Morphism Arena，按 board → channel → events 分组。
+        DFS 遍历 Morphism Arena，合并同板卡所有通道事件，按时间排序。
         channel_id 高 16 位为 board_id。
 
         Args:
@@ -215,9 +215,7 @@ class CompilerContext:
         Returns:
             板卡时间线列表，每个元素为:
             (board_id, total_duration, [
-                (channel_id, channel_duration, [
-                    (time, duration, opcode, payload), ...
-                ]), ...
+                (time, duration, channel_id, opcode, payload), ...
             ])
         """
         ...

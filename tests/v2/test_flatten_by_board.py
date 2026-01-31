@@ -1,6 +1,7 @@
 """测试 flatten_by_board 按板卡展平功能
 
-验证 Morphism Arena DFS 遍历 → per-board, per-channel timeline 展平。
+验证 Morphism Arena DFS 遍历 → per-board flat timeline 展平。
+所有通道事件合并为单个按时间排序的列表。
 """
 
 import sys
@@ -11,7 +12,6 @@ from catseq.v2.context import (
     reset_context,
     flatten_by_board,
     BoardTimeline,
-    ChannelTimeline,
     TimelineEvent,
 )
 
@@ -35,19 +35,15 @@ def test_single_atomic():
     boards = flatten_by_board(nid)
     assert len(boards) == 1
 
-    board_id, total_dur, channels = boards[0]
+    board_id, total_dur, events = boards[0]
     assert board_id == 0
     assert total_dur == 100
-    assert len(channels) == 1
-
-    ch_id, ch_dur, events = channels[0]
-    assert ch_id == ch
-    assert ch_dur == 100
     assert len(events) == 1
 
-    time, dur, opcode, payload = events[0]
+    time, dur, ch_id, opcode, payload = events[0]
     assert time == 0
     assert dur == 100
+    assert ch_id == ch
     assert opcode == 0x0100
     assert payload == b"\x01"
 
@@ -64,19 +60,15 @@ def test_sequential_same_channel():
     boards = flatten_by_board(seq)
     assert len(boards) == 1
 
-    _, total_dur, channels = boards[0]
+    _, total_dur, events = boards[0]
     assert total_dur == 300
-    assert len(channels) == 1
-
-    _, ch_dur, events = channels[0]
-    assert ch_dur == 300
     assert len(events) == 2
-    assert events[0] == (0, 100, 0x01, b"A")
-    assert events[1] == (100, 200, 0x02, b"B")
+    assert events[0] == (0, 100, ch, 0x01, b"A")
+    assert events[1] == (100, 200, ch, 0x02, b"B")
 
 
 def test_parallel_same_board():
-    """同板卡不同通道并行"""
+    """同板卡不同通道并行 — 事件合并为单个列表"""
     reset_context()
     ctx = get_context()
     ch0 = make_channel_id(1, 0)
@@ -88,19 +80,14 @@ def test_parallel_same_board():
     boards = flatten_by_board(par)
     assert len(boards) == 1
 
-    board_id, total_dur, channels = boards[0]
+    board_id, total_dur, events = boards[0]
     assert board_id == 1
     assert total_dur == 200  # max(100, 200)
-    assert len(channels) == 2
+    assert len(events) == 2
 
-    # 通道按 channel_id 排序
-    ch0_id, ch0_dur, ch0_events = channels[0]
-    ch1_id, ch1_dur, ch1_events = channels[1]
-    assert ch0_id == ch0
-    assert ch1_id == ch1
-    # channel duration >= root_duration (padded to morphism span)
-    assert ch0_dur == 200  # max(100, root_duration=200)
-    assert ch1_dur == 200
+    # 按时间排序，同时间按 channel_id 排序
+    assert events[0] == (0, 100, ch0, 0x01, b"A")
+    assert events[1] == (0, 200, ch1, 0x02, b"B")
 
 
 def test_two_boards():
@@ -119,8 +106,8 @@ def test_two_boards():
     # 按 board_id 排序
     boards.sort(key=lambda x: x[0])
 
-    b0_id, b0_dur, b0_chs = boards[0]
-    b1_id, b1_dur, b1_chs = boards[1]
+    b0_id, b0_dur, b0_events = boards[0]
+    b1_id, b1_dur, b1_events = boards[1]
     assert b0_id == 0
     assert b1_id == 1
     # Both boards padded to root_duration = max(100, 200) = 200
@@ -133,7 +120,7 @@ def test_two_boards():
 # =============================================================================
 
 def test_sequential_then_parallel():
-    """(A >> B) | C — 串行后并行"""
+    """(A >> B) | C — 串行后并行，事件合并"""
     reset_context()
     ctx = get_context()
     ch0 = make_channel_id(0, 0)
@@ -148,20 +135,14 @@ def test_sequential_then_parallel():
     boards = flatten_by_board(par)
     assert len(boards) == 1
 
-    _, total_dur, channels = boards[0]
+    _, total_dur, events = boards[0]
     assert total_dur == 250  # max(250, 200)
-    assert len(channels) == 2
+    # 3 events total: A(t=0,ch0), C(t=0,ch1), B(t=100,ch0)
+    assert len(events) == 3
 
-    # ch0 has 2 events
-    _, _, ch0_events = channels[0]
-    assert len(ch0_events) == 2
-    assert ch0_events[0] == (0, 100, 0x01, b"A")
-    assert ch0_events[1] == (100, 150, 0x02, b"B")
-
-    # ch1 has 1 event
-    _, _, ch1_events = channels[1]
-    assert len(ch1_events) == 1
-    assert ch1_events[0] == (0, 200, 0x03, b"C")
+    assert events[0] == (0, 100, ch0, 0x01, b"A")
+    assert events[1] == (0, 200, ch1, 0x03, b"C")
+    assert events[2] == (100, 150, ch0, 0x02, b"B")
 
 
 def test_parallel_then_sequential():
@@ -184,16 +165,15 @@ def test_parallel_then_sequential():
     boards = flatten_by_board(seq)
     assert len(boards) == 1
 
-    _, total_dur, channels = boards[0]
+    _, total_dur, events = boards[0]
     assert total_dur == 300  # 100 + 200
+    assert len(events) == 4
 
-    _, _, ch0_events = channels[0]
-    assert ch0_events[0] == (0, 100, 0x01, b"A")
-    assert ch0_events[1] == (100, 200, 0x03, b"C")
-
-    _, _, ch1_events = channels[1]
-    assert ch1_events[0] == (0, 100, 0x02, b"B")
-    assert ch1_events[1] == (100, 200, 0x04, b"D")
+    # sorted by time, then channel_id
+    assert events[0] == (0, 100, ch0, 0x01, b"A")
+    assert events[1] == (0, 100, ch1, 0x02, b"B")
+    assert events[2] == (100, 200, ch0, 0x03, b"C")
+    assert events[3] == (100, 200, ch1, 0x04, b"D")
 
 
 # =============================================================================
@@ -225,18 +205,17 @@ def test_multi_board_complex():
     boards.sort(key=lambda x: x[0])
     assert len(boards) == 2
 
-    # Board 0
-    b0_id, b0_dur, b0_chs = boards[0]
+    # Board 0: 3 events merged from 2 channels
+    b0_id, b0_dur, b0_events = boards[0]
     assert b0_id == 0
-    # root_duration = max(250, 300) = 300, all boards padded
-    assert b0_dur == 300
-    assert len(b0_chs) == 2
+    assert b0_dur == 300  # root_duration = max(250, 300)
+    assert len(b0_events) == 3
 
-    # Board 1
-    b1_id, b1_dur, b1_chs = boards[1]
+    # Board 1: 1 event
+    b1_id, b1_dur, b1_events = boards[1]
     assert b1_id == 1
     assert b1_dur == 300
-    assert len(b1_chs) == 1
+    assert len(b1_events) == 1
 
 
 # =============================================================================
@@ -252,10 +231,9 @@ def test_zero_duration():
 
     boards = flatten_by_board(nid)
     assert len(boards) == 1
-    _, total_dur, channels = boards[0]
+    _, total_dur, events = boards[0]
     assert total_dur == 0
-    _, _, events = channels[0]
-    assert events[0] == (0, 0, 0x01, b"")
+    assert events[0] == (0, 0, ch, 0x01, b"")
 
 
 def test_events_sorted_by_time():
@@ -270,8 +248,7 @@ def test_events_sorted_by_time():
     seq = ctx.compose_sequence(nodes)
 
     boards = flatten_by_board(seq)
-    _, _, channels = boards[0]
-    _, _, events = channels[0]
+    _, _, events = boards[0]
 
     times = [e[0] for e in events]
     assert times == sorted(times)
@@ -289,15 +266,13 @@ def test_flatten_uses_global_context():
     ch = make_channel_id(2, 5)
     nid = ctx.atomic_id(ch, 42, 0xFF, b"\xAB")
 
-    # 通过 context.py 的包装函数调用
     boards = flatten_by_board(nid)
     assert len(boards) == 1
-    board_id, _, channels = boards[0]
+    board_id, _, events = boards[0]
     assert board_id == 2
-    ch_id, _, events = channels[0]
-    assert ch_id == ch
-    assert events[0][2] == 0xFF
-    assert events[0][3] == b"\xAB"
+    assert events[0][2] == ch  # channel_id
+    assert events[0][3] == 0xFF  # opcode
+    assert events[0][4] == b"\xAB"  # payload
 
 
 if __name__ == "__main__":

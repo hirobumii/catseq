@@ -128,9 +128,8 @@ def test_composite_rf_pulse():
 
 def test_composite_linear_ramp():
     """测试 linear_ramp 组合操作"""
-    start = [StaticWaveform(sbg_id=0, freq=10.0, amp=0.0)]
     target = [StaticWaveform(sbg_id=0, freq=20.0, amp=1.0)]
-    om = linear_ramp(start, target, 10 * us)
+    om = linear_ramp(target, 10 * us)
     assert isinstance(om, OpenMorphism)
 
 
@@ -156,7 +155,7 @@ def test_linear_ramp_with_set_state():
     start = [StaticWaveform(sbg_id=0, freq=10.0, amp=0.5)]
     target = [StaticWaveform(sbg_id=0, freq=20.0, amp=1.0)]
 
-    seq = set_state(start) >> linear_ramp(start, target, 10 * us)
+    seq = set_state(start) >> linear_ramp(target, 10 * us)
     assert isinstance(seq, OpenMorphism)
 
 

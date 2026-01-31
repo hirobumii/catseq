@@ -85,6 +85,132 @@ pub fn compile_by_board(
     grouped
 }
 
+// =============================================================================
+// Per-Board Timeline Flattening
+// =============================================================================
+
+/// 时间线事件（保留 duration）
+#[derive(Debug, Clone)]
+pub struct TimelineEvent {
+    pub time: Time,
+    pub duration: Time,
+    pub opcode: u16,
+    pub payload: Vec<u8>,
+}
+
+/// 单通道时间线
+#[derive(Debug, Clone)]
+pub struct ChannelTimeline {
+    pub channel_id: ChannelId,
+    pub events: Vec<TimelineEvent>,
+    pub total_duration: Time,
+}
+
+/// 单板卡时间线
+#[derive(Debug, Clone)]
+pub struct BoardTimeline {
+    pub board_id: u16,
+    pub channels: Vec<ChannelTimeline>,
+    pub total_duration: Time,
+}
+
+/// 将 Morphism 树展平为 per-board、per-channel 时间线
+///
+/// 直接 DFS 遍历（不复用 compile），保留每个 Atomic 的 duration。
+/// 不做任何指令合并。
+pub fn flatten_to_boards(arena: &ArenaContext, root: NodeId) -> Vec<BoardTimeline> {
+    // Step 1: DFS 收集 per-channel 事件
+    let mut channel_events: std::collections::HashMap<ChannelId, Vec<TimelineEvent>> =
+        std::collections::HashMap::new();
+
+    let mut stack = vec![(root, 0u64)];
+
+    while let Some((node_id, start_time)) = stack.pop() {
+        let node = arena.get(node_id);
+        match node {
+            MorphismData::Atomic {
+                channel_id,
+                duration,
+                payload,
+            } => {
+                channel_events
+                    .entry(*channel_id)
+                    .or_default()
+                    .push(TimelineEvent {
+                        time: start_time,
+                        duration: *duration,
+                        opcode: payload.opcode,
+                        payload: (*payload.data).clone(),
+                    });
+            }
+            MorphismData::Sequential { lhs, rhs, .. } => {
+                let lhs_duration = arena.get(*lhs).duration();
+                stack.push((*rhs, start_time + lhs_duration));
+                stack.push((*lhs, start_time));
+            }
+            MorphismData::Parallel { lhs, rhs, .. } => {
+                stack.push((*rhs, start_time));
+                stack.push((*lhs, start_time));
+            }
+        }
+    }
+
+    // Step 2: 按 board 分组
+    let mut board_channels: std::collections::HashMap<u16, Vec<(ChannelId, Vec<TimelineEvent>)>> =
+        std::collections::HashMap::new();
+
+    for (channel_id, mut events) in channel_events {
+        let board_id = (channel_id >> 16) as u16;
+        events.sort_by_key(|e| e.time);
+        board_channels
+            .entry(board_id)
+            .or_default()
+            .push((channel_id, events));
+    }
+
+    // Step 3: 构建 BoardTimeline
+    let root_duration = arena.get(root).duration();
+
+    let mut boards: Vec<BoardTimeline> = board_channels
+        .into_iter()
+        .map(|(board_id, mut ch_list)| {
+            ch_list.sort_by_key(|(ch_id, _)| *ch_id);
+
+            let channels: Vec<ChannelTimeline> = ch_list
+                .into_iter()
+                .map(|(channel_id, events)| {
+                    let ch_dur = events
+                        .iter()
+                        .map(|e| e.time + e.duration)
+                        .max()
+                        .unwrap_or(0)
+                        .max(root_duration);
+                    ChannelTimeline {
+                        channel_id,
+                        events,
+                        total_duration: ch_dur,
+                    }
+                })
+                .collect();
+
+            let board_dur = channels
+                .iter()
+                .map(|c| c.total_duration)
+                .max()
+                .unwrap_or(0);
+
+            BoardTimeline {
+                board_id,
+                channels,
+                total_duration: board_dur,
+            }
+        })
+        .collect();
+
+    boards.sort_by_key(|b| b.board_id);
+    boards
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,5 +347,102 @@ mod tests {
         assert_eq!(grouped.len(), 2);
         assert_eq!(grouped[&0].len(), 2); // board 0 有 2 个事件
         assert_eq!(grouped[&1].len(), 1); // board 1 有 1 个事件
+    }
+
+    // =========================================================================
+    // flatten_to_boards tests
+    // =========================================================================
+
+    #[test]
+    fn test_flatten_single_channel() {
+        let mut arena = ArenaContext::new();
+        let n1 = arena.atomic(0, 100, 0x01, vec![1]);
+        let n2 = arena.atomic(0, 50, 0x02, vec![2]);
+        let seq = arena.sequential(n1, n2);
+
+        let boards = flatten_to_boards(&arena, seq);
+        assert_eq!(boards.len(), 1);
+        assert_eq!(boards[0].board_id, 0);
+        assert_eq!(boards[0].channels.len(), 1);
+
+        let ch = &boards[0].channels[0];
+        assert_eq!(ch.channel_id, 0);
+        assert_eq!(ch.events.len(), 2);
+        assert_eq!(ch.events[0].time, 0);
+        assert_eq!(ch.events[0].duration, 100);
+        assert_eq!(ch.events[0].opcode, 0x01);
+        assert_eq!(ch.events[1].time, 100);
+        assert_eq!(ch.events[1].duration, 50);
+        assert_eq!(ch.events[1].opcode, 0x02);
+        assert_eq!(ch.total_duration, 150);
+    }
+
+    #[test]
+    fn test_flatten_multi_board() {
+        let mut arena = ArenaContext::new();
+
+        let ch0_b0 = 0u32;
+        let ch1_b0 = 1u32;
+        let ch0_b1 = 1u32 << 16;
+        let ch1_b1 = (1u32 << 16) | 1;
+
+        let n1 = arena.atomic(ch0_b0, 100, 0x01, vec![1]);
+        let n2 = arena.atomic(ch1_b0, 200, 0x01, vec![2]);
+        let n3 = arena.atomic(ch0_b1, 150, 0x02, vec![3]);
+        let n4 = arena.atomic(ch1_b1, 80, 0x02, vec![4]);
+
+        let p1 = arena.parallel(n1, n2).unwrap();
+        let p2 = arena.parallel(n3, n4).unwrap();
+        let root = arena.parallel(p1, p2).unwrap();
+
+        let boards = flatten_to_boards(&arena, root);
+        assert_eq!(boards.len(), 2);
+
+        // board 0
+        assert_eq!(boards[0].board_id, 0);
+        assert_eq!(boards[0].channels.len(), 2);
+        assert_eq!(boards[0].channels[0].channel_id, ch0_b0);
+        assert_eq!(boards[0].channels[1].channel_id, ch1_b0);
+
+        // board 1
+        assert_eq!(boards[1].board_id, 1);
+        assert_eq!(boards[1].channels.len(), 2);
+        assert_eq!(boards[1].channels[0].channel_id, ch0_b1);
+        assert_eq!(boards[1].channels[1].channel_id, ch1_b1);
+
+        // board 0 duration = max(100, 200) = 200
+        assert_eq!(boards[0].total_duration, 200);
+        // board 1 duration = max(150, 80) = 200 (root duration is 200)
+        assert_eq!(boards[1].total_duration, 200);
+    }
+
+    #[test]
+    fn test_flatten_sequential_parallel() {
+        let mut arena = ArenaContext::new();
+
+        // (A:ch0 | B:ch1) @ (C:ch0)
+        let a = arena.atomic(0, 100, 0x01, vec![]);
+        let b = arena.atomic(1, 50, 0x02, vec![]);
+        let c = arena.atomic(0, 30, 0x03, vec![]);
+        let par = arena.parallel(a, b).unwrap();
+        let root = arena.sequential(par, c);
+
+        let boards = flatten_to_boards(&arena, root);
+        assert_eq!(boards.len(), 1);
+        assert_eq!(boards[0].channels.len(), 2);
+
+        // ch0: A@t=0(dur=100), C@t=100(dur=30)
+        let ch0 = &boards[0].channels[0];
+        assert_eq!(ch0.channel_id, 0);
+        assert_eq!(ch0.events.len(), 2);
+        assert_eq!(ch0.events[0].time, 0);
+        assert_eq!(ch0.events[1].time, 100);
+        assert_eq!(ch0.events[1].opcode, 0x03);
+
+        // ch1: B@t=0(dur=50)
+        let ch1 = &boards[0].channels[1];
+        assert_eq!(ch1.channel_id, 1);
+        assert_eq!(ch1.events.len(), 1);
+        assert_eq!(ch1.events[0].time, 0);
     }
 }

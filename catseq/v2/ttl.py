@@ -50,14 +50,20 @@ class TTLOn(HardwareState):
 # Atomic Operations (原子操作)
 # =============================================================================
 
+class TTLUninitialized(HardwareState):
+    def is_compatible_with(self, other: HardwareState) -> bool:
+        return isinstance(other, TTLOff)
+
+
 def ttl_init() -> OpenMorphism:
     """TTL 初始化 (原子操作)
 
-    状态转换: Any -> TTLOff
+    状态转换: TTLUninitialized -> TTLOff
     """
     def gen():
         yield (0, OpCode.TTL_INIT, b"")
-    return OpenMorphism(gen, name="ttl_init")
+    return OpenMorphism(gen, name="ttl_init", transitions={TTLUninitialized: TTLOff},
+                        infer_state=lambda _: TTLOff())
 
 
 def ttl_on() -> OpenMorphism:
@@ -67,7 +73,8 @@ def ttl_on() -> OpenMorphism:
     """
     def gen():
         yield (0, OpCode.TTL_ON, b"")
-    return OpenMorphism(gen, name="ttl_on")
+    return OpenMorphism(gen, name="ttl_on", transitions={TTLOff: TTLOn},
+                        infer_state=lambda _: TTLOn())
 
 
 def ttl_off() -> OpenMorphism:
@@ -77,7 +84,8 @@ def ttl_off() -> OpenMorphism:
     """
     def gen():
         yield (0, OpCode.TTL_OFF, b"")
-    return OpenMorphism(gen, name="ttl_off")
+    return OpenMorphism(gen, name="ttl_off", transitions={TTLOn: TTLOff},
+                        infer_state=lambda _: TTLOff())
 
 
 def wait(duration: float) -> OpenMorphism:

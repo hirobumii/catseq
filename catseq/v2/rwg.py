@@ -121,36 +121,58 @@ def _encode_static_waveforms(waveforms: List[StaticWaveform]) -> bytes:
 # =============================================================================
 
 def rwg_init() -> OpenMorphism:
-    """RWG 板级初始化 (原子操作)"""
+    """RWG 板级初始化 (原子操作)
+
+    状态转换: RWGUninitialized -> RWGReady(0)
+    """
     def gen():
         yield (0, OpCode.RWG_INIT, b"")
-    return OpenMorphism(gen, name="rwg_init")
+    return OpenMorphism(gen, name="rwg_init", transitions={RWGUninitialized: RWGReady},
+                        infer_state=lambda _: RWGReady(carrier_freq=0.0))
 
 
 def set_carrier(freq: float) -> OpenMorphism:
     """设置载波频率 (原子操作)
+
+    状态转换: RWGReady -> RWGReady
 
     Args:
         freq: 载波频率 (MHz)
     """
     def gen():
         yield (0, OpCode.RWG_SET_CARRIER, struct.pack('<d', freq))
-    return OpenMorphism(gen, name=f"set_carrier({freq}MHz)")
+    return OpenMorphism(gen, name=f"set_carrier({freq}MHz)", transitions={RWGReady: RWGReady},
+                        infer_state=lambda _, f=freq: RWGReady(carrier_freq=f))
 
 
 def load_coeffs(params: List[WaveformParams]) -> OpenMorphism:
     """加载波形系数 (原子操作)
+
+    状态转换: RWGReady|RWGActive -> RWGActive
 
     Args:
         params: 波形参数列表
     """
     def gen():
         yield (0, OpCode.RWG_LOAD_COEFFS, _encode_waveform_params(params))
-    return OpenMorphism(gen, name="load_coeffs")
+
+    def _infer(s: HardwareState) -> HardwareState:
+        freq = s.carrier_freq if hasattr(s, 'carrier_freq') else 0.0
+        rf = s.rf_on if hasattr(s, 'rf_on') else False
+        snap = s.snapshot if hasattr(s, 'snapshot') else ()
+        return RWGActive(carrier_freq=freq, rf_on=rf, snapshot=snap)
+
+    return OpenMorphism(
+        gen, name="load_coeffs",
+        transitions={RWGReady: RWGActive, RWGActive: RWGActive},
+        infer_state=_infer,
+    )
 
 
 def update_params(waveforms: List[StaticWaveform] | None = None) -> OpenMorphism:
     """触发参数更新 (原子操作)
+
+    状态转换: RWGActive -> RWGActive
 
     Args:
         waveforms: 可选的波形快照（用于状态追踪）
@@ -158,18 +180,34 @@ def update_params(waveforms: List[StaticWaveform] | None = None) -> OpenMorphism
     def gen():
         payload = _encode_static_waveforms(waveforms) if waveforms else b""
         yield (0, OpCode.RWG_UPDATE_PARAMS, payload)
-    return OpenMorphism(gen, name="update_params")
+
+    def _infer(s: HardwareState) -> HardwareState:
+        snap = tuple(waveforms) if waveforms else s.snapshot if hasattr(s, 'snapshot') else ()
+        return RWGActive(carrier_freq=s.carrier_freq, rf_on=s.rf_on, snapshot=snap)
+
+    return OpenMorphism(gen, name="update_params", transitions={RWGActive: RWGActive},
+                        infer_state=_infer)
 
 
 def rf_switch(on: bool) -> OpenMorphism:
     """RF 开关控制 (原子操作)
+
+    状态转换: RWGActive -> RWGActive
 
     Args:
         on: True=开, False=关
     """
     def gen():
         yield (0, OpCode.RWG_RF_SWITCH, b'\x01' if on else b'\x00')
-    return OpenMorphism(gen, name=f"rf_{'on' if on else 'off'}")
+
+    def _infer(s: HardwareState) -> HardwareState:
+        freq = s.carrier_freq if hasattr(s, 'carrier_freq') else 0.0
+        snap = s.snapshot if hasattr(s, 'snapshot') else ()
+        return RWGActive(carrier_freq=freq, rf_on=on, snapshot=snap)
+
+    return OpenMorphism(gen, name=f"rf_{'on' if on else 'off'}",
+                        transitions={RWGReady: RWGActive, RWGActive: RWGActive},
+                        infer_state=_infer)
 
 
 def wait(duration: float) -> OpenMorphism:
@@ -238,59 +276,73 @@ def rf_pulse(duration: float) -> OpenMorphism:
 
 
 def linear_ramp(
-    start: List[StaticWaveform],
     target: List[StaticWaveform],
-    duration: float
+    duration: float,
 ) -> OpenMorphism:
-    """线性渐变 (组合操作)
+    """线性渐变 (组合操作，使用 backpatching 推导起始状态)
 
-    等价于:
-        load_coeffs(ramp_params) >> update_params()
-        >> wait(duration)
-        >> load_coeffs(static_params) >> update_params(target)
+    起始波形从前序操作的 exit_state 自动推导（通过 backpatching）。
 
     Args:
-        start: 起始波形状态
         target: 目标波形状态
         duration: 渐变时长 (秒，SI 单位)
 
     Note:
-        典型用法是与 set_state 组合：
-        >>> seq = set_state(start) >> linear_ramp(start, target, 10*us)
+        典型用法：
+        >>> seq = set_state(start) >> linear_ramp(target, 10*us)
     """
     duration_us = duration * 1e6
 
-    ramp_params = []
-    static_params = []
-
-    for start_wf, target_wf in zip(start, target):
-        sbg_id = start_wf.sbg_id
-
-        # 计算斜率
-        freq_rate = (target_wf.freq - start_wf.freq) / duration_us if duration_us > 0 else 0
-        amp_rate = (target_wf.amp - start_wf.amp) / duration_us if duration_us > 0 else 0
-
-        ramp_params.append(WaveformParams(
-            sbg_id=sbg_id,
-            freq_coeffs=(start_wf.freq, freq_rate, None, None) if freq_rate != 0 else (start_wf.freq, 0.0, None, None),
-            amp_coeffs=(start_wf.amp, amp_rate, None, None) if amp_rate != 0 else (start_wf.amp, 0.0, None, None),
-            initial_phase=start_wf.phase,
-            phase_reset=False,
-        ))
-
-        static_params.append(WaveformParams(
-            sbg_id=sbg_id,
-            freq_coeffs=(target_wf.freq, 0.0, None, None),
-            amp_coeffs=(target_wf.amp, 0.0, None, None),
+    # Static end: load_coeffs payload 已知
+    static_params = [
+        WaveformParams(
+            sbg_id=t.sbg_id,
+            freq_coeffs=(t.freq, 0.0, None, None),
+            amp_coeffs=(t.amp, 0.0, None, None),
             initial_phase=0.0,
             phase_reset=False,
-        ))
+        )
+        for t in target
+    ]
 
-    return (
-        load_coeffs(ramp_params) >> update_params()
-        >> wait(duration)
-        >> load_coeffs(static_params) >> update_params(target)
+    def _ramp_payload(state: HardwareState) -> bytes:
+        """Backpatch generator: 从前序状态推导 ramp 系数"""
+        start = state.snapshot if hasattr(state, 'snapshot') and state.snapshot else [
+            StaticWaveform(sbg_id=t.sbg_id, freq=state.carrier_freq if hasattr(state, 'carrier_freq') else 0.0)
+            for t in target
+        ]
+        ramp_params = []
+        for start_wf, target_wf in zip(start, target):
+            freq_rate = (target_wf.freq - start_wf.freq) / duration_us if duration_us > 0 else 0
+            amp_rate = (target_wf.amp - start_wf.amp) / duration_us if duration_us > 0 else 0
+            ramp_params.append(WaveformParams(
+                sbg_id=start_wf.sbg_id,
+                freq_coeffs=(start_wf.freq, freq_rate, None, None),
+                amp_coeffs=(start_wf.amp, amp_rate, None, None),
+                initial_phase=start_wf.phase if hasattr(start_wf, 'phase') else 0.0,
+                phase_reset=False,
+            ))
+        return _encode_waveform_params(ramp_params)
+
+    def gen():
+        # Dynamic: ramp load_coeffs (payload depends on predecessor state)
+        yield (0, OpCode.RWG_LOAD_COEFFS, _ramp_payload)
+        yield (0, OpCode.RWG_UPDATE_PARAMS, b"")
+        # Wait
+        cycles = time_to_cycles(duration)
+        if cycles > 0:
+            yield (cycles, OpCode.IDENTITY, b"")
+        # Static end: settle to target
+        yield (0, OpCode.RWG_LOAD_COEFFS, _encode_waveform_params(static_params))
+        yield (0, OpCode.RWG_UPDATE_PARAMS, _encode_static_waveforms(target))
+
+    def _infer(s: HardwareState) -> HardwareState:
+        freq = s.carrier_freq if hasattr(s, 'carrier_freq') else 0.0
+        rf = s.rf_on if hasattr(s, 'rf_on') else False
+        return RWGActive(carrier_freq=freq, rf_on=rf, snapshot=tuple(target))
+
+    return OpenMorphism(
+        gen, name="linear_ramp",
+        transitions={RWGReady: RWGActive, RWGActive: RWGActive},
+        infer_state=_infer,
     )
-
-
-

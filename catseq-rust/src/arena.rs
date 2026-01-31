@@ -290,6 +290,20 @@ impl ArenaContext {
         Ok(Some(current[0]))
     }
 
+    /// 更新原子节点的 payload
+    ///
+    /// 仅限 Atomic 节点，用于 backpatching
+    pub fn update_payload(&mut self, node_id: NodeId, opcode: u16, data: Vec<u8>) -> Result<(), String> {
+        let node = &mut self.nodes[node_id as usize];
+        match node {
+            MorphismData::Atomic { payload, .. } => {
+                *payload = AtomicPayload::new(opcode, data);
+                Ok(())
+            }
+            _ => Err("update_payload only works on Atomic nodes".to_string()),
+        }
+    }
+
     /// 在节点末尾追加 Identity padding
     ///
     /// 等价于 Sequential(node_id, Atomic(Identity, duration))

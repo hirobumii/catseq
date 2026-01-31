@@ -201,6 +201,56 @@ class CompilerContext:
         """获取节点涉及的通道（通过 NodeId）。"""
         ...
 
+    def flatten_by_board(
+        self, node_id: int
+    ) -> List[Tuple[int, int, List[Tuple[int, int, List[Tuple[int, int, int, bytes]]]]]]:
+        """按板卡展平 Morphism 树为时间线。
+
+        DFS 遍历 Morphism Arena，按 board → channel → events 分组。
+        channel_id 高 16 位为 board_id。
+
+        Args:
+            node_id: 根节点 ID。
+
+        Returns:
+            板卡时间线列表，每个元素为:
+            (board_id, total_duration, [
+                (channel_id, channel_duration, [
+                    (time, duration, opcode, payload), ...
+                ]), ...
+            ])
+        """
+        ...
+
+    def update_payload(self, node_id: int, opcode: int, data: bytes) -> None:
+        """更新原子节点的 payload（用于 backpatching）。
+
+        Args:
+            node_id: 原子节点 ID。
+            opcode: 操作码（用于验证）。
+            data: 新的 payload 数据。
+
+        Raises:
+            ValueError: 节点不存在、不是原子节点、或 opcode 不匹配。
+        """
+        ...
+
+    def pad_end(self, node_id: int, duration: int, opcode: int) -> int:
+        """在节点末尾追加 Identity padding。
+
+        等价于 Sequential(node_id, Identity(duration))。
+        如果 duration == 0，直接返回原节点。
+
+        Args:
+            node_id: 节点 ID。
+            duration: padding 时长。
+            opcode: Wait 操作码。
+
+        Returns:
+            新节点 ID（或原节点 ID，如果 duration == 0）。
+        """
+        ...
+
     def __repr__(self) -> str: ...
 
 

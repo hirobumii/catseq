@@ -85,6 +85,39 @@ def node_count() -> int:
     return _global_context.node_count()
 
 
+# Type aliases for flatten_by_board return structure
+from typing import TypeAlias
+
+TimelineEvent: TypeAlias = tuple[int, int, int, bytes]
+"""(time, duration, opcode, payload)"""
+
+ChannelTimeline: TypeAlias = tuple[int, int, list[TimelineEvent]]
+"""(channel_id, total_duration, events)"""
+
+BoardTimeline: TypeAlias = tuple[int, int, list[ChannelTimeline]]
+"""(board_id, total_duration, channels)"""
+
+
+def flatten_by_board(node_id: int) -> list[BoardTimeline]:
+    """按板卡展平 Morphism 树为时间线。
+
+    DFS 遍历 Morphism Arena，按 board → channel → events 分组。
+
+    Args:
+        node_id: 根节点 ID。
+
+    Returns:
+        板卡时间线列表，每个元素为:
+        (board_id, total_duration, [
+            (channel_id, channel_duration, [
+                (time, duration, opcode, payload), ...
+            ]), ...
+        ])
+    """
+    ctx = get_context()
+    return ctx.flatten_by_board(node_id)
+
+
 # =============================================================================
 # ProgramArena - 用于 Program DSL 控制流
 # =============================================================================

@@ -229,6 +229,47 @@ impl CompilerContext {
             .collect()
     }
 
+    /// 展平为 per-board、per-channel timeline
+    ///
+    /// 直接 DFS 遍历 Morphism 树，按板卡和通道分组，保留每个 Atomic 的 duration。
+    ///
+    /// Returns:
+    ///     List[(board_id, board_dur, [(channel_id, ch_dur, [(time, duration, opcode, data)])])]
+    fn flatten_by_board(
+        &self,
+        node_id: u32,
+    ) -> Vec<(u16, u64, Vec<(u32, u64, Vec<(u64, u64, u16, Vec<u8>)>)>)> {
+        let arena = self.arena.borrow();
+        let boards = compiler::flatten_to_boards(&arena, node_id);
+
+        boards
+            .into_iter()
+            .map(|b| {
+                let channels = b
+                    .channels
+                    .into_iter()
+                    .map(|c| {
+                        let events = c
+                            .events
+                            .into_iter()
+                            .map(|e| (e.time, e.duration, e.opcode, e.payload))
+                            .collect();
+                        (c.channel_id, c.total_duration, events)
+                    })
+                    .collect();
+                (b.board_id, b.total_duration, channels)
+            })
+            .collect()
+    }
+
+    /// 更新原子节点的 payload（用于 backpatching）
+    fn update_payload(&self, node_id: u32, opcode: u16, data: Vec<u8>) -> PyResult<()> {
+        self.arena
+            .borrow_mut()
+            .update_payload(node_id, opcode, data)
+            .map_err(|e| PyValueError::new_err(e))
+    }
+
     /// 在节点末尾追加 Identity padding
     ///
     /// 等价于 Sequential(node_id, Identity(duration))

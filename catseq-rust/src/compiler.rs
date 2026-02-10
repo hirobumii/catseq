@@ -126,16 +126,19 @@ pub fn flatten_to_boards(arena: &ArenaContext, root: NodeId) -> Vec<BoardTimelin
                 duration,
                 payload,
             } => {
-                channel_events
-                    .entry(*channel_id)
-                    .or_default()
-                    .push(TimelineEvent {
-                        time: start_time,
-                        duration: *duration,
-                        channel_id: *channel_id,
-                        opcode: payload.opcode,
-                        payload: (*payload.data).clone(),
-                    });
+                // 跳过 IDENTITY (opcode 0x0000)：时间信息已由 timestamp 表达
+                if payload.opcode != 0x0000 {
+                    channel_events
+                        .entry(*channel_id)
+                        .or_default()
+                        .push(TimelineEvent {
+                            time: start_time,
+                            duration: *duration,
+                            channel_id: *channel_id,
+                            opcode: payload.opcode,
+                            payload: (*payload.data).clone(),
+                        });
+                }
             }
             MorphismData::Sequential { lhs, rhs, .. } => {
                 let lhs_duration = arena.get(*lhs).duration();
@@ -183,6 +186,187 @@ pub fn flatten_to_boards(arena: &ArenaContext, root: NodeId) -> Vec<BoardTimelin
 
     boards.sort_by_key(|b| b.board_id);
     boards
+}
+
+// =============================================================================
+// Program AST Resolution (Lift → BoardTimeline)
+// =============================================================================
+
+use crate::program::arena::ProgramArena;
+use crate::program::nodes::{NodeData, NodeId as ProgramNodeId};
+use crate::program::values::ValueData;
+
+/// 已解析的 Program AST 节点。
+///
+/// 保留控制流结构（Loop/Match/Chain 等），但 Lift 节点被展平为
+/// 按板卡分组的时间线事件。
+#[derive(Debug, Clone)]
+pub enum ResolvedNode {
+    /// Lift 已解析为板卡时间线
+    Lift {
+        boards: Vec<BoardTimeline>,
+    },
+    /// 顺序组合
+    Chain {
+        left: Box<ResolvedNode>,
+        right: Box<ResolvedNode>,
+    },
+    /// 硬件循环（保留结构，不展开）
+    Loop {
+        count: ResolvedValue,
+        body: Box<ResolvedNode>,
+    },
+    /// 模式匹配（保留结构）
+    Match {
+        subject: ResolvedValue,
+        cases: Vec<(i64, ResolvedNode)>,
+        default: Option<Box<ResolvedNode>>,
+    },
+    /// 时间延迟
+    Delay {
+        duration: ResolvedValue,
+    },
+    /// 变量赋值
+    Set {
+        target: ResolvedValue,
+        value: ResolvedValue,
+    },
+    /// 函数定义
+    FuncDef {
+        name: String,
+        params: Vec<ResolvedValue>,
+        body: Box<ResolvedNode>,
+    },
+    /// 函数调用
+    Apply {
+        func: Box<ResolvedNode>,
+        args: Vec<ResolvedValue>,
+    },
+    /// 测量
+    Measure {
+        target: ResolvedValue,
+        source: u32,
+    },
+    /// 空操作
+    Identity,
+}
+
+/// 已解析的值（用于 Python 端展示）
+#[derive(Debug, Clone)]
+pub enum ResolvedValue {
+    Literal(i64),
+    Float(f64),
+    Variable(String),
+    Expr(String), // 复杂表达式的字符串表示
+}
+
+/// 将 Program AST 解析为 ResolvedNode 树。
+///
+/// 递归遍历 Program 节点，遇到 Lift 时调用 Morphism Arena 的
+/// flatten_to_boards 展平为事件列表，其余节点保留原始结构。
+pub fn resolve_program(
+    program: &ProgramArena,
+    morphism_arena: &ArenaContext,
+    root: ProgramNodeId,
+) -> Result<ResolvedNode, String> {
+    let node = program
+        .get_node(root)
+        .ok_or_else(|| format!("invalid program node id: {}", root))?;
+
+    match node.clone() {
+        NodeData::Lift { morphism_ref, .. } => {
+            let morph_id = morphism_ref as NodeId;
+            let boards = flatten_to_boards(morphism_arena, morph_id);
+            Ok(ResolvedNode::Lift { boards })
+        }
+        NodeData::Chain { left, right } => {
+            let l = resolve_program(program, morphism_arena, left)?;
+            let r = resolve_program(program, morphism_arena, right)?;
+            Ok(ResolvedNode::Chain {
+                left: Box::new(l),
+                right: Box::new(r),
+            })
+        }
+        NodeData::Loop { count, body } => {
+            let c = resolve_value(program, count);
+            let b = resolve_program(program, morphism_arena, body)?;
+            Ok(ResolvedNode::Loop {
+                count: c,
+                body: Box::new(b),
+            })
+        }
+        NodeData::Match {
+            subject,
+            cases,
+            default,
+        } => {
+            let subj = resolve_value(program, subject);
+            let mut resolved_cases = Vec::new();
+            for (key, case_node) in cases {
+                let resolved = resolve_program(program, morphism_arena, case_node)?;
+                resolved_cases.push((key, resolved));
+            }
+            resolved_cases.sort_by_key(|(k, _)| *k);
+            let resolved_default = match default {
+                Some(d) => Some(Box::new(resolve_program(program, morphism_arena, d)?)),
+                None => None,
+            };
+            Ok(ResolvedNode::Match {
+                subject: subj,
+                cases: resolved_cases,
+                default: resolved_default,
+            })
+        }
+        NodeData::Delay { duration, .. } => {
+            let d = resolve_value(program, duration);
+            Ok(ResolvedNode::Delay { duration: d })
+        }
+        NodeData::Set { target, value } => Ok(ResolvedNode::Set {
+            target: resolve_value(program, target),
+            value: resolve_value(program, value),
+        }),
+        NodeData::FuncDef {
+            name, params, body, ..
+        } => {
+            let resolved_params: Vec<ResolvedValue> =
+                params.iter().map(|p| resolve_value(program, *p)).collect();
+            let resolved_body = resolve_program(program, morphism_arena, body)?;
+            Ok(ResolvedNode::FuncDef {
+                name,
+                params: resolved_params,
+                body: Box::new(resolved_body),
+            })
+        }
+        NodeData::Apply { func, args } => {
+            let resolved_func = resolve_program(program, morphism_arena, func)?;
+            let resolved_args: Vec<ResolvedValue> =
+                args.iter().map(|a| resolve_value(program, *a)).collect();
+            Ok(ResolvedNode::Apply {
+                func: Box::new(resolved_func),
+                args: resolved_args,
+            })
+        }
+        NodeData::Measure { target, source } => Ok(ResolvedNode::Measure {
+            target: resolve_value(program, target),
+            source,
+        }),
+        NodeData::Identity => Ok(ResolvedNode::Identity),
+    }
+}
+
+/// 解析 ValueId 为 ResolvedValue
+fn resolve_value(program: &ProgramArena, value_id: u32) -> ResolvedValue {
+    match program.get_value(value_id) {
+        Some(ValueData::Literal { value, is_float }) => {
+            if *is_float {
+                ResolvedValue::Float(f64::from_bits(*value as u64))
+            } else {
+                ResolvedValue::Literal(*value)
+            }
+        }
+        Some(ValueData::Variable { name, .. }) => ResolvedValue::Variable(name.clone()),
+        _ => ResolvedValue::Expr(format!("expr({})", value_id)),
+    }
 }
 
 #[cfg(test)]

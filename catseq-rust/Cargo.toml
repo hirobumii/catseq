@@ -8,7 +8,7 @@ name = "catseq_rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3 = { version = "0.23", features = ["extension-module", "multiple-pymethods"] }
 pliron = "0.13"
 pliron-derive = "0.13"
 

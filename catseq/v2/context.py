@@ -221,3 +221,102 @@ def arena_value_count() -> int:
     if arena is None:
         return 0
     return arena.value_count()
+
+
+def resolve_program(node_id: int) -> dict:
+    """解析 Program AST，将 Lift 节点展平为板卡时间线，保留控制流结构。
+
+    返回嵌套 dict 表示的 AST 树。每个节点有 'type' 字段：
+    - 'lift': Morphism 已展平，含 'boards' (同 flatten_by_board 格式)
+    - 'chain': 顺序组合，含 'left', 'right'
+    - 'loop': 硬件循环，含 'count', 'body'
+    - 'match': 模式匹配，含 'subject', 'cases', 'default'
+    - 'delay': 延迟，含 'duration'
+    - 'set': 赋值，含 'target', 'value'
+    - 'identity': 空操作
+
+    Args:
+        node_id: Program 根节点 ID。
+
+    Returns:
+        嵌套 dict 表示的已解析 AST。
+    """
+    arena = get_arena()
+    ctx = get_context()
+    return arena.resolve_program(node_id, ctx)
+
+
+def _format_resolved_value(v: dict) -> str:
+    """格式化 ResolvedValue dict"""
+    t = v["type"]
+    if t == "literal":
+        return str(v["value"])
+    elif t == "float":
+        return str(v["value"])
+    elif t == "variable":
+        return v["name"]
+    else:
+        return v.get("repr", "?")
+
+
+def print_resolved(node: dict, indent: int = 0) -> None:
+    """友好打印 resolve_program 的结果。
+
+    Args:
+        node: resolve_program 返回的 AST dict。
+        indent: 缩进层级。
+    """
+    prefix = "  " * indent
+    t = node["type"]
+
+    if t == "lift":
+        boards = node["boards"]
+        print(f"{prefix}Lift:")
+        for board_id, total_dur, events in sorted(boards, key=lambda x: x[0]):
+            print(f"{prefix}  Board {board_id}  (total: {_format_cycles(total_dur)})")
+            for time, dur, ch_id, opcode, payload in events:
+                t_str = _format_cycles(time)
+                d_str = _format_cycles(dur)
+                ch_str = _format_channel(ch_id)
+                op_str = _opcode_name(opcode)
+                pay_str = payload.hex() if payload else ""
+                print(f"{prefix}    {t_str:>8} {d_str:>8} {ch_str:>8} {op_str:<16} {pay_str}")
+    elif t == "chain":
+        print(f"{prefix}Chain:")
+        print_resolved(node["left"], indent + 1)
+        print_resolved(node["right"], indent + 1)
+    elif t == "loop":
+        count = _format_resolved_value(node["count"])
+        print(f"{prefix}Loop (count={count}):")
+        print_resolved(node["body"], indent + 1)
+    elif t == "match":
+        subj = _format_resolved_value(node["subject"])
+        print(f"{prefix}Match ({subj}):")
+        for key, case_node in node["cases"].items():
+            print(f"{prefix}  case {key}:")
+            print_resolved(case_node, indent + 2)
+        if node.get("default") is not None:
+            print(f"{prefix}  default:")
+            print_resolved(node["default"], indent + 2)
+    elif t == "delay":
+        dur = _format_resolved_value(node["duration"])
+        print(f"{prefix}Delay ({dur})")
+    elif t == "set":
+        target = _format_resolved_value(node["target"])
+        value = _format_resolved_value(node["value"])
+        print(f"{prefix}Set {target} = {value}")
+    elif t == "identity":
+        print(f"{prefix}Identity")
+    elif t == "func_def":
+        params = ", ".join(_format_resolved_value(p) for p in node["params"])
+        print(f"{prefix}FuncDef {node['name']}({params}):")
+        print_resolved(node["body"], indent + 1)
+    elif t == "apply":
+        args = ", ".join(_format_resolved_value(a) for a in node["args"])
+        print(f"{prefix}Apply ({args}):")
+        print_resolved(node["func"], indent + 1)
+    elif t == "measure":
+        target = _format_resolved_value(node["target"])
+        print(f"{prefix}Measure {target} <- source={node['source']}")
+    else:
+        print(f"{prefix}Unknown: {t}")

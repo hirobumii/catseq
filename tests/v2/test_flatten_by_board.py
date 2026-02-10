@@ -244,7 +244,8 @@ def test_events_sorted_by_time():
 
     nodes = []
     for i in range(5):
-        nodes.append(ctx.atomic_id(ch, 100, i, bytes([i])))
+        # opcode 从 1 开始，避免 IDENTITY (0x0000) 被过滤
+        nodes.append(ctx.atomic_id(ch, 100, i + 1, bytes([i])))
     seq = ctx.compose_sequence(nodes)
 
     boards = flatten_by_board(seq)

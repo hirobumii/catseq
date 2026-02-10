@@ -74,8 +74,8 @@ def lift(morphism: Morphism, **params: Union[Value, Numeric]) -> Program:
     arena = get_arena()
     # 将参数转换为 ValueId
     param_ids = {k: _ensure_value_id(v) for k, v in params.items()}
-    # 使用 Python object id 作为 morphism_ref
-    node_id = arena.lift(id(morphism), param_ids)
+    # 使用 Morphism Arena 的 node_id 作为 morphism_ref
+    node_id = arena.lift(morphism.node_id, param_ids)
     return Program(node_id)
 
 

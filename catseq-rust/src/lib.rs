@@ -441,6 +441,162 @@ impl Node {
     }
 }
 
+// ProgramArena 扩展方法（需要访问 CompilerContext）
+#[pymethods]
+impl ProgramArena {
+    /// 解析 Program AST，将 Lift 节点展平为板卡时间线，保留控制流结构。
+    ///
+    /// Args:
+    ///     node_id: Program 根节点 ID
+    ///     ctx: CompilerContext（提供 Morphism Arena）
+    ///
+    /// Returns:
+    ///     dict: 嵌套字典表示的 AST 树
+    fn resolve_program(
+        &self,
+        node_id: u32,
+        ctx: &CompilerContext,
+    ) -> PyResult<PyObject> {
+        let morphism_arena = ctx.arena.borrow();
+        let resolved = compiler::resolve_program(self, &morphism_arena, node_id)
+            .map_err(|e| PyValueError::new_err(e))?;
+        Python::with_gil(|py| resolved_node_to_py(py, &resolved))
+    }
+}
+
+/// 将 ResolvedNode 转换为 Python dict
+fn resolved_node_to_py(py: Python<'_>, node: &compiler::ResolvedNode) -> PyResult<PyObject> {
+    use compiler::ResolvedNode;
+    use pyo3::types::{PyDict, PyList};
+
+    let dict = PyDict::new(py);
+
+    match node {
+        ResolvedNode::Lift { boards } => {
+            dict.set_item("type", "lift")?;
+            let board_list: Vec<(u16, u64, Vec<(u64, u64, u32, u16, Vec<u8>)>)> = boards
+                .iter()
+                .map(|b| {
+                    let events: Vec<_> = b
+                        .events
+                        .iter()
+                        .map(|e| {
+                            (
+                                e.time,
+                                e.duration,
+                                e.channel_id,
+                                e.opcode,
+                                e.payload.clone(),
+                            )
+                        })
+                        .collect();
+                    (b.board_id, b.total_duration, events)
+                })
+                .collect();
+            dict.set_item("boards", board_list.into_pyobject(py)?)?;
+        }
+        ResolvedNode::Chain { left, right } => {
+            dict.set_item("type", "chain")?;
+            dict.set_item("left", resolved_node_to_py(py, left)?)?;
+            dict.set_item("right", resolved_node_to_py(py, right)?)?;
+        }
+        ResolvedNode::Loop { count, body } => {
+            dict.set_item("type", "loop")?;
+            dict.set_item("count", resolved_value_to_py(py, count)?)?;
+            dict.set_item("body", resolved_node_to_py(py, body)?)?;
+        }
+        ResolvedNode::Match {
+            subject,
+            cases,
+            default,
+        } => {
+            dict.set_item("type", "match")?;
+            dict.set_item("subject", resolved_value_to_py(py, subject)?)?;
+            let cases_dict = PyDict::new(py);
+            for (key, case_node) in cases {
+                cases_dict.set_item(key, resolved_node_to_py(py, case_node)?)?;
+            }
+            dict.set_item("cases", cases_dict)?;
+            match default {
+                Some(d) => dict.set_item("default", resolved_node_to_py(py, d)?)?,
+                None => dict.set_item("default", py.None())?,
+            }
+        }
+        ResolvedNode::Delay { duration } => {
+            dict.set_item("type", "delay")?;
+            dict.set_item("duration", resolved_value_to_py(py, duration)?)?;
+        }
+        ResolvedNode::Set { target, value } => {
+            dict.set_item("type", "set")?;
+            dict.set_item("target", resolved_value_to_py(py, target)?)?;
+            dict.set_item("value", resolved_value_to_py(py, value)?)?;
+        }
+        ResolvedNode::FuncDef {
+            name, params, body, ..
+        } => {
+            dict.set_item("type", "func_def")?;
+            dict.set_item("name", name)?;
+            let params_list = PyList::new(
+                py,
+                params
+                    .iter()
+                    .map(|p| resolved_value_to_py(py, p))
+                    .collect::<PyResult<Vec<_>>>()?,
+            )?;
+            dict.set_item("params", params_list)?;
+            dict.set_item("body", resolved_node_to_py(py, body)?)?;
+        }
+        ResolvedNode::Apply { func, args } => {
+            dict.set_item("type", "apply")?;
+            dict.set_item("func", resolved_node_to_py(py, func)?)?;
+            let args_list = PyList::new(
+                py,
+                args.iter()
+                    .map(|a| resolved_value_to_py(py, a))
+                    .collect::<PyResult<Vec<_>>>()?,
+            )?;
+            dict.set_item("args", args_list)?;
+        }
+        ResolvedNode::Measure { target, source } => {
+            dict.set_item("type", "measure")?;
+            dict.set_item("target", resolved_value_to_py(py, target)?)?;
+            dict.set_item("source", source)?;
+        }
+        ResolvedNode::Identity => {
+            dict.set_item("type", "identity")?;
+        }
+    }
+
+    Ok(dict.into_pyobject(py)?.into())
+}
+
+/// 将 ResolvedValue 转换为 Python 对象
+fn resolved_value_to_py(py: Python<'_>, value: &compiler::ResolvedValue) -> PyResult<PyObject> {
+    use compiler::ResolvedValue;
+    use pyo3::types::PyDict;
+
+    let dict = PyDict::new(py);
+    match value {
+        ResolvedValue::Literal(v) => {
+            dict.set_item("type", "literal")?;
+            dict.set_item("value", v)?;
+        }
+        ResolvedValue::Float(v) => {
+            dict.set_item("type", "float")?;
+            dict.set_item("value", v)?;
+        }
+        ResolvedValue::Variable(name) => {
+            dict.set_item("type", "variable")?;
+            dict.set_item("name", name)?;
+        }
+        ResolvedValue::Expr(s) => {
+            dict.set_item("type", "expr")?;
+            dict.set_item("repr", s)?;
+        }
+    }
+    Ok(dict.into_pyobject(py)?.into())
+}
+
 /// Python 模块定义
 #[pymodule]
 fn catseq_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {

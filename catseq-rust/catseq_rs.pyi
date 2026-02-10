@@ -535,6 +535,18 @@ class ProgramArena:
         """批量 Chain 组合。"""
         ...
 
+    def resolve_program(self, node_id: int, ctx: CompilerContext) -> Dict[str, Any]:
+        """解析 Program AST，将 Lift 节点展平为板卡时间线，保留控制流结构。
+
+        Args:
+            node_id: Program 根节点 ID。
+            ctx: CompilerContext（提供 Morphism Arena）。
+
+        Returns:
+            嵌套 dict 表示的已解析 AST 树。
+        """
+        ...
+
     def is_literal(self, value_id: int) -> bool:
         """检查 ValueId 是否为字面量。"""
         ...

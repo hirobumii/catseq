@@ -322,7 +322,10 @@ def repeat_morphism(
     # - 26: Per-iteration overhead (13 cycles condition + 13 cycles increment/jump)
     # - t_morphism: Morphism execution time per iteration
     LOOP_FIXED_OVERHEAD = 15
-    LOOP_PER_ITERATION_OVERHEAD = 24
+    if count >= 128:
+        LOOP_PER_ITERATION_OVERHEAD = 25
+    else:
+        LOOP_PER_ITERATION_OVERHEAD = 24
 
     total_duration_cycles = LOOP_FIXED_OVERHEAD + count * (LOOP_PER_ITERATION_OVERHEAD + t_morphism)
 

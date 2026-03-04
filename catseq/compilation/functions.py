@@ -5,7 +5,7 @@ This module contains the actual OASM DSL functions that will be called
 when executing compiled sequences on the hardware.
 """
 # Import actual OASM functions
-from oasm.rtmq2 import sfs, amk, wait, send_trig_code, wait_rtlk_trig, asm, nop
+from oasm.rtmq2 import sfs, amk, wait, send_trig_code, wait_rtlk_trig, asm, nop, H, P
 from oasm.dev.rwg import fte, rwg, sbg
 
 
@@ -88,7 +88,10 @@ def wait_mu(cycles):
 
     # OASM wait() 已正确处理时序，无需减去 overhead
     # 对于极短等待（≤4 cycles），NOP 可能更高效
-    if cycles <= 4:
+    if cycles <= 10:
+        if cycles >=7:
+            nop(1,P)
+            cycles -=7
         nop(cycles)
     else:
         wait(cycles)

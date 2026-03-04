@@ -434,7 +434,7 @@ def _setup_adaptive_time_ticks(ax: plt.Axes, event_times: List[float], time_mapp
             display_positions.append(time_mapping[event_times[-1]])
 
     ax.set_xticks(display_positions)
-    ax.set_xticklabels([f"{t:.1f}" for t in important_times], rotation=45, ha="right")
+    ax.set_xticklabels([f"{t:.3f}" for t in important_times], rotation=45, ha="right")
     ax.set_xlabel("Time (μs) - Adaptive Scale")
 
 def _plot_adaptive_timeline(ax: plt.Axes, physical_lanes: Dict[Board, PhysicalLane], channel_styles=None, **kwargs):

@@ -317,8 +317,12 @@ class TestRepeatMorphism:
         assert result == mock_result_morphism
         assert isinstance(result, Mock)  # It's a mock, but represents a Morphism
 
-        # 2. Check timing calculation: 15 + 5*(26 + 100) = 15 + 5*126 = 15 + 630 = 645
-        expected_duration = 15 + count * (26 + 100)
+        # 2. Check timing calculation: 15 + 5*(24 + 100) = 15 + 5*126 = 15 + 620 = 635
+        # ! Notice ! :
+        # The loop control code requires 26 cycles according to the doc, but the actual 
+        # measured time is 24/25 cycles, corresponding to fewer than 128 iterations 
+        # and 128 or more iterations, respectively.
+        expected_duration = 15 + count * (24 + 100)
         call_args = mock_blackbox.call_args
         assert call_args[1]['duration_cycles'] == expected_duration
 

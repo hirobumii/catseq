@@ -450,21 +450,30 @@ def spline_arbi_func_ramp(targets: List[Optional[StaticWaveform]], duration: flo
             if target_freq != start_freq:
                 freq_coeffs, durs_us = gen_coeff(start_freq, target_freq, n_knots, duration_us, trace)
             else:
-                freq_coeffs = [(start_freq, 0.0, 0.0, 0.0)]* (n_knots-1)
+                freq_coeffs = [[start_freq, None, None, None]]* (n_knots-1)
 
             # --- Amplitude: use cubic polynomial in MICROSECONDS ---
             if target_amp != start_amp:
                 # Compute cubic coefficients in SECONDS first
                 amp_coeffs, durs_us = gen_coeff(start_amp, target_amp, n_knots, duration_us, trace)
             else:
-                amp_coeffs = [(start_amp, 0.0, 0.0, 0.0)] * (n_knots-1)
-        
+                amp_coeffs = [[start_amp, None, None, None]] * (n_knots-1)
+            t_knots = np.linspace(0, duration_us, n_knots)
+            durs_us = t_knots[1:] - t_knots[:-1]
+                
             for i, (freq_coeff, amp_coeff, dur) in enumerate(zip(freq_coeffs, amp_coeffs, durs_us)):
+                temp_freq_coeff = freq_coeff.copy()
+                temp_amp_coeff = amp_coeff.copy()
+                for k in range(4):
+                    if (not freq_coeff[k] is None) and freq_coeffs[i][k] == freq_coeffs[i-1][k]:
+                        temp_freq_coeff[k] = None
+                    if (not amp_coeff[k] is None) and amp_coeffs[i][k] == amp_coeffs[i-1][k]:
+                        temp_amp_coeff[k] = None
                 ramp_params[i].append(
                     WaveformParams(
                         sbg_id=sbg_id,
-                        freq_coeffs=freq_coeff,
-                        amp_coeffs=amp_coeff,
+                        freq_coeffs=temp_freq_coeff,
+                        amp_coeffs=temp_amp_coeff,
                         initial_phase=start_phase,
                         phase_reset=False,
                     )

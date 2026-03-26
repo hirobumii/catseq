@@ -151,7 +151,7 @@ def rwg_load_waveform(params: WaveformParams):
     # User implementation will call rwg.frq() and rwg.amp()
     pha_rld: int = 1 if params.phase_reset else 0
     fte.cfg(params.sbg_id, 0, 0, pha_rld=pha_rld)
-    rwg.frq(None, params.freq_coeffs, params.initial_phase)
+    rwg.frq(None, params.freq_coeffs, params.initial_phase, fct = params.fct)
     rwg.amp(None, params.amp_coeffs)
 
 def rwg_play(pud_mask: int, iou_mask: int):

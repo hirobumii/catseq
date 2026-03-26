@@ -61,10 +61,11 @@ def set_state(targets: List[StaticWaveform],phase_reset=True) -> MorphismDef:
             params.append(
                 WaveformParams(
                     sbg_id=t.sbg_id,
-                    freq_coeffs=(t.freq, None, None, None),
-                    amp_coeffs=(t.amp, None, None, None),
+                    freq_coeffs=(t.freq, 0.0, 0.0, 0.0),
+                    amp_coeffs=(t.amp, 0.0, 0.0, 0.0),
                     initial_phase=t.phase,
                     phase_reset=phase_reset,
+                    fct = t.fct,
                 )
             )
 
@@ -126,10 +127,16 @@ def linear_ramp(targets: List[Optional[StaticWaveform]], duration: float) -> Mor
         end_waveforms = []
 
         for target, current_wf in zip(targets, active_waveforms):
+            if target.fct != current_wf.fct:
+                raise ValueError(
+                    f"Target fct ({target.fct}) does not match current waveform fct ({current_wf.fct}) "
+                    f"for SBG {current_wf.sbg_id}. fct must remain consistent during ramp operations."
+                )
             sbg_id = current_wf.sbg_id
             start_freq = current_wf.freq
             start_amp = current_wf.amp
             start_phase = current_wf.phase
+            start_fct = current_wf.fct
 
             # Determine target freq/amp, defaulting to current values if not specified
             target_freq = target.freq if target and target.freq is not None else start_freq
@@ -150,8 +157,9 @@ def linear_ramp(targets: List[Optional[StaticWaveform]], duration: float) -> Mor
                     sbg_id=sbg_id,
                     freq_coeffs=freq_coeffs,
                     amp_coeffs=amp_coeffs,
-                    initial_phase=start_phase,
+                    initial_phase=0.0,
                     phase_reset=False, # Ensure phase continuity
+                    fct = current_wf.fct,
                 )
             )
             
@@ -163,11 +171,17 @@ def linear_ramp(targets: List[Optional[StaticWaveform]], duration: float) -> Mor
                     amp_coeffs=(target_amp, 0.0, None, None),    # Static at target amplitude  
                     initial_phase=0.0,  # Phase will be continuous from ramp
                     phase_reset=False,
+                    fct = start_fct,
                 )
             )
             
             end_waveforms.append(
-                StaticWaveform(sbg_id=sbg_id, freq=target_freq, amp=target_amp, phase=0.0)
+                StaticWaveform(
+                    sbg_id=sbg_id, 
+                    freq=target_freq, 
+                    amp=target_amp, 
+                    phase=0.0,
+                    fct=target.fct)
             )
 
         # Final state after ramp completion
@@ -253,6 +267,11 @@ def cubic_ramp(targets: List[Optional[StaticWaveform]], duration: float, pure_co
         end_waveforms = []
 
         for target, current_wf in zip(targets, active_waveforms):
+            if target.fct != current_wf.fct:
+                raise ValueError(
+                    f"Target fct ({target.fct}) does not match current waveform fct ({current_wf.fct}) "
+                    f"for SBG {current_wf.sbg_id}. fct must remain consistent during ramp operations."
+                )
             sbg_id = current_wf.sbg_id
             start_freq = current_wf.freq
             start_amp = current_wf.amp
@@ -297,8 +316,9 @@ def cubic_ramp(targets: List[Optional[StaticWaveform]], duration: float, pure_co
                     sbg_id=sbg_id,
                     freq_coeffs=freq_coeffs,
                     amp_coeffs=amp_coeffs,
-                    initial_phase=start_phase,
+                    initial_phase=0.0,
                     phase_reset=False,
+                    fct = current_wf.fct,
                 )
             )
 
@@ -306,10 +326,11 @@ def cubic_ramp(targets: List[Optional[StaticWaveform]], duration: float, pure_co
             static_params.append(
                 WaveformParams(
                     sbg_id=sbg_id,
-                    freq_coeffs=(target_freq, 0.0, None, None),
+                    freq_coeffs=(target_freq, 0.0, 0.0, 0.0),
                     amp_coeffs=(target_amp, 0.0, 0.0, 0.0),
                     initial_phase=0.0,
                     phase_reset=False,
+                    fct = target.fct,
                 )
             )
 
@@ -408,13 +429,6 @@ def spline_arbi_func_ramp(targets: List[Optional[StaticWaveform]], duration: flo
 
     Total morphism duration = duration (plus instantaneous setup/teardown cycles).
     """
-
-    def sqrt_blackman(t):
-        n = t.shape[0]
-        res = np.blackman(2*n-1)[:n]
-        res[0] = 0.0
-        return np.sqrt(res)
-
     def generator(channel: Channel, start_state: State) -> Morphism:
         if not isinstance(start_state, RWGActive):
             raise TypeError(
@@ -436,6 +450,11 @@ def spline_arbi_func_ramp(targets: List[Optional[StaticWaveform]], duration: flo
         end_waveforms = []
 
         for target, current_wf in zip(targets, active_waveforms):
+            if target.fct != current_wf.fct:
+                raise ValueError(
+                    f"Target fct ({target.fct}) does not match current waveform fct ({current_wf.fct}) "
+                    f"for SBG {current_wf.sbg_id}. fct must remain consistent during ramp operations."
+                )
             sbg_id = current_wf.sbg_id
             start_freq = current_wf.freq
             start_amp = current_wf.amp
@@ -464,18 +483,20 @@ def spline_arbi_func_ramp(targets: List[Optional[StaticWaveform]], duration: flo
             for i, (freq_coeff, amp_coeff, dur) in enumerate(zip(freq_coeffs, amp_coeffs, durs_us)):
                 temp_freq_coeff = freq_coeff.copy()
                 temp_amp_coeff = amp_coeff.copy()
-                for k in range(4):
-                    if (not freq_coeff[k] is None) and freq_coeffs[i][k] == freq_coeffs[i-1][k]:
-                        temp_freq_coeff[k] = None
-                    if (not amp_coeff[k] is None) and amp_coeffs[i][k] == amp_coeffs[i-1][k]:
-                        temp_amp_coeff[k] = None
+                if i >=1:
+                    for k in range(4):
+                        if (not freq_coeff[k] is None) and freq_coeffs[i][k] == freq_coeffs[i-1][k]:
+                            temp_freq_coeff[k] = None
+                        if (not amp_coeff[k] is None) and amp_coeffs[i][k] == amp_coeffs[i-1][k]:
+                            temp_amp_coeff[k] = None
                 ramp_params[i].append(
                     WaveformParams(
                         sbg_id=sbg_id,
                         freq_coeffs=temp_freq_coeff,
                         amp_coeffs=temp_amp_coeff,
-                        initial_phase=start_phase,
+                        initial_phase=0.0,
                         phase_reset=False,
+                        fct=current_wf.fct,
                     )
                 )
 
@@ -487,11 +508,12 @@ def spline_arbi_func_ramp(targets: List[Optional[StaticWaveform]], duration: flo
                     amp_coeffs=(target_amp, 0.0, 0.0, 0.0),
                     initial_phase=0.0,
                     phase_reset=False,
+                    fct = target.fct,
                 )
             )
 
             end_waveforms.append(
-                StaticWaveform(sbg_id=sbg_id, freq=target_freq, amp=target_amp, phase=0.0)
+                StaticWaveform(sbg_id=sbg_id, freq=target_freq, amp=target_amp, phase=None, fct = target.fct,)
             )
 
         end_state = RWGActive(
@@ -537,9 +559,156 @@ def spline_arbi_func_ramp(targets: List[Optional[StaticWaveform]], duration: flo
 
     return MorphismDef(generator)
 
+def gen_coeff_const_jerk(start, end, T):
+    dur = [T]
 
+    f0,f1 = start, end
+    df = f1 - f0
+    rtmq_params = [[f0, 0, 3*2*df / T/T, -2*6*df/T/T/T]]
+    return rtmq_params, dur
 
+def constant_jerk_ramp(targets: List[Optional[StaticWaveform]], duration: float ) -> MorphismDef:
+    """Creates a definition for a cubic ramp with phase continuity.
 
+    This ensures smooth start/stop (zero derivative at endpoints is NOT guaranteed;
+    these coefficients are fixed per your specification).
+
+    Args:
+        targets: Target values for each RWG parameter (freq, amp, phase)
+        duration: Ramp duration in seconds (SI unit)
+
+    Total morphism duration = duration (plus instantaneous setup/teardown cycles).
+    """
+    n_knots = 2
+    def generator(channel: Channel, start_state: State) -> Morphism:
+        if not isinstance(start_state, RWGActive):
+            raise TypeError(
+                "RWG cubic_ramp must follow an operation that leaves the channel in an Active state."
+            )
+        if duration <= 0:
+            raise ValueError("Ramp duration must be positive.")
+
+        active_waveforms = start_state.snapshot
+        if len(targets) != len(active_waveforms):
+            raise ValueError(
+                f"The number of targets ({len(targets)}) must match the number of active SBGs ({len(active_waveforms)})."
+            )
+
+        duration_us = duration * 1e6  # Convert to microseconds for hardware
+
+        ramp_params = [[] for _ in range(n_knots-1)]
+        static_params = []
+        end_waveforms = []
+
+        for target, current_wf in zip(targets, active_waveforms):
+            if target.fct != current_wf.fct:
+                raise ValueError(
+                    f"Target fct ({target.fct}) does not match current waveform fct ({current_wf.fct}) "
+                    f"for SBG {current_wf.sbg_id}. fct must remain consistent during ramp operations."
+                )
+            sbg_id = current_wf.sbg_id
+            start_freq = current_wf.freq
+            start_amp = current_wf.amp
+            start_phase = current_wf.phase
+
+            # Determine target values, defaulting to current if not specified
+            target_freq = target.freq if target and target.freq is not None else start_freq
+            target_amp = target.amp if target and target.amp is not None else start_amp
+
+            duration_us = duration * 1e6
+            # --- Frequency: still use linear ramp (or static) ---
+            if target_freq != start_freq:
+                freq_coeffs, durs_us = gen_coeff_const_jerk(start_freq, target_freq, duration_us,)
+            else:
+                freq_coeffs = [[start_freq, None, None, None]]* (n_knots-1)
+
+            # --- Amplitude: use cubic polynomial in MICROSECONDS ---
+            if target_amp != start_amp:
+                # Compute cubic coefficients in SECONDS first
+                amp_coeffs, durs_us = gen_coeff_const_jerk(start_amp, target_amp, duration_us,)
+            else:
+                amp_coeffs = [[start_amp, None, None, None]] * (n_knots-1)
+            t_knots = np.array([0.0, 1.0]) *duration_us
+            durs_us = t_knots[1:] - t_knots[:-1]
+                
+            for i, (freq_coeff, amp_coeff, dur) in enumerate(zip(freq_coeffs, amp_coeffs, durs_us)):
+                temp_freq_coeff = freq_coeff.copy()
+                temp_amp_coeff = amp_coeff.copy()
+                if i >=1:
+                    for k in range(4):
+                        if (not freq_coeff[k] is None) and freq_coeffs[i][k] == freq_coeffs[i-1][k]:
+                            temp_freq_coeff[k] = None
+                        if (not amp_coeff[k] is None) and amp_coeffs[i][k] == amp_coeffs[i-1][k]:
+                            temp_amp_coeff[k] = None
+                ramp_params[i].append(
+                    WaveformParams(
+                        sbg_id=sbg_id,
+                        freq_coeffs=temp_freq_coeff,
+                        amp_coeffs=temp_amp_coeff,
+                        initial_phase=0.0,
+                        phase_reset=False,
+                        fct=current_wf.fct,
+                    )
+                )
+
+            # Static stop state
+            static_params.append(
+                WaveformParams(
+                    sbg_id=sbg_id,
+                    freq_coeffs=(target_freq, 0.0, 0.0, 0.0),
+                    amp_coeffs=(target_amp, 0.0, 0.0, 0.0),
+                    initial_phase=0.0,
+                    phase_reset=False,
+                    fct = target.fct,
+                )
+            )
+
+            end_waveforms.append(
+                StaticWaveform(sbg_id=sbg_id, freq=target_freq, amp=target_amp, phase=0.0, fct=target.fct)
+            )
+
+        end_state = RWGActive(
+            carrier_freq=start_state.carrier_freq,
+            rf_on=start_state.rf_on,
+            snapshot=tuple(end_waveforms),
+            pending_waveforms=None
+        )
+        
+        load_ramp_morphism = rwg_load_coeffs(channel, ramp_params[0], start_state)
+        ramp_instruction_state = load_ramp_morphism.lanes[channel].operations[-1].end_state
+        start_ramp_morphism = rwg_update_params(channel, ramp_instruction_state, ramp_instruction_state)
+        wait_morphism = identity(durs_us[0]/1e6)
+        morphism = (
+            load_ramp_morphism
+            >>start_ramp_morphism
+            >>wait_morphism
+        )
+        for i_stage  in range(1,len(ramp_params)):
+            # Build morphism sequence
+            load_ramp_morphism = rwg_load_coeffs(channel, ramp_params[i_stage], start_state)
+            ramp_instruction_state = load_ramp_morphism.lanes[channel].operations[-1].end_state
+
+            start_ramp_morphism = rwg_update_params(channel, ramp_instruction_state, ramp_instruction_state)
+            wait_morphism = identity(durs_us[i_stage]/1e6)
+            morphism = (
+                morphism
+                >>  load_ramp_morphism
+                >>  start_ramp_morphism
+                >>  wait_morphism
+            )
+
+        load_static_morphism = rwg_load_coeffs(channel, static_params, ramp_instruction_state)
+        static_instruction_state = load_static_morphism.lanes[channel].operations[-1].end_state
+
+        stop_ramp_morphism = rwg_update_params(channel, static_instruction_state, end_state)
+
+        return (
+            morphism >>
+            load_static_morphism >>
+            stop_ramp_morphism
+        )
+
+    return MorphismDef(generator)
 
 
 # hold function is now imported from .common

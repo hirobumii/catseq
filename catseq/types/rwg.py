@@ -17,6 +17,7 @@ class WaveformParams:
     amp_coeffs: Tuple[Optional[float], ...] = (0.0, None, None, None)
     initial_phase: Optional[float] = None  # Radian
     phase_reset: bool = False
+    fct:Optional[int] = None
 
 # --- Static Description ---
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class StaticWaveform:
     amp: Optional[float] = None  # FS
     sbg_id: Optional[int] = None
     phase: float = 0.0 # Radian
+    fct:Optional[int] = None
 
 # --- Channel States ---
 class RWGState(State):

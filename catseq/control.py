@@ -21,7 +21,7 @@ from catseq.compilation.types import OASMFunction
 from catseq.types.common import Channel, State, Board
 
 # Import OASM loop control and analysis functions
-from oasm.rtmq2 import for_, end, R, disassembler
+from oasm.rtmq2 import for_, end, R, disassembler, Func, call, function as rtmq_function
 from oasm.dev.rwg import C_RWG
 
 
@@ -361,6 +361,137 @@ def repeat_morphism(
         metadata={
             'loop_type': 'repeat',
             'loop_count': count,
+            'unit_duration': t_morphism
+        }
+    )
+
+def function_def_morphism(
+    morphism: Morphism,
+    name: str,
+    assembler_seq,
+) -> Morphism:
+    """
+    Construct a hardware-level Morphism that defines a reusable function.
+
+    This function generates a 'blackbox' Morphism that encapsulates the logic
+    of the input morphism under a specific name. It prepares the structure
+    for hardware-level function definition, calculating the necessary timing
+    overhead and mapping the internal logic to board-specific execution functions.
+
+    Args:
+        morphism: The Morphism object containing the logic to be defined as a function.
+        name: The identifier (symbol) to assign to this function definition.
+        assembler_seq: The OASM assembler sequence used for timing estimation.
+
+    Returns:
+        A Blackbox Morphism representing the function definition, including
+        updated channel states and total cycle duration.
+    """
+
+    # Estimate the execution time of the morphism body based on assembly instructions
+    t_morphism = _estimate_morphism_cycles_from_assembly(morphism, assembler_seq)
+    
+    # Extract the input/output channel states to ensure the blackbox preserves interface compatibility
+    channel_states = extract_channel_states_from_morphism(morphism)
+
+    # Define the fixed cycle overhead required for function definition instructions
+    LOOP_FIXED_OVERHEAD = 26
+
+    # Calculate total duration: overhead + internal logic duration
+    total_duration_cycles = LOOP_FIXED_OVERHEAD + t_morphism
+
+    # Compile the morphism into executable board-specific functions
+    base_board_funcs = compile_morphism_to_board_funcs(morphism, assembler_seq)
+
+    # Create board functions that implement the function definition logic
+    def create_loop_executor(base_func):
+        """
+        Create an executor function that wraps the logic with definition markers.
+        Note: This uses '_start' as the entry point and 'rtmq_function' to finalize the definition.
+        """
+        def func_executor():
+            call("_start")
+            with Func(name,2,2):
+                # Execute the core logic of the morphism
+                base_func()
+            rtmq_function("_start")
+
+        return func_executor
+
+    # Wrap the base functions with the definition logic for each board
+    board_funcs = {}
+    for board, base_func in base_board_funcs.items():
+        board_funcs[board] = create_loop_executor(base_func)
+
+    # Return the final blackbox Morphism with timing and metadata
+    return oasm_black_box(
+        channel_states=channel_states,
+        duration_cycles=total_duration_cycles,
+        board_funcs=board_funcs,
+        metadata={
+            'blackbox_type': 'function define',
+            'unit_duration': t_morphism
+        }
+    )
+
+def function_call_morphism(
+    morphism: Morphism,
+    name: str,
+    assembler_seq,
+) -> Morphism:
+    """
+    Construct a hardware-level Morphism that invokes a previously defined function.
+
+    This function generates a 'blackbox' Morphism that represents a function call
+    instruction. It calculates the timing cost of the call (overhead + estimated body duration)
+    and creates a stub that issues the hardware call instruction using the provided name.
+
+    Args:
+        morphism: The reference Morphism used to determine timing and interface characteristics.
+        name: The identifier of the function to be called.
+        assembler_seq: The OASM assembler sequence used for timing estimation.
+
+    Returns:
+        A Blackbox Morphism representing the function call operation.
+    """
+    # Estimate the duration of the function body to account for total call time
+    t_morphism = _estimate_morphism_cycles_from_assembly(morphism, assembler_seq)
+    
+    # Retrieve channel states to maintain consistency with the function signature
+    channel_states = extract_channel_states_from_morphism(morphism)
+    
+    # Define the fixed cycle overhead for the hardware call instruction
+    CALL_FIXED_OVERHEAD = 26
+    
+    # Total duration includes the call overhead plus the estimated function execution time
+    total_duration_cycles = CALL_FIXED_OVERHEAD + t_morphism
+
+    # Get the base board functions to determine target hardware boards
+    base_board_funcs = compile_morphism_to_board_funcs(morphism, assembler_seq)
+
+    # Create board functions that implement the hardware call instruction
+    def create_loop_executor():
+        """
+        Create an executor function that issues the 'call' instruction.
+        """
+        def func_executor():
+            # Issue the hardware call to the specified function name
+            call(name)
+
+        return func_executor
+
+    # Generate the execution stubs for the relevant boards
+    board_funcs = {}
+    for board in base_board_funcs.keys():
+        board_funcs[board] = create_loop_executor()
+
+    # Return the blackbox Morphism representing the function call
+    return oasm_black_box(
+        channel_states=channel_states,
+        duration_cycles=total_duration_cycles,
+        board_funcs=board_funcs,
+        metadata={
+            'blackbox_type': 'function call',
             'unit_duration': t_morphism
         }
     )

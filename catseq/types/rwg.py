@@ -13,8 +13,8 @@ class WaveformParams:
     for frequency and amplitude.
     """
     sbg_id: int
-    freq_coeffs: Tuple[Optional[float], ...] = (0.0, None, None, None)
-    amp_coeffs: Tuple[Optional[float], ...] = (0.0, None, None, None)
+    freq_coeffs: Tuple[Optional[float], ...] = (0.0, None, None, None, None, None)
+    amp_coeffs: Tuple[Optional[float], ...] = (0.0, None, None, None, None, None)
     initial_phase: Optional[float] = None  # Radian
     phase_reset: bool = False
     fct:Optional[int] = None

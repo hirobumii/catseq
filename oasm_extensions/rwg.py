@@ -9,10 +9,10 @@ C_RWG = base_core(
     "LED", "FAI", "MAC", "CPR", "SPI", "RND", 
     "TTL", "DIO", "CTR", "CSM", "TTS", "TEV", "UBR", "UDA",
     "DDS", "SBG", "PDM", "CDS", "POF",
-    "FTE", "FT0", "FT1", "FT2", "FT3",
-    "APE", "AP0", "AP1", "AP2", "AP3", "CMK", "CFQ", "CAM"], ["ICA", "DCA"],
+    "FTE", "FT0", "FT1", "FT2", "FT3", "FT4", "FT5", 
+    "APE", "AP0", "AP1", "AP2", "AP3", "AP4", "AP5", "CMK", "CFQ", "CAM"], ["ICA", "DCA", "TIM"],
     {"NEX": [None]*32 + ["ADR", "BCE", "RTA", "RTD"],
-    "FRM": (["PL0", "PL1"] if PL01 else ["PL1", "PL0"])+["TAG", "DST"],
+    "FRM": ["PL1", "PL0", "TAG", "DST"],
     "SCP": ["MEM", "TGM", "CDM", "COD"],
     "WCL": ["NOW", "BGN", "END"],
     "WCH": ["NOW", "BGN", "END"],
@@ -23,18 +23,22 @@ C_RWG = base_core(
     "CTR": [None]*4,
     "UBR": [None]*4,
     "UDA": [None]*256,
-    "CDS": (["DLY", "SCA"] + [f"MX{i:X}" for i in range(16)]) if PL01 else ([None]*16 + ["DLY", "SCA"]),
+    "CDS": [None]*16 + ["DLY", "SCA"],
     "POF": [None]*N_SBG,
     "FTE": [None]*N_SBG,
     "FT0": [None]*N_SBG,
     "FT1": [None]*N_SBG,
     "FT2": [None]*N_SBG,
     "FT3": [None]*N_SBG,
+    "FT4": [None]*N_SBG,
+    "FT5": [None]*N_SBG,
     "APE": [None]*N_SBG,
     "AP0": [None]*N_SBG,
     "AP1": [None]*N_SBG,
     "AP2": [None]*N_SBG,
     "AP3": [None]*N_SBG,
+    "AP4": [None]*N_SBG,
+    "AP5": [None]*N_SBG,
     "CMK": [None]*4},
     131072, 1048576)
 
@@ -143,19 +147,13 @@ class cds(ports):
         self.dly = port('dly')
         self.sca = cds_sca('sca')
         for i in range(16):
-            if PL01:
-                setattr(self,f'mx{i:x}',port(f'mx{i:x}'))
-            else:
-                setattr(self,f'&{i:02x}',port(f'&{i:02x}'))
+            setattr(self,f'&{i:02x}',port(f'&{i:02x}'))
 
     def mux(self, sca, ena):
         self.sca(0,LO,**{f'sca{i}':sca[i] for i in range(4)})
         for i in range(4):
             for j in range(4):
-                if PL01:
-                    getattr(self,f'mx{i*4+j:x}')((ena[i]>>(32*j))&0xffffffff)
-                else:
-                    getattr(self,f'&{i*4+j:02x}')((ena[i]>>(32*j))&0xffffffff)
+                getattr(self,f'&{i*4+j:02x}')((ena[i]>>(32*j))&0xffffffff)
 
 cds = cds()
 
@@ -190,11 +188,51 @@ class spi(ports):
 spi = spi()
 
 class fte_s(port):
+    # &xx[3:0]: phase dithering gain (experimental feature)
+    # 相位抖动增益（实验功能）
+        # default value: 0
     dth_gan = bit_field(0,3)
+    
+    # &xx[4]: phase accumulator reload flag
+    # 相位累加器重载标志
+        # 0: interpret POF.&xx as phase offset, load it to the phase offset register when PAR_UPD flag is asserted
+        # 0: 将 POF.&xx 解释为相位偏移量，并在 PAR_UPD 标志被置位时将其加载到相位偏移寄存器中
+        # 1: interpret POF.&xx as initial phase, reload the phase accumulator with it and reset the phase offset register to 0 when PAR_UPD flag is asserted
+        # 1: 将 POF.&xx 解释为初始相位，在 PAR_UPD 标志被置位时重新加载相位累加器，并将相位偏移寄存器重置为 0
     pha_rld = bit_field(4)
+    
+    # &xx[5]: phase dithering enable flag (experimental feature)
+    # 相位抖动使能标志（实验功能）
+        # default value: 0
     dth_ena = bit_field(5)
+    
+    
+    ext = bit_field(16,19)
+    
+    # &xx[22:20]: scale parameter Sf, can be 0 ~ 7
+    # &xx[22:20]: 尺度参数 Sf，取值范围为 0 ~ 7
     sel = bit_field(20,23)
+    
+    # &xx[27:25]: highest non-zero order flag, indicating the highest order with non-zero coefficient
+    # 最高非零阶标志，指示具有非零系数的最高阶
+        # 100: the 3rd order 3阶
+        # 010: the 2nd order 2阶
+        # 001: the 1st order 1阶
+        # 000: the 0th order (even if the coefficient of the 0th order is also 0) 0阶（即使0阶的系数也是0）
+    # &xx[24]: scale changed flag
+    # 尺度变化标志
+        # 0: the highest non-zero order flag (FTE.&xx[27:25]) and the scale parameter (FTE.&xx[22:20]) for the next waveform segment are the same as current one
+        # 0: 下一个波形段的最高非零阶标志 (FTE.&xx[27:25]) 和尺度参数 (FTE.&xx[22:20]) 与当前相同
+        # 1: any of the 2 parameters are different
+        # 1: 这两个参数中有任意一个不同
     hnz = bit_field(24,27)
+    
+    # &xx[31:28]: coefficient load flag for the 3rd to 0th order (F3 ~ F0)
+    # 3rd 到 0th 阶的系数加载标志 (F3 ~ F0)
+        # 0: the frequency function is continuous at the corresponding order at the beginning of the next waveform segment, no need to load new coefficient value
+        # 0: 下一个波形段开始时，对应阶数的频率函数是连续的，无需加载新的系数值
+        # 1: new value of coefficient should be loaded
+        # 1: 需要加载新的系数值
     rld = bit_field(28,31)
 
 class fte(fte_s,ports):
@@ -204,15 +242,24 @@ class fte(fte_s,ports):
             setattr(self,f'&{i:02x}',fte_s(f'&{i:02x}'))
 
     def cfg(self, sbn, dth_ena, dth_gan, pha_rld):
-        self[sbn](0,LO,dth_ena=dth_ena,dth_gan=dth_gan,pha_rld=pha_rld)
+        """
+        cfg 的 Docstring
+        
+        :param self: 对象本身
+        :param sbn: SBG 的通道号
+        :param dth_ena: 相位抖动使能标志（实验功能）
+        :param dth_gan: 相位抖动增益（实验功能）
+        :param pha_rld: 相位累加器重载标志
+        """
+        # fte[0]代表访问fte.&00属性，这个属性是fte_s类的一个实例，此处调用的函数是fte_s类的__call__方法
+        # 由于fte_s类继承自port类，所以调用的是port类的__call__方法
+        self[sbn](0, LO, dth_ena=dth_ena, dth_gan=dth_gan, pha_rld=pha_rld)
 
 fte = fte()
 ape = fte_s('ape')
-ane = fte_s('ane')
-for i in range(4):
+for i in range(6):
     globals()[f'ft{i}'] = port(f'ft{i}')
     globals()[f'ap{i}'] = port(f'ap{i}')
-    globals()[f'an{i}'] = port(f'an{i}')
 pof = port('pof')
 
 class rwg(std.__class__):
@@ -245,7 +292,7 @@ class rwg(std.__class__):
         return self.regwr(chn, prof + 14, list(ctr + asf + phw + ftw), wait=wait, ioupd=ioupd)
     
     def rst_cic(self, chn):
-        return self.regwr(chn, 0x0, [0x00, 0x60, 0x20, 0x02])
+        return self.regwr(chn, reg = 0x0, dat = [0x00, 0x60, 0x20, 0x02])
     
     def carrier(self, chn, frq, amp=1.0, pha=0.0, upd=False):
         return self.prof_duc(chn, 0, 2, 0, 0, frq, amp, pha, wait=True, ioupd=upd)
@@ -259,8 +306,8 @@ class rwg(std.__class__):
         for i in range(len(par)):
             if par[i] is not None:
                 rld += 1 << i
-                hnz = i if par[i] != 0 else hnz
-                coe[i] = round(par[i] * fct * (sca/rwg.us)**i)
+                hnz = i if par[i] != 0 else hnz 
+                coe[i] = par[i] if getattr(par[i],'__round__',None) is None else round(par[i] * fct * (sca/rwg.us)**i)
         hnz = 1 << hnz if hnz > 0 else 0
         return rld, hnz, coe
 
@@ -286,6 +333,7 @@ class rwg(std.__class__):
         rld, hnz, coe = rwg.to_coe(frq, fct, sel)
         if ena:
             (fte if sbn is None else fte[sbn])(0,HI,rld=rld,hnz=hnz+1-hnzo_cont,sel=sel)
+            fte.set(ext=bit_concat((rld>>4,2),(hnz>>4,2)))
         elif sbn is not None:
             fte[sbn]()
         for i in range(len(coe)):
@@ -314,32 +362,17 @@ class rwg(std.__class__):
             fte[sbn]()
         if ena:
             ape(0,HI,rld=rld,hnz=hnz+1-hnzo_cont,sel=sel)
+            ape.set(ext=bit_concat((rld>>4,2),(hnz>>4,2)))
         for i in range(len(coe)):
             if coe[i] is not None:
                 globals()[f'ap{i}'](coe[i]>>12)
         return self
     
-    def play(self, dur, pud=0xf, cph=0xf, mrk=0, strict=True, wait=1):
-        self.timer(round(dur*self.us)&-2, strict=strict, wait=wait&1)
+    def play(self, dur, pud=0xf, cph=0xf, mrk=0, wait=1):
+        self.timer(round(dur*self.us)&-2, wait=wait&1)
         sbg.ctrl(iou=cph, pud=pud, mrk=mrk)
         if wait>>1:
             std.hold()
         return self
 
 rwg = rwg(**globals())
-
-@multi(asm)
-def amp_calib(sbg_msk, cal_dat):
-    for i in range(4):
-        set_csr(f"cmk.&{i:X}", (sbg_msk >> (32*i)) & 0xFFFFFFFF)
-    ref = min(cal_dat)
-    dln = len(cal_dat)
-    val = [(ref / d * 0.97 * 1024) for d in cal_dat]
-    slp = [0] * dln
-    for i in range(1, dln-1):
-        slp[i] = (val[i+1] - val[i-1]) / 8
-    slp[0] = (val[1] - val[0]) / 4
-    slp[-1] = (val[-1] - val[-2]) / 4
-    for i in range(dln):
-        clo("cfq", i - (dln >> 1))
-        clo("cam", bit_concat((round(slp[i]), 8), (round(val[i]), 10)))

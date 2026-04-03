@@ -61,8 +61,8 @@ def set_state(targets: List[StaticWaveform],phase_reset=True) -> MorphismDef:
             params.append(
                 WaveformParams(
                     sbg_id=t.sbg_id,
-                    freq_coeffs=(t.freq, 0.0, 0.0, 0.0),
-                    amp_coeffs=(t.amp, 0.0, 0.0, 0.0),
+                    freq_coeffs=(t.freq, 0.0, 0.0, 0.0, 0.0, 0.0),  # Static frequency
+                    amp_coeffs=(t.amp, 0.0, 0.0, 0.0, 0.0, 0.0),    # Static amplitude
                     initial_phase=t.phase,
                     phase_reset=phase_reset,
                     fct = t.fct,
@@ -275,7 +275,6 @@ def cubic_ramp(targets: List[Optional[StaticWaveform]], duration: float, pure_co
             sbg_id = current_wf.sbg_id
             start_freq = current_wf.freq
             start_amp = current_wf.amp
-            start_phase = current_wf.phase
 
             # Determine target values, defaulting to current if not specified
             target_freq = target.freq if target and target.freq is not None else start_freq
@@ -288,7 +287,7 @@ def cubic_ramp(targets: List[Optional[StaticWaveform]], duration: float, pure_co
                 a_us = a / (duration_us**3) * 6 * df
                 b_us = b / (duration_us**2) * 2 * df
                 c_us = c / duration_us *df
-                d_us = start_amp
+                d_us = start_freq
 
                 freq_coeffs = (d_us, c, b, a)
 
@@ -366,7 +365,153 @@ def cubic_ramp(targets: List[Optional[StaticWaveform]], duration: float, pure_co
 
     return MorphismDef(generator)
 
+# 仿照cubic_ramp函数，编写五次插值的版本
+def quintic_ramp(
+    targets: List[Optional[StaticWaveform]],
+    duration: float,
+    pure_coeffs: List[float]
+) -> MorphismDef:
+    """
+    创建一个五次插值的Ramp定义，确保相位连续。
 
+    Args:
+        targets: 每个RWG参数的目标值（频率、幅度、相位）
+
+        duration: Ramp持续时间，单位为秒（SI单位）
+
+        pure_coeffs: 五次插值的纯系数列表，长度应为5，对应于s(τ)=a*τ^5 + b*τ^4 + c*τ^3 + d*τ^2 + e*τ + f
+    """
+
+    def generator(channel: Channel, start_state: State) -> Morphism:
+        if not isinstance(start_state, RWGActive):
+            raise TypeError("RWG quintic_ramp must start from RWGActive.")
+        if duration <= 0:
+            raise ValueError("Ramp duration must be positive.")
+
+        active_waveforms = start_state.snapshot
+        if len(targets) != len(active_waveforms):
+            raise ValueError(
+                f"The number of targets ({len(targets)}) must match the number of active SBGs ({len(active_waveforms)})."
+            )
+
+        duration_us = duration * 1e6 # Convert to microseconds for hardware
+        if len(pure_coeffs) != 6:
+            raise ValueError(
+                f"The number of coeffs ({len(pure_coeffs)}) must be 6."
+            )
+        f, e, d, c, b, a = pure_coeffs
+        if f != 0:
+            raise ValueError(
+                f"The value of 0th order's coefficient must be zero ({f=})."
+            )
+        
+        # a = 1 - b - c - d - e
+        ramp_params: List[WaveformParams] = []
+        static_params: List[WaveformParams] = []
+        end_waveforms: List[StaticWaveform] = []
+
+        for target, current_wf in zip(targets, active_waveforms):
+            if target is not None and target.fct != current_wf.fct:
+                raise ValueError(
+                    f"Target fct ({target.fct}) does not match current waveform fct ({current_wf.fct}) "
+                    f"for SBG {current_wf.sbg_id}. fct must remain consistent during ramp operations."
+                )
+
+            sbg_id = current_wf.sbg_id
+            start_freq = current_wf.freq
+            start_amp = current_wf.amp
+
+            # Determine target values, defaulting to current if not specified
+            target_freq = target.freq if (target and target.freq is not None) else start_freq
+            target_amp = target.amp if (target and target.amp is not None) else start_amp
+
+            # frequency: still use linear ramp (or static) for simplicity
+            if target_freq != start_freq:
+                df = target_freq - start_freq
+                a_us = a / (duration_us**5) * 120 * df
+                b_us = b / (duration_us**4) * 24 * df
+                c_us = c / (duration_us**3) * 6 * df
+                d_us = d / (duration_us**2) * 2 * df
+                e_us = e / duration_us * df
+                f_us = start_freq
+
+                freq_coeffs = (f_us, e_us, d_us, c_us, b_us, a_us)  # RWG order: (const, t, t^2, t^3, t^4, t^5)
+            else:
+                freq_coeffs = (start_freq, None, None, None, None, None)
+
+            # amplitude: use quintic polynomial in MICROSECONDS
+            if target_amp != start_amp:
+                damp = target_amp - start_amp
+                a_us = a / (duration_us**5) * 120 * damp
+                b_us = b / (duration_us**4) * 24 * damp
+                c_us = c / (duration_us**3) * 6 * damp
+                d_us = d / (duration_us**2) * 2 * damp
+                e_us = e / duration_us * damp
+                f_us = start_amp
+
+                amp_coeffs = (f_us, e_us, d_us, c_us, b_us, a_us)  # RWG order: (const, t, t^2, t^3, t^4, t^5)
+            else:
+                amp_coeffs = (start_amp, None, None, None, None, None)
+
+            ramp_params.append(
+                    WaveformParams(
+                        sbg_id=sbg_id,
+                        freq_coeffs=freq_coeffs,
+                        amp_coeffs=amp_coeffs,
+                        initial_phase=0.0,
+                        phase_reset=False,
+                        fct=current_wf.fct,
+                    )
+                )
+
+            # Static stop state
+            static_params.append(
+                WaveformParams(
+                    sbg_id=sbg_id,
+                    freq_coeffs=(target_freq, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    amp_coeffs=(target_amp, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    initial_phase=0.0,
+                    phase_reset=False,
+                    fct=target.fct,
+                )
+            )
+
+            end_waveforms.append(
+                StaticWaveform(
+                    sbg_id=sbg_id,
+                    freq=target_freq,
+                    amp=target_amp,
+                    phase=0.0
+                )
+            )
+
+        end_state = RWGActive(
+            carrier_freq=start_state.carrier_freq,
+            rf_on=start_state.rf_on,
+            snapshot=tuple(end_waveforms),
+            pending_waveforms=None
+        )
+
+        # Build morphism sequence
+        load_ramp_morphism = rwg_load_coeffs(channel, ramp_params, start_state)
+        ramp_instruction_state = load_ramp_morphism.lanes[channel].operations[-1].end_state
+
+        start_ramp_morphism = rwg_update_params(channel, ramp_instruction_state, ramp_instruction_state)
+        wait_morphism = identity(duration)
+        load_static_morphism = rwg_load_coeffs(channel, static_params, ramp_instruction_state)
+        static_instruction_state = load_static_morphism.lanes[channel].operations[-1].end_state
+
+        stop_ramp_morphism = rwg_update_params(channel, static_instruction_state, end_state)
+
+        return (
+            load_ramp_morphism >>
+            start_ramp_morphism >>
+            wait_morphism >>
+            load_static_morphism >>
+            stop_ramp_morphism
+            )
+
+    return MorphismDef(generator)
 
 from scipy.interpolate import CubicSpline
 

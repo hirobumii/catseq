@@ -6,7 +6,7 @@ objects that group operations by channel and PhysicalLane objects that merge
 operations across multiple channels for hardware execution.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
 from .types import AtomicMorphism, Board, Channel, OperationType
@@ -18,16 +18,69 @@ from .time_utils import cycles_to_us
 class Lane:
     """通道 Lane - 单个通道的操作序列"""
     operations: Tuple[AtomicMorphism, ...]  # 操作序列
+    _total_duration_cycles: int = field(init=False, repr=False)
+    _initial_state: object | None = field(init=False, repr=False)
+    _end_state: object | None = field(init=False, repr=False)
+    _effective_start_state: object | None = field(init=False, repr=False)
+    _effective_end_state: object | None = field(init=False, repr=False)
+
+    def __post_init__(self):
+        total_duration = 0
+        initial_state = None
+        end_state = None
+        effective_start_state = None
+        effective_end_state = None
+
+        if self.operations:
+            initial_state = getattr(self.operations[0], "start_state", None)
+            end_state = getattr(self.operations[-1], "end_state", None)
+            total_duration = sum(getattr(op, "duration_cycles", 0) for op in self.operations)
+
+            for op in self.operations:
+                if getattr(op, "operation_type", None) != OperationType.IDENTITY:
+                    effective_start_state = getattr(op, "start_state", None)
+                    break
+            if effective_start_state is None:
+                effective_start_state = initial_state
+
+            for op in reversed(self.operations):
+                if getattr(op, "operation_type", None) != OperationType.IDENTITY:
+                    effective_end_state = getattr(op, "end_state", None)
+                    break
+            if effective_end_state is None:
+                effective_end_state = end_state
+
+        object.__setattr__(self, "_total_duration_cycles", total_duration)
+        object.__setattr__(self, "_initial_state", initial_state)
+        object.__setattr__(self, "_end_state", end_state)
+        object.__setattr__(self, "_effective_start_state", effective_start_state)
+        object.__setattr__(self, "_effective_end_state", effective_end_state)
     
     @property
     def total_duration_cycles(self) -> int:
         """总时长（时钟周期）"""
-        return sum(op.duration_cycles for op in self.operations)
+        return self._total_duration_cycles
     
     @property
     def total_duration_us(self) -> float:
         """总时长（微秒）"""
         return cycles_to_us(self.total_duration_cycles)
+
+    @property
+    def initial_state(self):
+        return self._initial_state
+
+    @property
+    def end_state(self):
+        return self._end_state
+
+    @property
+    def effective_start_state(self):
+        return self._effective_start_state
+
+    @property
+    def effective_end_state(self):
+        return self._effective_end_state
     
     def __str__(self):
         if len(self.operations) == 1:

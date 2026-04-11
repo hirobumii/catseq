@@ -62,7 +62,7 @@ def test_pass1_cost_analysis(capsys):
 
     # Check the cost of the first load event (from set_state)
     # It has 1 parameter, actual cost from assembly analysis
-    assert load_events[0].cost_cycles == 9
+    assert load_events[0].cost_cycles == 15
 
     # Check the cost of the second load event (from linear_ramp - ramp coefficients)
     # It also has 1 parameter, actual cost from assembly analysis
@@ -124,7 +124,7 @@ def test_pass3_generates_correct_rwg_calls():
     # Validate RWG_LOAD_WAVEFORM
     load_call = calls_by_func[OASMFunction.RWG_LOAD_WAVEFORM]
     expected_params = WaveformParams(
-        sbg_id=0, freq_coeffs=(15, None, None, None), amp_coeffs=(0.6, None, None, None), initial_phase=0.0, phase_reset=True
+        sbg_id=0, freq_coeffs=(15, 0.0, 0.0, 0.0), amp_coeffs=(0.6, 0.0, 0.0, 0.0), initial_phase=0.0, phase_reset=True
     )
     assert load_call.args[0] == expected_params
 

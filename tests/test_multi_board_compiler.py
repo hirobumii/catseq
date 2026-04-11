@@ -9,13 +9,18 @@
 或者: pytest tests/test_multi_board_compiler.py -v
 """
 
-import sys
 import os
+import sys
+
+import pytest
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from catseq.atomic import ttl_init, ttl_off, ttl_on
 from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.compilation.types import OASMFunction
-from catseq.types.common import Board, Channel, OperationType
+from catseq.morphism import identity
+from catseq.types.common import Board, Channel, ChannelType
 
 
 def pulse_with_padding(channel: Channel, pulse_duration_cycles: int, total_duration_cycles: int):
@@ -120,23 +125,9 @@ def pulse(channel: Channel, duration_cycles: int):
 
 def create_wait_for_channel(channel: Channel, duration_cycles: int):
     """为特定通道创建等待操作，保持当前状态"""
-    from catseq.atomic import AtomicMorphism
-    from catseq.types.ttl import TTLState
-    from catseq.types.common import OperationType
-    from catseq.lanes import Lane
-    from catseq.morphism import Morphism
-    
-    # 创建一个保持状态的wait操作
-    wait_op = AtomicMorphism(
-        channel=channel,
-        start_state=TTLState.OFF,  # 假设初始状态
-        end_state=TTLState.OFF,    # 保持状态
-        duration_cycles=duration_cycles,
-        operation_type=OperationType.WAIT
-    )
-    
-    lane = Lane((wait_op,))
-    return Morphism({channel: lane})
+    from catseq.time_utils import cycles_to_time
+
+    return ttl_init(channel) @ identity(cycles_to_time(duration_cycles))
 
 
 def create_ttl_init_with_duration(channel: Channel, duration_cycles: int = 1):
@@ -190,120 +181,38 @@ def create_multi_board_ttl_sequence_real():
     print("🔧 实现时序表达式:")
     print("(ttl_init(rwg0_ch0)|ttl_init(rwg0_ch1)|ttl_init(rwg1_ch0))@wait(100)@(pulse(rwg0_ch0,100)|pulse(rwg1_ch0,150))")
     
-    # 使用机器整数时间戳，100μs = 25000 cycles, 150μs = 37500 cycles
-    wait_100_cycles = 25000    # 100μs = 25000 cycles
-    pulse_100_cycles = 25000   # 100μs = 25000 cycles  
-    pulse_150_cycles = 37500   # 150μs = 37500 cycles
-    
-    print(f"时间转换: 100μs = {wait_100_cycles} cycles, 150μs = {pulse_150_cycles} cycles")
-    
-    # 严格按照表达式结构实现:
-    
-    # 第一部分: (ttl_init(rwg0_ch0)|ttl_init(rwg0_ch1)|ttl_init(rwg1_ch0))
-    init_parallel = (
-        create_ttl_init_with_duration(rwg0_ch0, 1) | 
-        create_ttl_init_with_duration(rwg0_ch1, 1) | 
-        create_ttl_init_with_duration(rwg1_ch0, 1)
+    print("时间转换: 100μs = 25000 cycles, 150μs = 37500 cycles")
+
+    rwg0_ch0_sequence = (
+        ttl_init(rwg0_ch0)
+        @ identity(100e-6)
+        @ ttl_on(rwg0_ch0)
+        @ identity(100e-6)
+        @ ttl_off(rwg0_ch0)
+        @ identity(50e-6)
     )
-    
-    print(f"初始化并行操作时长: {init_parallel.total_duration_cycles} cycles")
-    
-    # 第二部分: wait(100) - 所有通道等待100μs = 25000 cycles
-    wait_100 = multi_channel_wait(wait_100_cycles, rwg0_ch0, rwg0_ch1, rwg1_ch0)
-    
-    print(f"等待操作时长: {wait_100.total_duration_cycles} cycles")
-    
-    # 第三部分: (pulse(rwg0_ch0,100)|pulse(rwg1_ch0,150))
-    # 并行组合会自动补齐短的morphism，rwg0_ch1不参与脉冲但需要保持同步时间
-    
-    pulse_parallel = (
-        pulse(rwg0_ch0, pulse_100_cycles) |  # 100μs脉冲，会被自动补齐
-        pulse(rwg1_ch0, pulse_150_cycles) |  # 150μs脉冲
-        create_wait_for_channel(rwg0_ch1, pulse_150_cycles)  # rwg0_ch1保持150μs
+    from catseq.time_utils import cycles_to_time
+
+    rwg0_ch1_sequence = ttl_init(rwg0_ch1) @ identity(cycles_to_time(62502))
+    rwg1_ch0_sequence = (
+        ttl_init(rwg1_ch0)
+        @ identity(100e-6)
+        @ ttl_on(rwg1_ch0)
+        @ identity(150e-6)
+        @ ttl_off(rwg1_ch0)
     )
-    
-    print(f"脉冲并行操作时长: {pulse_parallel.total_duration_cycles} cycles")
-    
-    # 按表达式组合: 第一部分 @ 第二部分 @ 第三部分
-    complete_sequence = init_parallel @ wait_100 @ pulse_parallel
+
+    complete_sequence = rwg0_ch0_sequence | rwg0_ch1_sequence | rwg1_ch0_sequence
+
+    print("初始化并行操作时长: 2 cycles")
+    print("等待操作时长: 25000 cycles")
+    print(f"脉冲并行操作时长: {complete_sequence.total_duration_cycles} cycles")
     
     print("✅ 时序构建完成")
     print(f"   总时长: {complete_sequence.total_duration_cycles} cycles")
-    print(f"   预期总时长: {1 + wait_100_cycles + pulse_150_cycles + 3} cycles (init + wait + longest_pulse + ops)")
+    print("   预期总时长: 62504 cycles (init + wait + longest_pulse + ops)")
     
     return complete_sequence
-
-
-def create_multi_board_ttl_sequence():
-    """实现用户提供的时序表达式: (ttl_init(rwg0_ch0)|ttl_init(rwg0_ch1)|ttl_init(rwg1_ch0))@wait(100)@(pulse(rwg0_ch0,100)|pulse(rwg1_ch0,150))"""
-    
-    # 创建两个RWG板卡
-    rwg0_board = Board("rwg0")
-    rwg1_board = Board("rwg1")
-    
-    # 创建TTL通道
-    ttl_rwg0_ch0 = Channel(rwg0_board, 0, ChannelType.TTL)  # RWG0板卡TTL通道0
-    ttl_rwg0_ch1 = Channel(rwg0_board, 1, ChannelType.TTL)  # RWG0板卡TTL通道1
-    ttl_rwg1_ch0 = Channel(rwg1_board, 0, ChannelType.TTL)  # RWG1板卡TTL通道0
-    
-    # 创建操作mock的辅助函数
-    def create_operation_mock(op_type, channel, state_value, timestamp):
-        from unittest.mock import Mock
-        operation = Mock()
-        operation.operation_type = op_type
-        operation.channel = channel
-        operation.end_state = Mock()
-        operation.end_state.value = state_value
-        operation.duration_cycles = 1
-        
-        physical_op = Mock()
-        physical_op.operation = operation
-        physical_op.timestamp_cycles = timestamp
-        
-        return physical_op
-    
-    print("🔧 实现时序表达式:")
-    print("(ttl_init(rwg0_ch0)|ttl_init(rwg0_ch1)|ttl_init(rwg1_ch0))@wait(100)@(pulse(rwg0_ch0,100)|pulse(rwg1_ch0,150))")
-    print("\n📋 时序展开:")
-    print("t=0:   所有通道同时初始化 [跨板卡同时操作]")  
-    print("t=100: rwg0_ch0脉冲开始, rwg1_ch0脉冲开始 [跨板卡同时操作]")
-    print("t=200: rwg0_ch0脉冲结束 [单独操作]")
-    print("t=250: rwg1_ch0脉冲结束 [单独操作]")
-    
-    # 根据时序表达式创建物理操作序列:
-    # (ttl_init(rwg0_ch0)|ttl_init(rwg0_ch1)|ttl_init(rwg1_ch0)) @ wait(100) @ (pulse(rwg0_ch0,100)|pulse(rwg1_ch0,150))
-    # 
-    # 展开为:
-    # t=0:   同时初始化3个通道
-    # t=100: rwg0_ch0开启, rwg1_ch0开启 (pulse开始)
-    # t=200: rwg0_ch0关闭 (100μs脉冲结束)  
-    # t=250: rwg1_ch0关闭 (150μs脉冲结束)
-    # rwg0_ch1在整个过程中保持初始化状态
-    
-    physical_operations = [
-        # t=0: 同时初始化所有通道 [跨板卡同时操作]
-        create_operation_mock(OperationType.TTL_INIT, ttl_rwg0_ch0, 0, 0),
-        create_operation_mock(OperationType.TTL_INIT, ttl_rwg0_ch1, 0, 0),
-        create_operation_mock(OperationType.TTL_INIT, ttl_rwg1_ch0, 0, 0),
-        
-        # t=100: pulse开始 - rwg0_ch0和rwg1_ch0同时开启 [跨板卡同时操作]
-        create_operation_mock(OperationType.TTL_ON, ttl_rwg0_ch0, 1, 100),
-        create_operation_mock(OperationType.TTL_ON, ttl_rwg1_ch0, 1, 100),
-        
-        # t=200: rwg0_ch0脉冲结束 (100μs脉冲) [单独操作]
-        create_operation_mock(OperationType.TTL_OFF, ttl_rwg0_ch0, 0, 200),
-        
-        # t=250: rwg1_ch0脉冲结束 (150μs脉冲) [单独操作]
-        create_operation_mock(OperationType.TTL_OFF, ttl_rwg1_ch0, 0, 250),
-    ]
-    
-    # 创建Morphism mock对象，直接提供物理操作序列
-    from unittest.mock import Mock
-    morphism = Mock()
-    morphism._mock_physical_operations = physical_operations
-    
-    return morphism
-
 
 def print_calls_analysis(calls: list):
     """分析并打印调用序列 - 支持多板卡"""
@@ -336,7 +245,12 @@ def print_calls_analysis(calls: list):
         
         for call in board_calls:
             func_name = call.dsl_func.value if hasattr(call.dsl_func, 'value') else str(call.dsl_func)
-            mask, value = call.args
+            if call.dsl_func == OASMFunction.WAIT:
+                print(f"    {call_index:2d}. {func_name:10} | 等待 {call.args[0]} cycles")
+                call_index += 1
+                continue
+
+            mask, value = call.args[:2]
             
             # 解析通道
             channels = []
@@ -390,7 +304,8 @@ def test_multi_board_ttl_sequence_compilation():
         
         # 编译为OASM调用
         print("\n⚙️  正在编译Morphism...")
-        calls = compile_to_oasm_calls(morphism)
+        calls_by_board = compile_to_oasm_calls(morphism)
+        calls = [call for board_calls in calls_by_board.values() for call in board_calls]
         print(f"✅ 编译成功！生成了 {len(calls)} 个OASM调用")
         
         # 打印调用列表
@@ -422,19 +337,18 @@ def test_multi_board_ttl_sequence_compilation():
                 print("🎉 多板卡编译功能完美工作！")
                 print("✨ 编译器成功处理跨板卡同时操作和混合操作")
                 print("✨ 显示正确的绝对时间戳: t=0,50,100,200,300,400,500")
-                return True
             else:
                 print("❌ 板卡初始化操作不完整")
-                return False
+                pytest.fail("Board initialization operations were incomplete")
         else:
             print(f"❌ 板卡数量不正确，期望2个，实际{len(calls_by_board)}个")
-            return False
+            pytest.fail(f"Expected 2 boards, got {len(calls_by_board)}")
             
     except Exception as e:
         print(f"❌ 测试失败: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        pytest.fail(f"Test failed: {e}")
 
 
 if __name__ == "__main__":

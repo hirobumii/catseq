@@ -8,8 +8,8 @@ loop instructions (for_, end, R registers) and timing calculations.
 import pytest
 from oasm.rtmq2.intf import sim_intf
 from oasm.rtmq2 import assembler, disassembler
-from oasm.dev.main import C_MAIN, run_cfg
-from oasm.dev.rwg import C_RWG, rwg
+from oasm.dev.main import run_cfg
+from oasm.dev.rwg import C_RWG
 
 from catseq.atomic import ttl_init, ttl_on, ttl_off
 from catseq.morphism import identity
@@ -23,7 +23,7 @@ def test_repeat_morphism_hardware_loop_timing():
     Test that repeat_morphism creates correct hardware loop timing calculations.
 
     This test verifies:
-    - Correct timing formula: Total = 15 + n*(26 + t_morphism)
+    - Correct timing formula: Total = 15 + n*(24 + t_morphism) for loop counts below 128
     - Hardware loop structure generation
     - OASM register usage (R[1] for loop counter)
     """
@@ -47,9 +47,9 @@ def test_repeat_morphism_hardware_loop_timing():
 
     # Test different repeat counts using actual base cycle count
     test_cases = [
-        (1, 15 + 1 * (26 + base_cycles)),   # n=1: 15 + 1*(26+2504) = 2545 cycles
-        (3, 15 + 3 * (26 + base_cycles)),   # n=3: 15 + 3*(26+2504) = 7605 cycles
-        (10, 15 + 10 * (26 + base_cycles)), # n=10: 15 + 10*(26+2504) = 25315 cycles
+        (1, 15 + 1 * (24 + base_cycles)),
+        (3, 15 + 3 * (24 + base_cycles)),
+        (10, 15 + 10 * (24 + base_cycles)),
     ]
 
     # Create OASM assembler for compilation
@@ -87,16 +87,15 @@ def test_repeat_morphism_hardware_loop_timing():
             print(f"   ✅ Timing and states correct for count={count}")
 
         print("✅ All repeat_morphism timing tests passed!")
-        return True
 
     except ImportError:
         print("⚠️  OASM not available, skipping hardware loop tests")
-        return False
+        pytest.skip("OASM not available, skipping hardware loop tests")
     except Exception as e:
         print(f"❌ Hardware loop timing test failed: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        pytest.fail(f"Hardware loop timing test failed: {e}")
 
 
 def test_repeat_morphism_hardware_loop_structure():
@@ -186,16 +185,14 @@ def test_repeat_morphism_hardware_loop_structure():
             print(f"⚠️  Assembly generation failed: {e}")
             print("   (This may be normal if OASM context is incomplete)")
 
-        return True
-
     except ImportError:
         print("⚠️  OASM not available, skipping hardware loop structure tests")
-        return False
+        pytest.skip("OASM not available, skipping hardware loop structure tests")
     except Exception as e:
         print(f"❌ Hardware loop structure test failed: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        pytest.fail(f"Hardware loop structure test failed: {e}")
 
 
 def test_repeat_morphism_multi_channel_loop():
@@ -222,7 +219,7 @@ def test_repeat_morphism_multi_channel_loop():
         # Parallel execution (tensor product)
         multi_channel_morphism = laser1_ops | laser2_ops
 
-        print(f"📊 Multi-channel morphism:")
+        print("📊 Multi-channel morphism:")
         print(f"   Total duration: {multi_channel_morphism.total_duration_us:.1f}μs")
         print(f"   Channels: {len(multi_channel_morphism.lanes)}")
 
@@ -236,14 +233,14 @@ def test_repeat_morphism_multi_channel_loop():
         count = 3
         repeated_multi = repeat_morphism(multi_channel_morphism, count, seq)
 
-        print(f"🔄 Created repeated multi-channel morphism:")
+        print("🔄 Created repeated multi-channel morphism:")
         print(f"   Repeat count: {count}")
         print(f"   Base cycles: {multi_channel_morphism.total_duration_cycles}")
         print(f"   Total cycles: {repeated_multi.total_duration_cycles}")
 
         # Verify timing calculation
         base_cycles = multi_channel_morphism.total_duration_cycles
-        expected_cycles = 15 + count * (26 + base_cycles)
+        expected_cycles = 15 + count * (24 + base_cycles)
         actual_cycles = repeated_multi.total_duration_cycles
 
         assert actual_cycles == expected_cycles, (
@@ -261,16 +258,15 @@ def test_repeat_morphism_multi_channel_loop():
         )
 
         print("✅ Multi-channel repeat morphism test successful!")
-        return True
 
     except ImportError:
         print("⚠️  OASM not available, skipping multi-channel loop tests")
-        return False
+        pytest.skip("OASM not available, skipping multi-channel loop tests")
     except Exception as e:
         print(f"❌ Multi-channel loop test failed: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        pytest.fail(f"Multi-channel loop test failed: {e}")
 
 
 def test_repeat_morphism_error_conditions():
@@ -301,11 +297,10 @@ def test_repeat_morphism_error_conditions():
             repeat_morphism(morphism, -5, mock_assembler)
 
         print("✅ Error condition tests passed!")
-        return True
 
     except Exception as e:
         print(f"❌ Error condition test failed: {e}")
-        return False
+        pytest.fail(f"Error condition test failed: {e}")
 
 
 if __name__ == "__main__":

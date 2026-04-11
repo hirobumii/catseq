@@ -9,14 +9,9 @@ from typing import Callable
 
 from catseq.morphism import Morphism
 from catseq.atomic import oasm_black_box
-from catseq.compilation.compiler import (
-    compile_to_oasm_calls,
-    OASM_FUNCTION_MAP,
-    OASM_AVAILABLE,
-    execute_oasm_calls,
-    RTMQ_INSTRUCTION_COSTS,
-    _calculate_gap_cycles,
-)
+from catseq.compilation.compiler import compile_to_oasm_calls
+from catseq.compilation.execution import OASM_AVAILABLE, OASM_FUNCTION_MAP, execute_oasm_calls
+from catseq.compilation.timing_analysis import RTMQ_INSTRUCTION_COSTS, calculate_gap_cycles
 from catseq.compilation.types import OASMFunction
 from catseq.types.common import Channel, State, Board
 
@@ -203,7 +198,7 @@ def _estimate_oasm_cost_with_timer(asm_lines: list[str]) -> int:
                 cost += 6
 
             # 流水线 gap cycles
-            gap_cycles = _calculate_gap_cycles(instr, target, instruction_history)
+            gap_cycles = calculate_gap_cycles(instr, target, instruction_history)
 
             total_cycles += cost + gap_cycles
 

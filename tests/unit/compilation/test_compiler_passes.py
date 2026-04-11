@@ -16,9 +16,11 @@ from catseq.compilation.types import OASMAddress, OASMFunction
 from catseq.compilation.functions import rwg_load_waveform
 from catseq.types.common import OperationType, Board, Channel, ChannelType
 from catseq.types.rwg import WaveformParams, RWGReady, RWGActive
+from catseq.types.ttl import TTLState
 from catseq.morphism import identity
 from catseq.atomic import rwg_load_coeffs, rwg_update_params
-from catseq.hardware import rwg
+from catseq.hardware import rwg, ttl
+from catseq.hardware.sync import global_sync
 from catseq import us  # Import microsecond unit
 
 # Mock OASM assembler and disassembler if not available
@@ -30,6 +32,43 @@ try:
     OASM_AVAILABLE = True
 except ImportError:
     OASM_AVAILABLE = False
+
+
+def test_epoch_rebased_after_global_sync():
+    main_board = Board("main")
+    rwg0_board = Board("rwg0")
+    main_ch = Channel(main_board, 0, ChannelType.TTL)
+    rwg0_ch = Channel(rwg0_board, 0, ChannelType.TTL)
+
+    pre_sync = (identity(10 * us) >> ttl.on()(main_ch, start_state=TTLState.OFF)) | (
+        identity(10 * us) >> ttl.on()(rwg0_ch, start_state=TTLState.OFF)
+    )
+    post_sync = (identity(5 * us) >> ttl.off()(main_ch, start_state=TTLState.ON)) | (
+        identity(5 * us) >> ttl.off()(rwg0_ch, start_state=TTLState.ON)
+    )
+
+    morphism = (pre_sync >> global_sync()) >> post_sync
+    events_by_board = extract_and_translate(morphism)
+    analyze_costs_and_epochs(events_by_board)
+
+    for adr, events in events_by_board.items():
+        ttl_events = [e for e in events if e.operation.operation_type in {OperationType.TTL_ON, OperationType.TTL_OFF}]
+        sync_events = [e for e in events if e.operation.operation_type in {OperationType.SYNC_MASTER, OperationType.SYNC_SLAVE}]
+
+        assert len(sync_events) == 1
+        assert ttl_events[0].epoch == 0
+        assert ttl_events[1].epoch == 1
+        assert ttl_events[1].logical_timestamp.time_offset_cycles == 1250
+
+    calls_by_board = generate_scheduled_calls(events_by_board)
+    for board_calls in calls_by_board.values():
+        sync_index = next(
+            i
+            for i, call in enumerate(board_calls)
+            if call.dsl_func in {OASMFunction.TRIG_SLAVE, OASMFunction.WAIT_MASTER}
+        )
+        assert board_calls[sync_index + 1].dsl_func == OASMFunction.WAIT
+        assert board_calls[sync_index + 1].args[0] == 1250
 
 @pytest.mark.skipif(not OASM_AVAILABLE, reason="OASM library not installed")
 def test_pass1_and_pass2_rwg_load_coeffs_cost_analysis():

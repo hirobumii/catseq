@@ -63,32 +63,33 @@ class PipelinePair:
 
     @property
     def play_start_time(self) -> int:
-        return self.play_event.timestamp_cycles
+        return self.play_event.effective_timestamp_cycles
+
+    @property
+    def epoch(self) -> int:
+        return self.load_event.epoch
 
 
-def detect_epoch_boundaries(events: List[LogicalEvent]) -> List[LogicalEvent]:
-    if not events:
-        return events
-    events_by_timestamp: Dict[int, List[LogicalEvent]] = {}
-    for event in events:
-        events_by_timestamp.setdefault(event.timestamp_cycles, []).append(event)
+def _is_sync_event(event: LogicalEvent) -> bool:
+    return event.operation.operation_type in {OperationType.SYNC_MASTER, OperationType.SYNC_SLAVE}
 
-    processed_events = []
-    current_epoch = 0
-    for timestamp in sorted(events_by_timestamp.keys()):
-        timestamp_events = events_by_timestamp[timestamp]
-        has_sync_master = any(
-            e.operation.operation_type == OperationType.SYNC_MASTER for e in timestamp_events
-        )
-        has_sync_slave = any(
-            e.operation.operation_type == OperationType.SYNC_SLAVE for e in timestamp_events
-        )
-        for event in timestamp_events:
-            event.logical_timestamp = LogicalTimestamp.from_cycles(current_epoch, timestamp)
-            processed_events.append(event)
-        if has_sync_master and has_sync_slave:
-            current_epoch += 1
-    return processed_events
+
+def _event_offset(event: LogicalEvent) -> int:
+    return event.logical_timestamp.time_offset_cycles
+
+
+def detect_epoch_boundaries(events_by_board: Dict[OASMAddress, List[LogicalEvent]]) -> None:
+    for events in events_by_board.values():
+        current_epoch = 0
+        epoch_base_timestamp = 0
+        for event in sorted(events, key=lambda e: e.timestamp_cycles):
+            event.logical_timestamp = LogicalTimestamp.from_cycles(
+                current_epoch,
+                event.timestamp_cycles - epoch_base_timestamp,
+            )
+            if _is_sync_event(event):
+                current_epoch += 1
+                epoch_base_timestamp = event.timestamp_cycles
 
 
 def extract_and_translate(morphism, verbose: bool = False) -> Dict[OASMAddress, List[LogicalEvent]]:
@@ -272,8 +273,7 @@ def analyze_costs_and_epochs(
 ) -> None:
     if verbose:
         print("Compiler: analyzing costs and epoch boundaries...")
-    all_events = [event for events in events_by_board.values() for event in events]
-    detect_epoch_boundaries(all_events)
+    detect_epoch_boundaries(events_by_board)
 
     for events in events_by_board.values():
         for event in events:
@@ -371,12 +371,14 @@ def validate_serial_load_constraints(adr, events: List[LogicalEvent], verbose: b
     load_events = [e for e in events if e.operation.operation_type == OperationType.RWG_LOAD_COEFFS]
     if len(load_events) <= 1:
         return
-    sorted_loads = sorted(load_events, key=lambda x: x.timestamp_cycles)
+    sorted_loads = sorted(load_events, key=lambda x: (x.epoch, _event_offset(x)))
     for i in range(len(sorted_loads) - 1):
         current_load = sorted_loads[i]
         next_load = sorted_loads[i + 1]
-        current_end = current_load.timestamp_cycles + (current_load.cost_cycles or 0)
-        next_start = next_load.timestamp_cycles
+        if current_load.epoch != next_load.epoch:
+            continue
+        current_end = _event_offset(current_load) + (current_load.cost_cycles or 0)
+        next_start = _event_offset(next_load)
         if next_start < current_end:
             raise ValueError(
                 f"Serial constraint violation on board {adr.value}: "
@@ -392,8 +394,10 @@ def validate_load_deadlines(adr, events: List[LogicalEvent], verbose: bool = Fal
     for pair in identify_load_play_pairs(load_events, play_events):
         load_event = pair["load_event"]
         play_event = pair["play_event"]
-        load_end = load_event.timestamp_cycles + (load_event.cost_cycles or 0)
-        play_start = play_event.timestamp_cycles
+        if load_event.epoch != play_event.epoch:
+            continue
+        load_end = _event_offset(load_event) + (load_event.cost_cycles or 0)
+        play_start = _event_offset(play_event)
         if load_end > play_start:
             raise ValueError(
                 f"Deadline violation on board {adr.value}: "
@@ -408,15 +412,20 @@ def validate_timing_consistency(adr, events: List[LogicalEvent], verbose: bool =
                 f"Timing consistency violation on board {adr.value}: "
                 f"Event has negative timestamp: {event.timestamp_cycles}c"
             )
-    sorted_events = sorted(events, key=lambda x: x.timestamp_cycles)
+    sorted_events = sorted(events, key=lambda x: (x.epoch, _event_offset(x)))
+    prev_epoch = 0
     prev_time = 0
     for event in sorted_events:
-        if event.timestamp_cycles < prev_time:
+        if event.epoch != prev_epoch:
+            prev_epoch = event.epoch
+            prev_time = 0
+        event_offset = _event_offset(event)
+        if event_offset < prev_time:
             raise ValueError(
                 f"Timing consistency violation on board {adr.value}: "
                 "Events are not properly ordered in time"
             )
-        prev_time = event.timestamp_cycles
+        prev_time = event_offset
 
 
 def check_cross_epoch_violations_single_board(
@@ -436,7 +445,7 @@ def check_cross_epoch_violations_single_board(
             if (
                 next_event.operation.operation_type == OperationType.RWG_LOAD_COEFFS
                 and hasattr(next_event, "logical_timestamp")
-                and next_event.logical_timestamp.time_offset_cycles < 100
+                and next_event.logical_timestamp.time_offset_cycles < (next_event.cost_cycles or 0)
             ):
                 raise ValueError(
                     f"Cross-epoch violation on board {adr.value}: "
@@ -454,16 +463,18 @@ def identify_pipeline_pairs(events: List[LogicalEvent], verbose: bool = False) -
         events_by_channel.setdefault(channel, []).append(event)
 
     for channel, channel_events in events_by_channel.items():
-        channel_events.sort(key=lambda e: e.timestamp_cycles)
+        channel_events.sort(key=lambda e: (e.epoch, _event_offset(e)))
         for i, event in enumerate(channel_events):
             if not event.is_critical and event.operation.operation_type == OperationType.RWG_LOAD_COEFFS:
                 for j in range(i + 1, len(channel_events)):
                     next_event = channel_events[j]
+                    if next_event.epoch != event.epoch:
+                        break
                     if next_event.operation.operation_type == OperationType.RWG_UPDATE_PARAMS:
                         pairs.append(PipelinePair(load_event=event, play_event=next_event))
                         if verbose:
                             print(
-                                f"    Found pipeline pair: LOAD@{event.timestamp_cycles}c → PLAY@{next_event.timestamp_cycles}c on {channel.global_id}"
+                                f"    Found pipeline pair: LOAD@e{event.epoch}:{_event_offset(event)}c → PLAY@e{next_event.epoch}:{_event_offset(next_event)}c on {channel.global_id}"
                             )
                         break
     return pairs
@@ -477,13 +488,15 @@ def calculate_optimal_schedule(
     events_to_reschedule: Dict[int, int] = {id(p.load_event): 0 for p in pipeline_pairs}
     sorted_pairs = sorted(
         pipeline_pairs,
-        key=lambda p: (p.play_start_time, p.channel.global_id),
+        key=lambda p: (p.epoch, p.play_start_time, p.channel.global_id),
         reverse=True,
     )
-    next_load_available_ts = float("inf")
+    next_load_available_ts_by_epoch: Dict[int, float] = {}
 
     for pair in sorted_pairs:
         load_event = pair.load_event
+        pair_epoch = pair.epoch
+        next_load_available_ts = next_load_available_ts_by_epoch.get(pair_epoch, float("inf"))
         latest_finish_by = min(pair.play_start_time, next_load_available_ts)
         proposed_start_ts = latest_finish_by - pair.load_cost_cycles
 
@@ -493,7 +506,9 @@ def calculate_optimal_schedule(
                 continue
             if id(other_event) in events_to_reschedule:
                 continue
-            other_start = other_event.timestamp_cycles
+            if other_event.epoch != pair_epoch:
+                continue
+            other_start = _event_offset(other_event)
             other_end = other_start + (other_event.cost_cycles or 0)
             if (proposed_start_ts < other_end) and (
                 (proposed_start_ts + pair.load_cost_cycles) > other_start
@@ -505,21 +520,22 @@ def calculate_optimal_schedule(
             if conflicting_events
             else latest_finish_by
         )
-        new_load_ts = finish_by - pair.load_cost_cycles
+        new_load_ts = max(0, finish_by - pair.load_cost_cycles)
         events_to_reschedule[id(load_event)] = new_load_ts
-        next_load_available_ts = new_load_ts
+        next_load_available_ts_by_epoch[pair_epoch] = new_load_ts
         if verbose:
             print(
-                f"      Scheduling LOAD on {pair.channel.global_id}: {load_event.timestamp_cycles}c → {new_load_ts}c"
+                f"      Scheduling LOAD on {pair.channel.global_id}: e{pair_epoch}:{_event_offset(load_event)}c → e{pair_epoch}:{new_load_ts}c"
             )
 
     optimized_events = []
     for event in events:
         if id(event) in events_to_reschedule:
             new_timestamp = events_to_reschedule[id(event)]
+            epoch_base = event.timestamp_cycles - _event_offset(event)
             optimized_events.append(
                 LogicalEvent(
-                    timestamp_cycles=new_timestamp,
+                    timestamp_cycles=epoch_base + new_timestamp,
                     operation=event.operation,
                     oasm_calls=event.oasm_calls,
                     cost_cycles=event.cost_cycles,
@@ -534,12 +550,29 @@ def calculate_optimal_schedule(
 def replace_wait_time_placeholders(
     events_by_board: Dict[OASMAddress, List[LogicalEvent]], verbose: bool = False
 ) -> None:
-    max_end_time = 0
-    for events in events_by_board.values():
-        for event in events:
-            event_end_time = event.timestamp_cycles + (event.cost_cycles if event.cost_cycles else 0)
-            max_end_time = max(max_end_time, event_end_time)
-    master_wait_time = max_end_time + 100
+    sync_frontiers: Dict[int, Dict[OASMAddress, int]] = {}
+
+    for adr, events in events_by_board.items():
+        sorted_events = sorted(
+            events,
+            key=lambda e: (
+                e.epoch,
+                _event_offset(e),
+                0 if e.operation.operation_type == OperationType.RWG_INIT else 1,
+                e.operation.channel.global_id if e.operation.channel else "",
+            ),
+        )
+        current_epoch = None
+        last_op_end_time = 0
+        for event in sorted_events:
+            if current_epoch != event.epoch:
+                current_epoch = event.epoch
+                last_op_end_time = 0
+            actual_start = max(_event_offset(event), last_op_end_time)
+            if _is_sync_event(event):
+                sync_frontiers.setdefault(event.epoch, {})[adr] = actual_start
+            last_op_end_time = actual_start + (event.cost_cycles or 0)
+
     for adr, events in events_by_board.items():
         for event in events:
             new_calls = []
@@ -549,6 +582,13 @@ def replace_wait_time_placeholders(
                     and len(call.args) >= 2
                     and call.args[0] == WAIT_TIME_PLACEHOLDER
                 ):
+                    epoch_frontiers = sync_frontiers.get(event.epoch, {})
+                    if not epoch_frontiers:
+                        master_wait_time = 100
+                    else:
+                        sync_offset = _event_offset(event)
+                        frontier_time = max(epoch_frontiers.values())
+                        master_wait_time = max(0, frontier_time - sync_offset) + 100
                     new_calls.append(
                         OASMCall(
                             adr=call.adr,
@@ -559,7 +599,7 @@ def replace_wait_time_placeholders(
                     )
                     if verbose:
                         print(
-                            f"    Replaced placeholder in {adr.value} with wait time: {master_wait_time} cycles"
+                            f"    Replaced placeholder in {adr.value} epoch {event.epoch} with wait time: {master_wait_time} cycles"
                         )
                 else:
                     new_calls.append(call)
@@ -578,14 +618,19 @@ def generate_scheduled_calls(
         sorted_events = sorted(
             events,
             key=lambda e: (
-                e.timestamp_cycles,
+                e.epoch,
+                _event_offset(e),
                 0 if e.operation.operation_type == OperationType.RWG_INIT else 1,
                 e.operation.channel.global_id if e.operation.channel else "",
             ),
         )
+        current_epoch = None
         last_op_end_time = 0
         for event in sorted_events:
-            ts = event.timestamp_cycles
+            if current_epoch != event.epoch:
+                current_epoch = event.epoch
+                last_op_end_time = 0
+            ts = _event_offset(event)
             wait_cycles = ts - last_op_end_time
             if wait_cycles < 0:
                 wait_cycles = 0

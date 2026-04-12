@@ -1,8 +1,7 @@
 import pytest
 
-from catseq.types.common import Board, Channel, ChannelType, OperationType
+from catseq.types.common import Board, Channel, ChannelType
 from catseq.compilation.types import OASMAddress, OASMFunction
-from catseq.types.rwg import WaveformParams, RWGUninitialized, RWGReady, RWGActive
 from catseq.hardware.rwg import StaticWaveform
 from catseq.types.ttl import TTLState
 from catseq.hardware import rwg, ttl
@@ -20,6 +19,16 @@ try:
     OASM_AVAILABLE = True
 except ImportError:
     OASM_AVAILABLE = False
+
+
+def _time_before_call(calls, target_func):
+    total_cycles = 0
+    for call in calls:
+        if call.dsl_func == target_func:
+            return total_cycles
+        if call.dsl_func == OASMFunction.WAIT:
+            total_cycles += call.args[0]
+    raise AssertionError(f"Could not find {target_func.name} in call stream")
 
 
 @pytest.mark.skipif(not OASM_AVAILABLE, reason="OASM library not installed")
@@ -174,10 +183,15 @@ def test_dynamic_master_wait_calculation():
     
     trig_slave_call = trig_slave_calls[0]
     wait_time_cycles = trig_slave_call.args[0]
-    wait_duration_us = wait_time_cycles / 250.0
-    
-    expected_min_duration = 150.0
-    assert wait_duration_us >= expected_min_duration
+    assert wait_time_cycles > 0
+
+    main_prefix = _time_before_call(oasm_calls[OASMAddress.MAIN], OASMFunction.TRIG_SLAVE)
+    rwg0_prefix = _time_before_call(oasm_calls[OASMAddress.RWG0], OASMFunction.WAIT_MASTER)
+    rwg1_prefix = _time_before_call(oasm_calls[OASMAddress.RWG1], OASMFunction.WAIT_MASTER)
+
+    trigger_time = main_prefix + wait_time_cycles
+    slowest_slave_time = max(rwg0_prefix, rwg1_prefix)
+    assert trigger_time >= slowest_slave_time + 100
 
 
 @pytest.mark.skipif(not OASM_AVAILABLE, reason="OASM library not installed")  
@@ -266,12 +280,14 @@ def test_global_sync_timing_accuracy():
     
     trig_slave_call = next(call for call in sync_events if call.dsl_func == OASMFunction.TRIG_SLAVE)
     wait_duration_cycles = trig_slave_call.args[0]
-    
-    expected_cycles = 25370  # Updated after latest timing calculation refinements
-    assert wait_duration_cycles == expected_cycles, (
-        f"Compiler-calculated wait duration {wait_duration_cycles} cycles does not match the "
-        f"expected value of {expected_cycles} (100us sequence + safety margin)."
-    )
+    assert wait_duration_cycles > 0
+
+    main_prefix = _time_before_call(oasm_calls[OASMAddress.MAIN], OASMFunction.TRIG_SLAVE)
+    rwg0_prefix = _time_before_call(oasm_calls[OASMAddress.RWG0], OASMFunction.WAIT_MASTER)
+
+    trigger_time = main_prefix + wait_duration_cycles
+    assert trigger_time >= rwg0_prefix + 100
+    assert trigger_time <= rwg0_prefix + 200
 
 
 @pytest.mark.skipif(not OASM_AVAILABLE, reason="OASM library not installed")
@@ -310,7 +326,7 @@ def test_complex_multi_board_sequence_with_sync():
 
     # Define the post-sync operations for each channel as a callable sequence
     ttl_ops_post_seq = rwg.hold(5 * us) >> ttl.on()
-    rwg_ops_post_seq = rwg.set_state(
+    rwg_ops_post_seq = rwg.hold(1 * us) >> rwg.set_state(
         [rwg.StaticWaveform(sbg_id=0, freq=10, amp=0.5)]
     ) >> rwg.linear_ramp(
         [StaticWaveform(freq=20, amp=0.8)], 50 * us

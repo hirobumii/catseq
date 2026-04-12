@@ -5,7 +5,6 @@ Tests the core compilation logic from Morphism objects to OASM calls
 and assembly generation.
 """
 
-import pytest
 from pytest_mock import MockerFixture
 
 from catseq.atomic import ttl_init, ttl_on, ttl_off
@@ -378,7 +377,7 @@ class TestLoopAnalysisAndTiming:
 
     def test_for_loop_structure_detection(self):
         """Test detection of for loop patterns in assembly code."""
-        from catseq.compilation.compiler import _analyze_loop_structure
+        from catseq.compilation.timing_analysis import analyze_loop_structure
 
         # Example assembly with for loop (loop 6 times from 0 to 5)
         assembly_lines = [
@@ -395,7 +394,7 @@ class TestLoopAnalysisAndTiming:
             'AMK P PTR 3.0 $FF'     # Unconditional back jump
         ]
 
-        loop_info = _analyze_loop_structure(assembly_lines)
+        loop_info = analyze_loop_structure(assembly_lines)
 
         # Verify loop detection
         assert loop_info['loop_type'] == 'for_loop'
@@ -413,7 +412,7 @@ class TestLoopAnalysisAndTiming:
 
     def test_loop_timing_calculation_exact(self):
         """Test exact timing calculation for loops with precise cycle counting."""
-        from catseq.compilation.compiler import _estimate_oasm_cost
+        from catseq.compilation.timing_analysis import estimate_oasm_cost
 
         # Same for loop example with exact calculation
         assembly_lines = [
@@ -430,7 +429,7 @@ class TestLoopAnalysisAndTiming:
             'AMK P PTR 3.0 $FF'     # 10 cycles × 6 times = 60
         ]
 
-        total_cost = _estimate_oasm_cost(assembly_lines)
+        total_cost = estimate_oasm_cost(assembly_lines)
 
         # Exact calculation:
         # Instructions 0-1 (outside loop): 2 cycles
@@ -440,7 +439,7 @@ class TestLoopAnalysisAndTiming:
 
     def test_single_instruction_no_loop(self):
         """Test that single instructions are not detected as loops."""
-        from catseq.compilation.compiler import _analyze_loop_structure, _estimate_oasm_cost
+        from catseq.compilation.timing_analysis import analyze_loop_structure, estimate_oasm_cost
 
         simple_assembly = [
             'NOP -',
@@ -448,7 +447,7 @@ class TestLoopAnalysisAndTiming:
             'NOP -'
         ]
 
-        loop_info = _analyze_loop_structure(simple_assembly)
+        loop_info = analyze_loop_structure(simple_assembly)
 
         # Should not detect any loop
         assert loop_info['loop_type'] == 'none'
@@ -457,12 +456,12 @@ class TestLoopAnalysisAndTiming:
         assert len(loop_info['loop_body_instructions']) == 0
 
         # Timing should be exactly 3 cycles
-        total_cost = _estimate_oasm_cost(simple_assembly)
+        total_cost = estimate_oasm_cost(simple_assembly)
         assert total_cost == 3  # 3 instructions × 1 cycle each
 
     def test_jump_without_loop_exact(self):
         """Test single jump instructions with exact timing."""
-        from catseq.compilation.compiler import _analyze_loop_structure, _estimate_oasm_cost
+        from catseq.compilation.timing_analysis import analyze_loop_structure, estimate_oasm_cost
 
         jump_assembly = [
             'NOP -',                # 1 cycle
@@ -472,29 +471,29 @@ class TestLoopAnalysisAndTiming:
             'AMK - LED $01 $00'     # 1 cycle
         ]
 
-        loop_info = _analyze_loop_structure(jump_assembly)
+        loop_info = analyze_loop_structure(jump_assembly)
 
         # Should not detect loop (only one jump)
         assert loop_info['loop_type'] == 'none'
         assert loop_info['estimated_iterations'] == 1
 
         # Timing should be exactly 14 cycles
-        total_cost = _estimate_oasm_cost(jump_assembly)
+        total_cost = estimate_oasm_cost(jump_assembly)
         expected = 1 + 1 + 10 + 1 + 1  # Exact cycle count
         assert total_cost == expected
         assert total_cost == 14
 
     def test_edge_case_empty_assembly(self):
         """Test edge case with empty assembly."""
-        from catseq.compilation.compiler import _analyze_loop_structure, _estimate_oasm_cost
+        from catseq.compilation.timing_analysis import analyze_loop_structure, estimate_oasm_cost
 
         empty_assembly = []
 
-        loop_info = _analyze_loop_structure(empty_assembly)
+        loop_info = analyze_loop_structure(empty_assembly)
         assert loop_info['loop_type'] == 'none'
         assert loop_info['estimated_iterations'] == 1
         assert len(loop_info['jump_instructions']) == 0
         assert len(loop_info['loop_body_instructions']) == 0
 
-        total_cost = _estimate_oasm_cost(empty_assembly)
+        total_cost = estimate_oasm_cost(empty_assembly)
         assert total_cost == 0

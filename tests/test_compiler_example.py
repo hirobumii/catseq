@@ -12,12 +12,13 @@
 
 import sys
 
+import pytest
+
+from catseq.atomic import ttl_init, ttl_off, ttl_on
 from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.compilation.types import OASMFunction
-from catseq.types.common import Board, Channel, OperationType
-from catseq.atomic import ttl_init, ttl_on, ttl_off
-from catseq.morphism import identity
-from catseq.morphism import Morphism
+from catseq.morphism import Morphism, identity
+from catseq.types.common import Board, Channel, ChannelType
 
 
 def pulse(channel: Channel, duration_us: float) -> Morphism:
@@ -51,72 +52,40 @@ def delay(duration_us: float) -> Morphism:
 
 
 def create_complex_ttl_sequence():
-    """使用直接构建PhysicalOperation的方式创建复杂时序，确保绝对时间戳正确"""
-    
-    # 创建板卡
+    """使用真实CatSeq morphism 构建复杂TTL时序。"""
     main_board = Board("main")
-    
-    # 创建TTL通道
     ttl_ch0 = Channel(main_board, 0, ChannelType.TTL)
     ttl_ch1 = Channel(main_board, 1, ChannelType.TTL)
-    
-    # 直接构建具有正确绝对时间戳的操作序列
-    # 我们将直接使用Mock方式，但使用正确的timestamp
-    
-    from unittest.mock import Mock
-    
-    # 创建操作mock的辅助函数
-    def create_operation_mock(op_type, channel, state_value, timestamp):
-        operation = Mock()
-        operation.operation_type = op_type
-        operation.channel = channel
-        operation.end_state = Mock()
-        operation.end_state.value = state_value
-        operation.duration_cycles = 1
-        
-        physical_op = Mock()
-        physical_op.operation = operation
-        physical_op.timestamp_cycles = timestamp
-        
-        return physical_op
-    
-    # 创建复杂时序的物理操作序列 - 使用绝对时间戳
-    physical_operations = [
-        # t=0: 同时初始化两个通道 [同时操作]
-        create_operation_mock(OperationType.TTL_INIT, ttl_ch0, 0, 0),
-        create_operation_mock(OperationType.TTL_INIT, ttl_ch1, 0, 0),
-        
-        # t=100: 同时开启两个通道 [同时操作]  
-        create_operation_mock(OperationType.TTL_ON, ttl_ch0, 1, 100),
-        create_operation_mock(OperationType.TTL_ON, ttl_ch1, 1, 100),
-        
-        # t=250: CH0关闭 [单独操作]
-        create_operation_mock(OperationType.TTL_OFF, ttl_ch0, 0, 250),
-        
-        # t=400: CH0再次开启 [单独操作]
-        create_operation_mock(OperationType.TTL_ON, ttl_ch0, 1, 400),
-        
-        # t=500: 同时关闭两个通道 [同时操作]
-        create_operation_mock(OperationType.TTL_OFF, ttl_ch0, 0, 500),
-        create_operation_mock(OperationType.TTL_OFF, ttl_ch1, 0, 500),
-        
-        # t=750: CH0开启 [单独操作]
-        create_operation_mock(OperationType.TTL_ON, ttl_ch0, 1, 750),
-        
-        # t=900: CH0关闭, CH1开启 [同时混合操作: 一个关一个开]
-        create_operation_mock(OperationType.TTL_OFF, ttl_ch0, 0, 900),
-        create_operation_mock(OperationType.TTL_ON, ttl_ch1, 1, 900),
-        
-        # t=1000: CH1关闭 [单独操作]
-        create_operation_mock(OperationType.TTL_OFF, ttl_ch1, 0, 1000),
-    ]
-    
-    # 创建Morphism mock对象，直接提供物理操作序列
-    morphism = Mock()
-    morphism._mock_physical_operations = physical_operations
-    morphism._mock_board = main_board
-    
-    return morphism
+
+    ch0_sequence = (
+        ttl_init(ttl_ch0)
+        @ identity(100e-6)
+        @ ttl_on(ttl_ch0)
+        @ identity(150e-6)
+        @ ttl_off(ttl_ch0)
+        @ identity(150e-6)
+        @ ttl_on(ttl_ch0)
+        @ identity(100e-6)
+        @ ttl_off(ttl_ch0)
+        @ identity(250e-6)
+        @ ttl_on(ttl_ch0)
+        @ identity(150e-6)
+        @ ttl_off(ttl_ch0)
+    )
+
+    ch1_sequence = (
+        ttl_init(ttl_ch1)
+        @ identity(100e-6)
+        @ ttl_on(ttl_ch1)
+        @ identity(400e-6)
+        @ ttl_off(ttl_ch1)
+        @ identity(400e-6)
+        @ ttl_on(ttl_ch1)
+        @ identity(100e-6)
+        @ ttl_off(ttl_ch1)
+    )
+
+    return ch0_sequence | ch1_sequence
 
 
 def print_calls_analysis(calls: list):
@@ -139,7 +108,11 @@ def print_calls_analysis(calls: list):
     
     for i, call in enumerate(calls, 1):
         func_name = call.dsl_func.value if hasattr(call.dsl_func, 'value') else str(call.dsl_func)
-        mask, value = call.args
+        if call.dsl_func == OASMFunction.WAIT:
+            print(f"{i:2d}. {func_name:10} | 地址:{call.adr.value:4} | 等待 {call.args[0]} cycles")
+            continue
+
+        mask, value = call.args[:2]
         
         # 解析通道
         channels = []
@@ -178,7 +151,7 @@ def test_complex_ttl_sequence_compilation():
     print("  t=750:  CH0开启 [单独操作] → 1条TTL_SET指令")
     print("  t=900:  CH0关闭, CH1开启 [同时混合操作] → 1条TTL_SET指令")
     print("  t=1000: CH1关闭 [单独操作] → 1条TTL_SET指令")
-    print("\n预期结果: 8条OASM调用 (1个CONFIG + 7个SET)")
+    print("\n预期结果: 1个CONFIG + 9个SET，并在状态变化间插入WAIT")
     print("展示编译器的同时操作合并优化能力，包括真正的混合操作")
     
     # 创建复杂时序
@@ -189,7 +162,8 @@ def test_complex_ttl_sequence_compilation():
         
         # 编译为OASM调用
         print("\n⚙️  正在编译Morphism...")
-        calls = compile_to_oasm_calls(morphism)
+        calls_by_board = compile_to_oasm_calls(morphism)
+        calls = [call for board_calls in calls_by_board.values() for call in board_calls]
         print(f"✅ 编译成功！生成了 {len(calls)} 个OASM调用")
         
         # 打印调用列表
@@ -202,24 +176,25 @@ def test_complex_ttl_sequence_compilation():
         on_off_count = sum(1 for call in calls if call.dsl_func == OASMFunction.TTL_SET)
         
         print(f"✓ TTL_INIT → TTL_CONFIG: {init_count}/1 (预期1个，同时操作合并)")
-        print(f"✓ TTL_ON/OFF → TTL_SET: {on_off_count}/7 (预期7个)")
-        
-        if init_count == 1 and on_off_count == 7:
+        print(f"✓ TTL_ON/OFF → TTL_SET: {on_off_count}/9 (预期9个)")
+
+        if init_count == 1 and on_off_count == 9:
             print("🎉 所有映射都正确！同时操作合并功能完美工作！")
             print("✨ 特别展示了真正的混合操作：同时进行一个开启和一个关闭")
-            print("✨ 编译器成功将复杂时序优化为8个OASM调用，大幅减少指令数量")
-            return True
+            print("✨ 编译器成功将复杂时序压缩为1个CONFIG、9个SET和必要的WAIT")
         else:
             print("❌ 映射数量不符合预期")
             print(f"   实际: TTL_CONFIG={init_count}, TTL_SET={on_off_count}")
-            print("   预期: TTL_CONFIG=1, TTL_SET=7")
-            return False
+            print("   预期: TTL_CONFIG=1, TTL_SET=9")
+            pytest.fail(
+                f"Unexpected mapping counts: TTL_CONFIG={init_count}, TTL_SET={on_off_count}"
+            )
             
     except Exception as e:
         print(f"❌ 测试失败: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        pytest.fail(f"Test failed: {e}")
 
 
 if __name__ == "__main__":
@@ -229,4 +204,3 @@ if __name__ == "__main__":
     else:
         print("\n❌ 测试失败！")
         sys.exit(1)
-

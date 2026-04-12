@@ -5,10 +5,7 @@ This test demonstrates the full workflow from Category Theory abstractions
 to actual RTMQ hardware assembly code generation using only CatSeq.
 """
 
-from oasm.rtmq2.intf import sim_intf
-from oasm.rtmq2 import assembler, disassembler
-from oasm.dev.main import C_MAIN, run_cfg
-from oasm.dev.rwg import C_RWG, rwg
+import pytest
 from catseq.atomic import ttl_init, ttl_on, ttl_off
 from catseq.morphism import identity
 from catseq.types.common import Board, Channel, ChannelType
@@ -25,8 +22,7 @@ def test_catseq_to_rtmq_full_pipeline():
         
         print("✅ CatSeq modules imported successfully")
     except ImportError as e:
-        print(f"❌ CatSeq modules not available: {e}")
-        return False
+        pytest.fail(f"CatSeq modules not available: {e}")
     
     # Define hardware configuration
     rwg_board = Board("RWG_0")
@@ -59,9 +55,9 @@ def test_catseq_to_rtmq_full_pipeline():
     # Parallel execution - demonstrates tensor product
     parallel_sequence = ch0_sequence | ch1_sequence
     
-    print(f"✅ CatSeq Morphism created:")
-    print(f"   - Channel 0: init→wait(5μs)→pulse(10μs)→wait(5μs)")
-    print(f"   - Channel 1: init→wait(10μs)→pulse(15μs)")
+    print("✅ CatSeq Morphism created:")
+    print("   - Channel 0: init→wait(5μs)→pulse(10μs)→wait(5μs)")
+    print("   - Channel 1: init→wait(10μs)→pulse(15μs)")
     print(f"   - Total duration: {parallel_sequence.total_duration_us:.1f}μs")
     print(f"   - Channels involved: {len(parallel_sequence.lanes)}")
     
@@ -71,18 +67,18 @@ def test_catseq_to_rtmq_full_pipeline():
         oasm_calls = compile_to_oasm_calls(parallel_sequence)
         print("✅ CatSeq → OASM compilation successful")
         
-        print(f"📋 Generated {len(oasm_calls)} OASM calls:")
-        for i, call in enumerate(oasm_calls):
+        flattened_calls = [call for calls in oasm_calls.values() for call in calls]
+        print(f"📋 Generated {len(flattened_calls)} OASM calls:")
+        for i, call in enumerate(flattened_calls):
             print(f"   {i:02d}: {call.adr.value} -> {call.dsl_func.name} {call.args}")
         
         # Analyze OASM calls
         func_counts = {}
-        for call in oasm_calls:
-            print(f"DZNB: {call.adr}")
+        for call in flattened_calls:
             func_name = call.dsl_func.name
             func_counts[func_name] = func_counts.get(func_name, 0) + 1
         
-        print(f"📊 OASM call analysis:")
+        print("📊 OASM call analysis:")
         for func, count in func_counts.items():
             print(f"   - {func}: {count} calls")
         
@@ -93,8 +89,8 @@ def test_catseq_to_rtmq_full_pipeline():
         try:
             from oasm.rtmq2.intf import sim_intf
             from oasm.rtmq2 import assembler, disassembler
-            from oasm.dev.main import C_MAIN, run_cfg
-            from oasm.dev.rwg import C_RWG, rwg
+            from oasm.dev.main import run_cfg
+            from oasm.dev.rwg import C_RWG
             
             # Create OASM instances
             intf_usb = sim_intf()
@@ -124,15 +120,15 @@ def test_catseq_to_rtmq_full_pipeline():
             print("✅ OASM execution successful")
         else:
             print("⚠️  OASM execution completed with warnings")
+        assert execution_success, "OASM execution reported failure"
         
         print("🎉 Complete CatSeq → OASM pipeline successful!")
-        return True
         
     except Exception as e:
         print(f"❌ CatSeq compilation failed: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        pytest.fail(f"CatSeq compilation failed: {e}")
 
 
 def test_simple_catseq_pulse():
@@ -157,23 +153,23 @@ def test_simple_catseq_pulse():
             identity(5e-6)      # Final wait 5μs
         )
         
-        print(f"✅ Simple CatSeq pulse created:")
+        print("✅ Simple CatSeq pulse created:")
         print(f"   - Total duration: {simple_pulse.total_duration_us:.1f}μs")
         print(f"   - Channel: {laser.global_id}")
         
         # Compile to OASM calls
         oasm_calls = compile_to_oasm_calls(simple_pulse)
         
-        print(f"📋 Generated {len(oasm_calls)} OASM calls:")
-        for i, call in enumerate(oasm_calls):
+        flattened_calls = [call for calls in oasm_calls.values() for call in calls]
+        print(f"📋 Generated {len(flattened_calls)} OASM calls:")
+        for i, call in enumerate(flattened_calls):
             print(f"   {i:02d}: {call.adr.value} -> {call.dsl_func.name} {call.args}")
         
         print("✅ Simple CatSeq pulse test successful!")
-        return True
         
     except Exception as e:
         print(f"❌ Simple pulse test failed: {e}")
-        return False
+        pytest.fail(f"Simple pulse test failed: {e}")
 
 
 def test_complex_catseq_experiment():
@@ -224,23 +220,23 @@ def test_complex_catseq_experiment():
         # Parallel execution - tensor product
         experiment_sequence = laser_seq | detector_seq | trigger_seq
         
-        print(f"✅ Complex sequence created:")
+        print("✅ Complex sequence created:")
         print(f"   - Total duration: {experiment_sequence.total_duration_us:.1f}μs")
         print(f"   - Channels: {len(experiment_sequence.lanes)}")
         
         # Compile to OASM
         oasm_calls = compile_to_oasm_calls(experiment_sequence)
         
-        print(f"📋 Generated {len(oasm_calls)} OASM calls:")
-        for i, call in enumerate(oasm_calls):
+        flattened_calls = [call for calls in oasm_calls.values() for call in calls]
+        print(f"📋 Generated {len(flattened_calls)} OASM calls:")
+        for i, call in enumerate(flattened_calls):
             print(f"   {i:02d}: {call.adr.value} -> {call.dsl_func.name} {call.args}")
         
         print("✅ Complex experiment test successful!")
-        return True
         
     except Exception as e:
         print(f"❌ Complex experiment test failed: {e}")
-        return False
+        pytest.fail(f"Complex experiment test failed: {e}")
 
 
 if __name__ == "__main__":

@@ -51,6 +51,8 @@ htmlcov/
 .ruff_cache/
 .mypy_cache/
 .claude/
+.codex
+.serena/
 
 # OASM 样例文件 (临时开发用)
 examples/oasm_samples/

@@ -10,8 +10,7 @@ from catseq.types.common import OperationType
 from catseq.types.rwg import RWGActive, RWGReady, RWGUninitialized, StaticWaveform, WaveformParams
 
 from . import realize_rwg as _realize_rwg  # noqa: F401
-from .common import wait
-from .morphism import Morphism
+from ..morphism import Morphism, wait
 
 
 def initialize(carrier_freq: float) -> Morphism:

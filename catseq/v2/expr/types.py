@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from catseq.types.common import Channel, State
 
 if TYPE_CHECKING:
-    from .expr import SymExpr
+    from .core import SymExpr
 else:
     SymExpr = object
 

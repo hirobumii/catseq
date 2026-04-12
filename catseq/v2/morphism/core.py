@@ -5,6 +5,7 @@ Unified algebraic Morphism for CatSeq V2.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Mapping
 from typing import Self
 
 from catseq.lanes import Lane
@@ -12,8 +13,8 @@ from catseq.morphism import Morphism as LegacyMorphism
 from catseq.time_utils import cycles_to_time, cycles_to_us, time_to_cycles, us
 from catseq.types.common import AtomicMorphism, Channel, OperationType, State
 
-from .realize import realize_value
-from .typing import EndStateFactory, StartStateMap, ValueLike
+from ..expr.realize import realize_value
+from ..expr.types import EndStateFactory, StartStateMap, ValueLike
 
 
 @dataclass(frozen=True)
@@ -158,17 +159,19 @@ class Morphism:
     def materialize(
         self,
         start_states: StartStateMap | State | ValueLike | None = None,
+        runtime_env: Mapping[str, object] | None = None,
     ) -> LegacyMorphism:
         normalized = self._normalize_start_states(start_states)
-        result = self._eval(self._root_id, normalized)
+        result = self._eval(self._root_id, normalized, runtime_env)
         return result.morphism
 
     def materialize_with_states(
         self,
         start_states: StartStateMap | State | ValueLike | None = None,
+        runtime_env: Mapping[str, object] | None = None,
     ) -> tuple[LegacyMorphism, StartStateMap]:
         normalized = self._normalize_start_states(start_states)
-        result = self._eval(self._root_id, normalized)
+        result = self._eval(self._root_id, normalized, runtime_env)
         return result.morphism, result.end_states
 
     def __str__(self) -> str:
@@ -274,17 +277,22 @@ class Morphism:
             stack.extend(node.children)
         return channels
 
-    def _eval(self, root_id: int, start_states: StartStateMap) -> _EvalResult:
+    def _eval(
+        self,
+        root_id: int,
+        start_states: StartStateMap,
+        runtime_env: Mapping[str, object] | None = None,
+    ) -> _EvalResult:
         node = self._arena.nodes[root_id]
         if node.kind == "empty":
             return _EvalResult(LegacyMorphism(lanes={}, _duration_cycles=0), dict(start_states))
         if node.kind in {"atomic", "wait"}:
-            return self._eval_atomic(node, start_states)
+            return self._eval_atomic(node, start_states, runtime_env)
         if node.kind == "serial":
             current_states = dict(start_states)
             legacy = None
             for child in node.children:
-                child_result = self._eval(child, current_states)
+                child_result = self._eval(child, current_states, runtime_env)
                 legacy = child_result.morphism if legacy is None else legacy >> child_result.morphism
                 current_states.update(child_result.end_states)
             return _EvalResult(
@@ -302,7 +310,7 @@ class Morphism:
                     for ch in child_channels
                     if ch in current_states
                 }
-                child_result = self._eval(child, child_starts)
+                child_result = self._eval(child, child_starts, runtime_env)
                 legacy = child_result.morphism if legacy is None else legacy | child_result.morphism
                 end_states.update(child_result.end_states)
             current_states.update(end_states)
@@ -327,7 +335,12 @@ class Morphism:
             stack.extend(node.children)
         return channels
 
-    def _eval_atomic(self, node: Node, start_states: StartStateMap) -> _EvalResult:
+    def _eval_atomic(
+        self,
+        node: Node,
+        start_states: StartStateMap,
+        runtime_env: Mapping[str, object] | None = None,
+    ) -> _EvalResult:
         assert node.atomic is not None
         channel = node.atomic.channel
         if channel is None:
@@ -340,12 +353,16 @@ class Morphism:
                     f"{node.atomic.state_requirement}, got {type(start_state)}"
                 )
         if node.atomic.end_state_factory is not None:
-            resolved_end_state = node.atomic.end_state_factory(start_state)
+            resolved_end_state = realize_value(
+                node.atomic.end_state_factory(start_state),
+                start_state,
+                runtime_env,
+            )
         else:
             resolved_end_state = (
                 start_state
                 if node.atomic.end_state is None
-                else realize_value(node.atomic.end_state, start_state)
+                else realize_value(node.atomic.end_state, start_state, runtime_env)
             )
         op = AtomicMorphism(
             channel=channel,

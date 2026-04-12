@@ -4,7 +4,7 @@ Common V2 helpers.
 
 from __future__ import annotations
 
-from .morphism import Morphism
+from .core import Morphism
 
 
 def wait(duration: float) -> Morphism:

@@ -7,8 +7,7 @@ from __future__ import annotations
 from catseq.types.common import OperationType
 from catseq.types.ttl import TTLState
 
-from .common import wait
-from .morphism import Morphism
+from ..morphism import Morphism, wait
 
 
 def initialize() -> Morphism:

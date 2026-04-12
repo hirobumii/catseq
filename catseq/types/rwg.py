@@ -55,12 +55,12 @@ class RWGActive(RWGState):
     pending_waveforms: Optional[Tuple[WaveformParams, ...]] = None
 
     def __post_init__(self):
-        # Ensure snapshot is always sorted by SBG ID for consistent comparisons.
-        object.__setattr__(
-            self, "snapshot", tuple(sorted(self.snapshot, key=lambda wf: wf.sbg_id))
-        )
-        # Ensure pending_waveforms is also sorted if not None
-        if self.pending_waveforms is not None:
+        # Preserve symbolic payloads as-is; only concrete tuples/lists are normalized.
+        if isinstance(self.snapshot, (tuple, list)):
+            object.__setattr__(
+                self, "snapshot", tuple(sorted(self.snapshot, key=lambda wf: wf.sbg_id))
+            )
+        if isinstance(self.pending_waveforms, (tuple, list)):
             object.__setattr__(
                 self, "pending_waveforms", tuple(sorted(self.pending_waveforms, key=lambda wf: wf.sbg_id))
             )
@@ -69,4 +69,3 @@ class RWGActive(RWGState):
     def is_active(self) -> bool:
         """The channel is active if any waveform has non-zero amplitude."""
         return any(abs(wf.amp) > 1e-12 for wf in self.snapshot)
-

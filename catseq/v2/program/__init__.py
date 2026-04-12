@@ -15,7 +15,9 @@ from .core import (
     Measure,
     Program,
     ProgramResult,
+    ProgramTrace,
     Return,
+    Select,
     Seq,
     While,
 )
@@ -33,7 +35,9 @@ __all__ = [
     "Measure",
     "Program",
     "ProgramResult",
+    "ProgramTrace",
     "Return",
+    "Select",
     "Seq",
     "While",
 ]

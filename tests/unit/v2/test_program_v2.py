@@ -9,8 +9,10 @@ import pytest
 from catseq.time_utils import us
 from catseq.types.common import Board, Channel, ChannelType, OperationType
 from catseq.types.rwg import RWGReady, RWGUninitialized, StaticWaveform
-from catseq.v2 import rwg as rwg_v2
-from catseq.v2 import (
+from catseq.v2 import var
+from catseq.v2.hardware import rwg as rwg_v2
+from catseq.v2.hardware import ttl as ttl_v2
+from catseq.v2.program import (
     BitMatrix,
     BitVec,
     Branch,
@@ -22,7 +24,7 @@ from catseq.v2 import (
     Measure,
     Program,
     Return,
-    var,
+    Select,
 )
 
 
@@ -171,7 +173,7 @@ def test_program_measure_branch_and_dynamic_emit_materializes_runtime_values():
         measurements={"carrier_freq": 123.0},
     )
 
-    ops = result.morphism.lanes[channel].operations
+    ops = tuple(timed.operation for timed in result.combined_emission().timed_operations())
     assert [op.operation_type for op in ops] == [
         OperationType.RWG_INIT,
         OperationType.RWG_SET_CARRIER,
@@ -279,3 +281,45 @@ def test_runtime_emit_supports_symbolic_waveform_fields_inside_program():
     result = program.run(start_states={channel: RWGUninitialized()})
 
     assert result.end_states[channel].snapshot[0].freq == pytest.approx(8.75)
+
+
+def test_program_arena_dump_is_reviewable():
+    keep_channel = Channel(Board("rwg0"), 0, ChannelType.TTL)
+    drop_channel = Channel(Board("rwg0"), 1, ChannelType.TTL)
+    keep = ttl_v2.on().on(keep_channel)
+    drop = ttl_v2.off().on(drop_channel)
+
+    program = Program(
+        Measure("occ"),
+        Let("keep", Call("decoder", (var("occ"),))),
+        Branch(
+            var("keep"),
+            Program(Emit(keep)),
+            Program(Emit(drop)),
+        ),
+    )
+
+    dumped = program.arena_dump()
+
+    assert dumped["root"] == 8
+    assert dumped["nodes"][1] == {"kind": "measure", "name": "occ"}
+    assert dumped["nodes"][2]["kind"] == "let"
+    assert dumped["nodes"][4] == {"kind": "seq", "children": (3,)}
+    assert dumped["nodes"][6] == {"kind": "seq", "children": (5,)}
+    assert dumped["nodes"][7]["kind"] == "branch"
+    assert dumped["nodes"][7]["then_root"] == 4
+    assert dumped["nodes"][7]["else_root"] == 6
+    assert dumped["nodes"][8] == {"kind": "seq", "children": (1, 2, 7)}
+
+
+def test_program_select_picks_runtime_value():
+    program = Program(
+        Measure("keep"),
+        Let("carrier", Select(var("keep"), 120.0, 95.0)),
+    )
+
+    true_result = program.run(measurements={"keep": True})
+    false_result = program.run(measurements={"keep": False})
+
+    assert true_result.env["carrier"] == pytest.approx(120.0)
+    assert false_result.env["carrier"] == pytest.approx(95.0)

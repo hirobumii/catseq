@@ -2,14 +2,13 @@ from dataclasses import dataclass
 
 import pytest
 
-from catseq.v2 import Morphism
 from catseq.time_utils import us, ms
 from catseq.types.common import Board, Channel, ChannelType
 from catseq.types.rwg import RWGUninitialized, StaticWaveform
 from catseq.types.ttl import TTLState
-from catseq.v2 import hold
-from catseq.v2 import rwg as rwg_v2
-from catseq.v2 import ttl as ttl_v2
+from catseq.v2.hardware import rwg as rwg_v2
+from catseq.v2.hardware import ttl as ttl_v2
+from catseq.v2.morphism import Morphism, hold
 
 
 @dataclass(frozen=True)

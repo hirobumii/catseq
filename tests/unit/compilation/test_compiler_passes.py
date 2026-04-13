@@ -2,6 +2,7 @@
 Unit tests for the CatSeq compiler passes.
 """
 import pytest
+from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.compilation.pipeline import (
     analyze_costs_and_epochs,
     calculate_optimal_schedule,
@@ -69,6 +70,64 @@ def test_epoch_rebased_after_global_sync():
         )
         assert board_calls[sync_index + 1].dsl_func == OASMFunction.WAIT
         assert board_calls[sync_index + 1].args[0] == 1250
+
+
+def test_same_timestamp_sync_stays_in_same_epoch_and_schedules_last():
+    main_board = Board("main")
+    rwg0_board = Board("rwg0")
+    main_sync_ch = Channel(main_board, 0, ChannelType.TTL)
+    main_ttl_ch = Channel(main_board, 1, ChannelType.TTL)
+    rwg0_sync_ch = Channel(rwg0_board, 0, ChannelType.TTL)
+
+    morphism = (
+        global_sync()(main_sync_ch, start_state=TTLState.OFF)
+        | ttl.on()(main_ttl_ch, start_state=TTLState.OFF)
+        | global_sync()(rwg0_sync_ch, start_state=TTLState.OFF)
+    )
+
+    events_by_board = extract_and_translate(morphism)
+    analyze_costs_and_epochs(events_by_board)
+
+    main_events = events_by_board[OASMAddress.MAIN]
+    main_sync_event = next(
+        event for event in main_events if event.operation.operation_type == OperationType.SYNC_MASTER
+    )
+    main_ttl_event = next(
+        event for event in main_events if event.operation.operation_type == OperationType.TTL_ON
+    )
+
+    assert main_sync_event.epoch == 0
+    assert main_ttl_event.epoch == 0
+    assert main_sync_event.logical_timestamp.time_offset_cycles == 0
+    assert main_ttl_event.logical_timestamp.time_offset_cycles == 0
+
+    calls_by_board = generate_scheduled_calls(events_by_board)
+    main_funcs = [call.dsl_func for call in calls_by_board[OASMAddress.MAIN]]
+    assert main_funcs.index(OASMFunction.TTL_SET) < main_funcs.index(OASMFunction.TRIG_SLAVE)
+
+
+def test_partial_sync_boundary_is_rejected():
+    main_board = Board("main")
+    rwg0_board = Board("rwg0")
+    main_sync_ch = Channel(main_board, 0, ChannelType.TTL)
+    rwg0_ttl_ch = Channel(rwg0_board, 0, ChannelType.TTL)
+
+    morphism = global_sync()(main_sync_ch, start_state=TTLState.OFF) | ttl.on()(
+        rwg0_ttl_ch, start_state=TTLState.OFF
+    )
+
+    with pytest.raises(ValueError, match="Incomplete global sync boundary"):
+        compile_to_oasm_calls(morphism)
+
+
+def test_single_board_global_sync_is_rejected():
+    main_board = Board("main")
+    main_sync_ch = Channel(main_board, 0, ChannelType.TTL)
+
+    morphism = global_sync()(main_sync_ch, start_state=TTLState.OFF)
+
+    with pytest.raises(ValueError, match="Invalid global sync boundary"):
+        compile_to_oasm_calls(morphism)
 
 @pytest.mark.skipif(not OASM_AVAILABLE, reason="OASM library not installed")
 def test_pass1_and_pass2_rwg_load_coeffs_cost_analysis():

@@ -78,18 +78,111 @@ def _event_offset(event: LogicalEvent) -> int:
     return event.logical_timestamp.time_offset_cycles
 
 
+def _event_priority(event: LogicalEvent) -> int:
+    if event.operation.operation_type == OperationType.RWG_INIT:
+        return 0
+    if _is_sync_event(event):
+        return 2
+    return 1
+
+
+def _sorted_epoch_events(events: List[LogicalEvent]) -> List[LogicalEvent]:
+    return sorted(
+        events,
+        key=lambda e: (
+            e.epoch,
+            _event_offset(e),
+            _event_priority(e),
+            e.operation.channel.global_id if e.operation.channel else "",
+        ),
+    )
+
+
+def _events_by_timestamp(events: List[LogicalEvent]) -> List[tuple[int, List[LogicalEvent]]]:
+    grouped: Dict[int, List[LogicalEvent]] = {}
+    for event in events:
+        grouped.setdefault(event.timestamp_cycles, []).append(event)
+    return [(timestamp, grouped[timestamp]) for timestamp in sorted(grouped)]
+
+
+def _sync_role_for_cohort(
+    adr: OASMAddress, timestamp: int, cohort: List[LogicalEvent]
+) -> OperationType | None:
+    sync_roles = {
+        event.operation.operation_type for event in cohort if _is_sync_event(event)
+    }
+    if not sync_roles:
+        return None
+    if len(sync_roles) > 1:
+        raise ValueError(
+            f"Invalid sync boundary on board {adr.value} at t={timestamp}c: "
+            "mixed SYNC_MASTER and SYNC_SLAVE operations in one local sync cohort."
+        )
+    return next(iter(sync_roles))
+
+
+def _discover_sync_rounds(
+    events_by_board: Dict[OASMAddress, List[LogicalEvent]]
+) -> Dict[OASMAddress, List[int]]:
+    sync_rounds_by_board: Dict[OASMAddress, List[tuple[int, OperationType]]] = {}
+    for adr, events in events_by_board.items():
+        board_rounds: List[tuple[int, OperationType]] = []
+        for timestamp, cohort in _events_by_timestamp(events):
+            role = _sync_role_for_cohort(adr, timestamp, cohort)
+            if role is not None:
+                board_rounds.append((timestamp, role))
+        sync_rounds_by_board[adr] = board_rounds
+
+    if not any(sync_rounds_by_board.values()):
+        return {adr: [] for adr in events_by_board}
+
+    expected_rounds = len(next(rounds for rounds in sync_rounds_by_board.values() if rounds))
+    for adr, rounds in sync_rounds_by_board.items():
+        if len(rounds) != expected_rounds:
+            raise ValueError(
+                "Incomplete global sync boundary: every active board must participate in each "
+                f"sync round. Board {adr.value} has {len(rounds)} sync round(s), expected {expected_rounds}."
+            )
+
+    for round_index in range(expected_rounds):
+        master_boards = [
+            adr
+            for adr, rounds in sync_rounds_by_board.items()
+            if rounds[round_index][1] == OperationType.SYNC_MASTER
+        ]
+        slave_boards = [
+            adr
+            for adr, rounds in sync_rounds_by_board.items()
+            if rounds[round_index][1] == OperationType.SYNC_SLAVE
+        ]
+        if len(master_boards) != 1 or not slave_boards:
+            raise ValueError(
+                "Invalid global sync boundary: each sync round must contain exactly one master "
+                f"board and at least one slave board. Round {round_index} has "
+                f"{len(master_boards)} master board(s) and {len(slave_boards)} slave board(s)."
+            )
+
+    return {
+        adr: [timestamp for timestamp, _role in rounds]
+        for adr, rounds in sync_rounds_by_board.items()
+    }
+
+
 def detect_epoch_boundaries(events_by_board: Dict[OASMAddress, List[LogicalEvent]]) -> None:
-    for events in events_by_board.values():
+    sync_rounds_by_board = _discover_sync_rounds(events_by_board)
+    for adr, events in events_by_board.items():
         current_epoch = 0
         epoch_base_timestamp = 0
-        for event in sorted(events, key=lambda e: e.timestamp_cycles):
-            event.logical_timestamp = LogicalTimestamp.from_cycles(
-                current_epoch,
-                event.timestamp_cycles - epoch_base_timestamp,
-            )
-            if _is_sync_event(event):
+        sync_timestamps = set(sync_rounds_by_board[adr])
+        for timestamp, cohort in _events_by_timestamp(events):
+            for event in cohort:
+                event.logical_timestamp = LogicalTimestamp.from_cycles(
+                    current_epoch,
+                    timestamp - epoch_base_timestamp,
+                )
+            if timestamp in sync_timestamps:
                 current_epoch += 1
-                epoch_base_timestamp = event.timestamp_cycles
+                epoch_base_timestamp = timestamp
 
 
 def extract_and_translate(morphism, verbose: bool = False) -> Dict[OASMAddress, List[LogicalEvent]]:
@@ -553,15 +646,7 @@ def replace_wait_time_placeholders(
     sync_frontiers: Dict[int, Dict[OASMAddress, int]] = {}
 
     for adr, events in events_by_board.items():
-        sorted_events = sorted(
-            events,
-            key=lambda e: (
-                e.epoch,
-                _event_offset(e),
-                0 if e.operation.operation_type == OperationType.RWG_INIT else 1,
-                e.operation.channel.global_id if e.operation.channel else "",
-            ),
-        )
+        sorted_events = _sorted_epoch_events(events)
         current_epoch = None
         last_op_end_time = 0
         for event in sorted_events:
@@ -615,15 +700,7 @@ def generate_scheduled_calls(
         if not events:
             calls_by_board[adr] = board_calls
             continue
-        sorted_events = sorted(
-            events,
-            key=lambda e: (
-                e.epoch,
-                _event_offset(e),
-                0 if e.operation.operation_type == OperationType.RWG_INIT else 1,
-                e.operation.channel.global_id if e.operation.channel else "",
-            ),
-        )
+        sorted_events = _sorted_epoch_events(events)
         current_epoch = None
         last_op_end_time = 0
         for event in sorted_events:

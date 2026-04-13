@@ -3,6 +3,7 @@ Public morphism API.
 """
 
 from ..lanes import Lane
+from ..types.common import State
 from .compose import (
     auto_compose_morphisms,
     parallel_compose_morphisms,

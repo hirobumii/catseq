@@ -5,6 +5,7 @@ This module provides universal operations that work with any channel type,
 such as hold/wait operations.
 """
 
+from ..debug import factory_breadcrumb
 from ..types.common import Channel, State, AtomicMorphism, OperationType
 from ..morphism import Morphism, MorphismDef
 from ..time_utils import us_to_cycles, time_to_cycles
@@ -32,7 +33,8 @@ def hold(duration: float) -> MorphismDef:
             start_state=start_state,
             end_state=start_state,
             duration_cycles=duration_cycles,
-            operation_type=OperationType.IDENTITY
+            operation_type=OperationType.IDENTITY,
+            debug_trace=(factory_breadcrumb(stacklevel=1),),
         )
         
         return Morphism({channel: Lane((identity_op,))})

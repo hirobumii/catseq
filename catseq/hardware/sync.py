@@ -2,6 +2,7 @@
 Global synchronization operations for multi-board coordination.
 """
 
+from ..debug import factory_breadcrumb
 from ..morphism import MorphismDef, Morphism, from_atomic
 from ..types import Channel, State, AtomicMorphism, OperationType
 
@@ -30,6 +31,7 @@ def global_sync() -> MorphismDef:
             end_state=start_state,  # 同步不改变状态，只是时间分界点
             duration_cycles=0,  # 时间不确定，用 0 表示
             operation_type=operation_type,
+            debug_trace=(factory_breadcrumb(stacklevel=1),),
         )
         return from_atomic(op)
     

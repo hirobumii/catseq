@@ -7,9 +7,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict
 
+from ..debug import (
+    annotate_morphism,
+    auto_generated_breadcrumb,
+    compose_breadcrumb,
+    dict_apply_breadcrumb,
+    next_compose_id,
+)
 from ..lanes import Lane
 from ..time_utils import cycles_to_time, cycles_to_us, time_to_cycles, us
-from ..types.common import AtomicMorphism, Board, Channel, OperationType
+from ..types.common import AtomicMorphism, Board, Channel, DebugBreadcrumb, OperationType
 from .views import lanes_view as render_lanes_view
 from .views import morphism_str, timeline_view as render_timeline_view
 
@@ -70,7 +77,13 @@ class Morphism:
             other = from_atomic(other)
         from .compose import strict_compose_morphisms
 
-        return strict_compose_morphisms(self, other)
+        compose_id = next_compose_id()
+        return strict_compose_morphisms(
+            self,
+            other,
+            lhs_breadcrumb=compose_breadcrumb("strict", "lhs", compose_id, stacklevel=1),
+            rhs_breadcrumb=compose_breadcrumb("strict", "rhs", compose_id, stacklevel=1),
+        )
 
     def __rshift__(self, other) -> "Morphism":
         """自动状态推断组合操作符 >>"""
@@ -78,11 +91,15 @@ class Morphism:
             other = from_atomic(other)
 
         if isinstance(other, Morphism) and not other.lanes and other.total_duration_cycles > 0:
+            compose_id = next_compose_id()
+            lhs_breadcrumb = compose_breadcrumb("serial", "lhs", compose_id, stacklevel=1)
+            rhs_breadcrumb = compose_breadcrumb("serial", "rhs", compose_id, stacklevel=1)
             if not self.lanes:
                 return self if self.total_duration_cycles >= other.total_duration_cycles else other
 
             new_lanes = {}
-            for channel, lane in self.lanes.items():
+            lhs = annotate_morphism(self, (lhs_breadcrumb,))
+            for channel, lane in lhs.lanes.items():
                 inferred_state = lane.effective_end_state
                 if inferred_state is None and lane.initial_state is not None:
                     inferred_state = lane.initial_state
@@ -93,6 +110,10 @@ class Morphism:
                     end_state=inferred_state,
                     duration_cycles=other.total_duration_cycles,
                     operation_type=OperationType.IDENTITY,
+                    debug_trace=(
+                        auto_generated_breadcrumb("channelless_identity_expansion"),
+                        rhs_breadcrumb,
+                    ),
                 )
                 new_lanes[channel] = Lane(lane.operations + (identity_for_channel,))
             return Morphism(new_lanes)
@@ -100,19 +121,57 @@ class Morphism:
         if isinstance(other, Morphism):
             from .compose import auto_compose_morphisms
 
-            return auto_compose_morphisms(self, other)
+            compose_id = next_compose_id()
+            return auto_compose_morphisms(
+                self,
+                other,
+                lhs_breadcrumb=compose_breadcrumb("serial", "lhs", compose_id, stacklevel=1),
+                rhs_breadcrumb=compose_breadcrumb("serial", "rhs", compose_id, stacklevel=1),
+            )
 
         from .deferred import MorphismDef
 
         if isinstance(other, MorphismDef):
-            return other(self)
+            compose_id = next_compose_id()
+            lhs = annotate_morphism(
+                self,
+                (compose_breadcrumb("serial", "lhs", compose_id, stacklevel=1),),
+            )
+            return other(
+                lhs,
+                application_breadcrumb=compose_breadcrumb(
+                    "serial",
+                    "rhs",
+                    compose_id,
+                    stacklevel=1,
+                ),
+            )
 
         if isinstance(other, dict):
             if not all(isinstance(k, Channel) for k in other.keys()):
                 return NotImplemented
             if not all(isinstance(v, MorphismDef) for v in other.values()):
                 return NotImplemented
-            return self._apply_channel_operations(other)
+            if not other:
+                return self
+            compose_id = next_compose_id()
+            lhs = annotate_morphism(
+                self,
+                (compose_breadcrumb("serial", "lhs", compose_id, stacklevel=1),),
+            )
+            return lhs._apply_channel_operations(
+                other,
+                {
+                    channel: (
+                        dict_apply_breadcrumb(
+                            channel.global_id,
+                            compose_id,
+                            stacklevel=1,
+                        ),
+                    )
+                    for channel in other.keys()
+                },
+            )
 
         return NotImplemented
 
@@ -122,7 +181,13 @@ class Morphism:
             other = from_atomic(other)
         from .compose import parallel_compose_morphisms
 
-        return parallel_compose_morphisms(self, other)
+        compose_id = next_compose_id()
+        return parallel_compose_morphisms(
+            self,
+            other,
+            lhs_breadcrumb=compose_breadcrumb("parallel", "lhs", compose_id, stacklevel=1),
+            rhs_breadcrumb=compose_breadcrumb("parallel", "rhs", compose_id, stacklevel=1),
+        )
 
     def __str__(self):
         return morphism_str(self)
@@ -135,10 +200,14 @@ class Morphism:
         """生成时间轴视图，显示并行操作的时序关系"""
         return render_timeline_view(self, compact=compact)
 
-    def _apply_channel_operations(self, channel_operations):
+    def _apply_channel_operations(
+        self,
+        channel_operations,
+        application_breadcrumbs: Dict[Channel, tuple[DebugBreadcrumb, ...]] | None = None,
+    ):
         from .deferred import _apply_deferred_operations
 
-        return _apply_deferred_operations(self, channel_operations)
+        return _apply_deferred_operations(self, channel_operations, application_breadcrumbs)
 
 
 def from_atomic(op: AtomicMorphism) -> Morphism:

@@ -6,7 +6,7 @@ which are the fundamental building blocks of sequences.
 """
 from typing import List, Union, Callable, Dict, Tuple
 
-from .debug import capture_callsite
+from .debug import factory_breadcrumb
 from .morphism import Morphism, from_atomic, Lane
 from .types.common import (
     Board,
@@ -26,66 +26,61 @@ from .types.rwg import (
 
 def ttl_init(channel: Channel, initial_state: TTLState = TTLState.OFF) -> Morphism:
     """Creates a TTL initialization morphism."""
-    debug_origin = capture_callsite(stacklevel=1)
     op = AtomicMorphism(
         channel=channel,
         start_state=None,
         end_state=initial_state,
         duration_cycles=2,
         operation_type=OperationType.TTL_INIT,
-        debug_origin=debug_origin,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
     )
     return from_atomic(op)
 
 def ttl_on(channel: Channel, start_state: State = TTLState.OFF) -> Morphism:
     """Creates a TTL ON morphism."""
-    debug_origin = capture_callsite(stacklevel=1)
     op = AtomicMorphism(
         channel=channel,
         start_state=start_state,
         end_state=TTLState.ON,
         duration_cycles=1,
         operation_type=OperationType.TTL_ON,
-        debug_origin=debug_origin,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
     )
     return from_atomic(op)
 
 def ttl_off(channel: Channel, start_state: State = TTLState.ON) -> Morphism:
     """Creates a TTL OFF morphism."""
-    debug_origin = capture_callsite(stacklevel=1)
     op = AtomicMorphism(
         channel=channel,
         start_state=start_state,
         end_state=TTLState.OFF,
         duration_cycles=1,
         operation_type=OperationType.TTL_OFF,
-        debug_origin=debug_origin,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
     )
     return from_atomic(op)
 
 def rwg_board_init(channel: Channel) -> Morphism:
     """Creates an RWG board-level initialization morphism (atomic operation)."""
-    debug_origin = capture_callsite(stacklevel=1)
     op = AtomicMorphism(
         channel=channel,
         start_state=RWGUninitialized(),
         end_state=RWGUninitialized(),  # Still uninitialized until carrier is set
         duration_cycles=1,  # All atomic operations use 1 cycle for stable compiler ordering
         operation_type=OperationType.RWG_INIT,
-        debug_origin=debug_origin,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
     )
     return from_atomic(op)
 
 def rwg_set_carrier(channel: Channel, carrier_freq: float) -> Morphism:
     """Creates an RWG carrier frequency setting morphism (atomic operation).""" 
-    debug_origin = capture_callsite(stacklevel=1)
     op = AtomicMorphism(
         channel=channel,
         start_state=RWGUninitialized(),
         end_state=RWGReady(carrier_freq=carrier_freq),
         duration_cycles=1,  # All atomic operations use 1 cycle for stable compiler ordering
         operation_type=OperationType.RWG_SET_CARRIER,
-        debug_origin=debug_origin,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
     )
     return from_atomic(op)
 
@@ -95,7 +90,6 @@ def rwg_load_coeffs(
     start_state: Union[RWGReady, RWGActive],
 ) -> Morphism:
     """Creates a morphism to load RWG waveform coefficients."""
-    debug_origin = capture_callsite(stacklevel=1)
     if not isinstance(start_state, (RWGReady, RWGActive)):
         raise TypeError(f"RWG load_coeffs must start from RWGReady or RWGActive, not {type(start_state)}")
 
@@ -121,7 +115,7 @@ def rwg_load_coeffs(
         end_state=end_state,
         duration_cycles=1,  # All atomic operations use 1 cycle for stable compiler ordering
         operation_type=OperationType.RWG_LOAD_COEFFS,
-        debug_origin=debug_origin,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
     )
     return from_atomic(op)
 
@@ -137,14 +131,13 @@ def rwg_update_params(
         start_state: RWG state at the beginning of playback
         end_state: RWG state at the end of playback
     """
-    debug_origin = capture_callsite(stacklevel=1)
     op = AtomicMorphism(
         channel=channel,
         start_state=start_state,
         end_state=end_state,
         duration_cycles=0,  
         operation_type=OperationType.RWG_UPDATE_PARAMS,
-        debug_origin=debug_origin,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
     )
     return from_atomic(op)
 
@@ -175,7 +168,6 @@ def oasm_black_box(
     Returns:
         A Morphism object representing the multi-channel black box.
     """
-    debug_origin = capture_callsite(stacklevel=1)
     lanes = {}
     if not channel_states:
         raise ValueError("channel_states cannot be empty for a black-box operation.")
@@ -202,7 +194,7 @@ def oasm_black_box(
             end_state=end_state,
             duration_cycles=duration_cycles,
             operation_type=OperationType.OPAQUE_OASM_FUNC,
-            debug_origin=debug_origin,
+            debug_trace=(factory_breadcrumb(stacklevel=1),),
             user_func=board_func,
             user_args=user_args,
             user_kwargs=user_kwargs,

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
+from itertools import count
 from typing import Callable
 
 class ChannelType(Enum):
@@ -91,19 +92,65 @@ class State:
 
 
 @dataclass(frozen=True)
-class DebugOrigin:
-    """User-facing creation site metadata for debugging compiler failures."""
+class DebugFrame:
+    """Source frame attached to a debug breadcrumb."""
 
     file_path: str
     line_number: int
     function_name: str
+    source_text: str | None = None
+
+    def describe(self) -> str:
+        return f"{self.file_path}:{self.line_number} in {self.function_name}()"
+
+
+@dataclass(frozen=True)
+class DebugBreadcrumb:
+    """One immutable provenance step in an atomic morphism trace."""
+
+    kind: str
+    frame: DebugFrame | None = None
+    compose_kind: str | None = None
+    side: str | None = None
+    compose_id: int | None = None
+    channel_id: str | None = None
+    generator_index: int | None = None
+    label: str | None = None
+    reason: str | None = None
     note: str | None = None
 
     def describe(self) -> str:
-        location = f"{self.file_path}:{self.line_number}"
-        if self.note is None:
-            return f"{location} in {self.function_name}()"
-        return f"{location} in {self.function_name}() [{self.note}]"
+        if self.kind == "factory":
+            return "factory"
+        if self.kind == "deferred_def":
+            return "deferred definition"
+        if self.kind == "deferred_apply":
+            return (
+                f"deferred apply generator[{self.generator_index}]"
+                f"{f' on {self.channel_id}' if self.channel_id is not None else ''}"
+            )
+        if self.kind == "compose":
+            return (
+                f"compose {self.compose_kind} {self.side}"
+                f"{f' #{self.compose_id}' if self.compose_id is not None else ''}"
+            )
+        if self.kind == "dict_apply":
+            return (
+                f"dict apply"
+                f"{f' to {self.channel_id}' if self.channel_id is not None else ''}"
+                f"{f' #{self.compose_id}' if self.compose_id is not None else ''}"
+            )
+        if self.kind == "auto_generated":
+            return (
+                "auto generated"
+                f"{f' ({self.reason})' if self.reason is not None else ''}"
+            )
+        if self.kind == "label":
+            return f"label {self.label}" if self.label is not None else "label"
+        return self.kind
+
+
+_DEBUG_ID_COUNTER = count(1)
 
 
 @dataclass(frozen=True)
@@ -114,14 +161,53 @@ class AtomicMorphism:
     end_state: State | None    # Generic state
     duration_cycles: int
     operation_type: OperationType
-    debug_origin: DebugOrigin | None = field(default=None, kw_only=True)
+    debug_trace: tuple[DebugBreadcrumb, ...] = field(default_factory=tuple, kw_only=True)
+    debug_id: int = field(default=0, kw_only=True)
 
     def __post_init__(self):
         if self.duration_cycles < 0:
             raise ValueError("Duration must be non-negative")
+        if self.debug_id == 0:
+            object.__setattr__(self, "debug_id", next(_DEBUG_ID_COUNTER))
 
-    def with_debug_origin(self, debug_origin: DebugOrigin | None) -> AtomicMorphism:
-        return replace(self, debug_origin=debug_origin)
+    @property
+    def debug_origin(self) -> DebugFrame | None:
+        for breadcrumb in reversed(self.debug_trace):
+            if breadcrumb.frame is not None:
+                return breadcrumb.frame
+        return None
+
+    def with_debug_trace(self, debug_trace: tuple[DebugBreadcrumb, ...]) -> AtomicMorphism:
+        return replace(self, debug_trace=debug_trace)
+
+    def append_debug_breadcrumb(self, breadcrumb: DebugBreadcrumb) -> AtomicMorphism:
+        return replace(self, debug_trace=self.debug_trace + (breadcrumb,))
+
+    def append_debug_breadcrumbs(
+        self,
+        breadcrumbs: tuple[DebugBreadcrumb, ...],
+    ) -> AtomicMorphism:
+        return replace(self, debug_trace=self.debug_trace + breadcrumbs)
+
+    def with_states(
+        self,
+        start_state: State | None,
+        end_state: State | None,
+    ) -> AtomicMorphism:
+        return replace(self, start_state=start_state, end_state=end_state)
+
+    def with_channel_and_states(
+        self,
+        channel: Channel | None,
+        start_state: State | None,
+        end_state: State | None,
+    ) -> AtomicMorphism:
+        return replace(
+            self,
+            channel=channel,
+            start_state=start_state,
+            end_state=end_state,
+        )
     
     def __str__(self):
         from ..time_utils import cycles_to_us

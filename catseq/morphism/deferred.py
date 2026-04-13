@@ -6,8 +6,9 @@ from __future__ import annotations
 
 from typing import Callable, Dict, Self
 
+from ..debug import capture_callsite
 from ..lanes import Lane
-from ..types.common import AtomicMorphism, Channel, OperationType, State
+from ..types.common import AtomicMorphism, Channel, DebugOrigin, OperationType, State
 from ..types.rwg import RWGUninitialized
 from .core import Morphism
 
@@ -23,6 +24,7 @@ class MorphismDef:
         self,
         generator: Callable[[Channel, State], Morphism] | None = None,
         generators: tuple[Callable[[Channel, State], Morphism], ...] | None = None,
+        origins: tuple[DebugOrigin | None, ...] | None = None,
     ):
         if generators is not None:
             self._generators = generators
@@ -30,6 +32,12 @@ class MorphismDef:
             self._generators = (generator,)
         else:
             self._generators = ()
+
+        if origins is not None:
+            self._origins = origins
+        else:
+            origin = capture_callsite(stacklevel=2)
+            self._origins = tuple(origin for _ in self._generators)
 
     def __call__(self, target: "Channel | Morphism", start_state: "State | None" = None) -> Morphism:
         if isinstance(target, Channel):
@@ -47,12 +55,15 @@ class MorphismDef:
     def __rshift__(self, other: Self) -> "MorphismDef":
         if not isinstance(other, MorphismDef):
             return NotImplemented
-        return MorphismDef(generators=self._generators + other._generators)
+        return MorphismDef(
+            generators=self._generators + other._generators,
+            origins=self._origins + other._origins,
+        )
 
     def _execute_on_channel(self, channel: Channel, start_state: State) -> Morphism:
         current_state = start_state
         operations = []
-        for generator in self._generators:
+        for generator, origin in zip(self._generators, self._origins, strict=True):
             morphism_piece = generator(channel, current_state)
             if not morphism_piece.lanes:
                 if morphism_piece.total_duration_cycles > 0:
@@ -63,6 +74,7 @@ class MorphismDef:
                             end_state=current_state,
                             duration_cycles=morphism_piece.total_duration_cycles,
                             operation_type=OperationType.IDENTITY,
+                            debug_origin=origin,
                         )
                     )
             else:
@@ -71,7 +83,7 @@ class MorphismDef:
                     raise ValueError(
                         f"Deferred morphism for {channel.global_id} did not contain the target channel"
                     )
-                operations.extend(channel_lane.operations)
+                operations.extend(op.with_debug_origin(origin) for op in channel_lane.operations)
                 current_state = channel_lane.effective_end_state or current_state
         if not operations:
             return Morphism(lanes={}, _duration_cycles=0)

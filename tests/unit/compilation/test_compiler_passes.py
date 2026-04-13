@@ -4,12 +4,14 @@ Unit tests for the CatSeq compiler passes.
 import pytest
 from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.compilation.pipeline import (
+    LogicalEvent,
     analyze_costs_and_epochs,
     calculate_optimal_schedule,
     extract_and_translate,
     generate_scheduled_calls,
     identify_pipeline_pairs,
     schedule_and_optimize,
+    validate_serial_load_constraints,
     validate_constraints,
 )
 from catseq.compilation.timing_analysis import estimate_oasm_cost
@@ -128,6 +130,44 @@ def test_single_board_global_sync_is_rejected():
 
     with pytest.raises(ValueError, match="Invalid global sync boundary"):
         compile_to_oasm_calls(morphism)
+
+
+def test_serial_load_constraint_reports_atomic_origin():
+    board = Board("rwg0")
+    channel = Channel(board, 0, ChannelType.RWG)
+
+    waveform = WaveformParams(
+        sbg_id=1,
+        freq_coeffs=(10.0, 0.1, None, None),
+        amp_coeffs=(0.5, 0.01, None, None),
+        initial_phase=1.57,
+        phase_reset=True,
+    )
+    start_state = RWGReady(carrier_freq=100e6)
+
+    first_load = rwg_load_coeffs(channel, params=[waveform], start_state=start_state)
+    second_load = rwg_load_coeffs(channel, params=[waveform], start_state=start_state)
+
+    first_event = LogicalEvent(
+        timestamp_cycles=100,
+        operation=first_load.lanes[channel].operations[0],
+        cost_cycles=14,
+    )
+    second_event = LogicalEvent(
+        timestamp_cycles=110,
+        operation=second_load.lanes[channel].operations[0],
+        cost_cycles=14,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        validate_serial_load_constraints(OASMAddress.RWG0, [first_event, second_event])
+
+    message = str(exc_info.value)
+    assert "Serial constraint violation on board rwg0" in message
+    assert "load1: RWG_LOAD_COEFFS on rwg0_RWG_0" in message
+    assert "load2: RWG_LOAD_COEFFS on rwg0_RWG_0" in message
+    assert "tests/unit/compilation/test_compiler_passes.py" in message
+    assert "test_serial_load_constraint_reports_atomic_origin()" in message
 
 @pytest.mark.skipif(not OASM_AVAILABLE, reason="OASM library not installed")
 def test_pass1_and_pass2_rwg_load_coeffs_cost_analysis():

@@ -10,6 +10,7 @@ from ..types.common import (
     AtomicMorphism,
     BlackBoxAtomicMorphism,
     Channel,
+    DebugOrigin,
     OperationType,
     TIMING_CRITICAL_OPERATIONS,
 )
@@ -95,6 +96,21 @@ def _sorted_epoch_events(events: List[LogicalEvent]) -> List[LogicalEvent]:
             _event_priority(e),
             e.operation.channel.global_id if e.operation.channel else "",
         ),
+    )
+
+
+def _format_debug_origin(origin: DebugOrigin | None) -> str:
+    if origin is None:
+        return "unknown origin"
+    return origin.describe()
+
+
+def _describe_event(event: LogicalEvent) -> str:
+    channel_id = event.operation.channel.global_id if event.operation.channel is not None else "<board>"
+    return (
+        f"{event.operation.operation_type.name} on {channel_id} "
+        f"(epoch={event.epoch}, offset={_event_offset(event)}c, raw={event.timestamp_cycles}c, "
+        f"cost={event.cost_cycles}c, origin={_format_debug_origin(event.operation.debug_origin)})"
     )
 
 
@@ -475,7 +491,9 @@ def validate_serial_load_constraints(adr, events: List[LogicalEvent], verbose: b
         if next_start < current_end:
             raise ValueError(
                 f"Serial constraint violation on board {adr.value}: "
-                f"LOAD operations overlap - load1 ends at {current_end}c, load2 starts at {next_start}c"
+                f"LOAD operations overlap - load1 ends at {current_end}c, load2 starts at {next_start}c\n"
+                f"  load1: {_describe_event(current_load)}\n"
+                f"  load2: {_describe_event(next_load)}"
             )
 
 

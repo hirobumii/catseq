@@ -1,9 +1,11 @@
 """
 Common, hardware-agnostic types for the CatSeq framework.
 """
-from dataclasses import dataclass, field
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
 from enum import Enum, auto
-from typing import Any, Callable
+from typing import Callable
 
 class ChannelType(Enum):
     """硬件通道类型"""
@@ -89,6 +91,22 @@ class State:
 
 
 @dataclass(frozen=True)
+class DebugOrigin:
+    """User-facing creation site metadata for debugging compiler failures."""
+
+    file_path: str
+    line_number: int
+    function_name: str
+    note: str | None = None
+
+    def describe(self) -> str:
+        location = f"{self.file_path}:{self.line_number}"
+        if self.note is None:
+            return f"{location} in {self.function_name}()"
+        return f"{location} in {self.function_name}() [{self.note}]"
+
+
+@dataclass(frozen=True)
 class AtomicMorphism:
     """最小操作单元 (不可变)"""
     channel: Channel | None
@@ -96,10 +114,14 @@ class AtomicMorphism:
     end_state: State | None    # Generic state
     duration_cycles: int
     operation_type: OperationType
+    debug_origin: DebugOrigin | None = field(default=None, kw_only=True)
 
     def __post_init__(self):
         if self.duration_cycles < 0:
             raise ValueError("Duration must be non-negative")
+
+    def with_debug_origin(self, debug_origin: DebugOrigin | None) -> AtomicMorphism:
+        return replace(self, debug_origin=debug_origin)
     
     def __str__(self):
         from ..time_utils import cycles_to_us

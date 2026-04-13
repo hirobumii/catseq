@@ -10,11 +10,13 @@ from .compose import (
 )
 from .core import Morphism, from_atomic, identity
 from .deferred import MorphismDef
+from ..types import State
 
 __all__ = [
     "Lane",
     "Morphism",
     "MorphismDef",
+    "State",
     "from_atomic",
     "identity",
     "strict_compose_morphisms",

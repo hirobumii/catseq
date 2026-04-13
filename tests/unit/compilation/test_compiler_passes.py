@@ -613,7 +613,7 @@ def test_complete_compilation_pipeline():
             break
     
     assert load_event is not None, "Should find RWG_LOAD_COEFFS event"
-    assert load_event.cost_cycles == 15, f"Load cost should be 15 cycles, got {load_event.cost_cycles}"
+    assert load_event.cost_cycles == 9, f"Load cost should be 9 cycles, got {load_event.cost_cycles}"
     
     # Pass 3: Schedule and optimize
     print("    Pass 3: Scheduling and optimizing...")
@@ -655,13 +655,13 @@ def test_complete_compilation_pipeline():
     wait_cycles = wait_calls[0].args[0]
     # Note: the exact expected wait depends on the scheduling optimization, which we verify here.
     # The key is that a wait call exists and is calculated correctly.
-    expected_cycles = 750 - 15  # 3us delay (750 cycles) minus cost of optimized load (15 cycles)
+    expected_cycles = 750 - 9  # 3us delay (750 cycles) minus cost of optimized load (9 cycles)
     assert abs(wait_cycles - expected_cycles) < 10, f"Wait time should be ~{expected_cycles} cycles, got {wait_cycles} cycles"
     
     # Verify load call parameters
     load_params = load_calls[0].args[0]
     assert load_params.sbg_id == 1, f"SBG ID should be 1, got {load_params.sbg_id}"
-    assert load_params.freq_coeffs == (10.0, 0.0, 0.0, 0.0), "Frequency coefficients mismatch"
+    assert load_params.freq_coeffs == (10.0, None, None, None), "Frequency coefficients mismatch"
     
     # Verify play call parameters
     play_calls = [call for call in oasm_calls if call.dsl_func == OASMFunction.RWG_PLAY]

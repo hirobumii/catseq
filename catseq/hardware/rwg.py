@@ -61,8 +61,8 @@ def set_state(targets: List[StaticWaveform],phase_reset=True) -> MorphismDef:
             params.append(
                 WaveformParams(
                     sbg_id=t.sbg_id,
-                    freq_coeffs=(t.freq, 0.0, 0.0, 0.0),
-                    amp_coeffs=(t.amp, 0.0, 0.0, 0.0),
+                    freq_coeffs=(t.freq, None, None, None),
+                    amp_coeffs=(t.amp, None, None, None),
                     initial_phase=t.phase,
                     phase_reset=phase_reset,
                     fct = t.fct,

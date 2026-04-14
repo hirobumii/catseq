@@ -17,8 +17,14 @@ def reset_subroutine_registry():
     clear_compiled_subroutines()
     asm.clear()
     asm.core = C_RWG
+    asm.frame = (0,)
     yield
     asm.clear()
+    asm.frame = (0,)
+
+
+def _lines() -> list[str]:
+    return disassembler(core=C_RWG)(asm[:])
 
 
 def test_core_domain_rejects_header_slot_annotations():
@@ -125,14 +131,16 @@ def test_core_domain_fixed_leaf_abi_uses_body_locals():
     assert add_const._catseq_subroutine.abi == "fixed"
     add_const()
 
-    assembly_lines = disassembler(core=C_RWG)(asm[:])
-
-    assert any("GLO - $10 5" in line for line in assembly_lines)
-    assert any("GLO - $11 1" in line for line in assembly_lines)
-    assert any("ADD - $08 $08 $09" in line or "ADD - $FF $08 $09" in line for line in assembly_lines)
-    assert not any("STK" in line for line in assembly_lines)
-    assert not any("CSR - $" in line and "LNK" in line for line in assembly_lines)
-    assert assembly_lines[-1] == "AMK P PTR 2.0 LNK"
+    assert _lines() == [
+        "GLO - $10 5",
+        "GLO - $11 1",
+        "ADD - $FF $08 $09",
+        "NOP -",
+        "ADD - $FF $FF $10",
+        "NOP -",
+        "ADD - $08 $FF $11",
+        "AMK P PTR 2.0 LNK",
+    ]
 
 
 def test_core_domain_window_abi_for_compiled_calls():
@@ -152,12 +160,23 @@ def test_core_domain_window_abi_for_compiled_calls():
 
     leaf_sum()
     caller_sum()
-    assembly_lines = disassembler(core=C_RWG)(asm[:])
-
-    assert any("STK" in line for line in assembly_lines)
-    assert any("CLO P PTR" in line for line in assembly_lines)
-    assert any("CSR - $23 LNK" in line for line in assembly_lines)
-    assert any("AMK P PTR 2.0 $23" in line for line in assembly_lines)
+    assert _lines() == [
+        "GLO - $10 5",
+        "ADD - $FF $08 $09",
+        "NOP -",
+        "ADD - $08 $FF $10",
+        "AMK P PTR 2.0 LNK",
+        "SUB - $22 $00 $22",
+        "CSR - $23 LNK",
+        "ADD - $08 $00 $20",
+        "ADD - $09 $00 $21",
+        "CLO P PTR 0x000_00000",
+        "ADD - $24 $00 $08",
+        "NOP -",
+        "ADD - $20 $00 $24",
+        "AMK - STK 3.0 $22",
+        "AMK P PTR 2.0 $23",
+    ]
 
 
 def test_core_domain_emits_callable_subroutine_flow():
@@ -172,10 +191,23 @@ def test_core_domain_emits_callable_subroutine_flow():
     function("_start", 0, 0)
     R[0] = 0
 
-    assembly_lines = disassembler(core=C_RWG)(asm[:])
-
-    assert any("CLO P PTR" in line for line in assembly_lines[:4])
-    assert any("AMK P PTR 2.0 LNK" in line for line in assembly_lines)
+    assert _lines() == [
+        "GLO - $22 2",
+        "NOP -",
+        "AMK - STK 3.0 $22",
+        "CLO P PTR 0x000_0000C",
+        "GLO - $10 5",
+        "GLO - $11 1",
+        "ADD - $FF $08 $09",
+        "NOP -",
+        "ADD - $FF $FF $10",
+        "NOP -",
+        "ADD - $08 $FF $11",
+        "AMK P PTR 2.0 LNK",
+        "SUB - $20 $00 $20",
+        "CSR - $21 LNK",
+        "ADD - $20 $00 $00",
+    ]
 
 
 def test_core_domain_registers_compiled_subroutines():
@@ -188,3 +220,88 @@ def test_core_domain_registers_compiled_subroutines():
     assert "add_const" in registry
     assert registry["add_const"].name == "add_const"
     assert registry["add_const"].abi == "fixed"
+
+
+def test_core_domain_compiles_if_else_control_flow():
+    @core_domain()
+    def branchy(n):
+        x: local = 0
+        if n > 0:
+            x = 5
+        else:
+            x = 1
+        return x
+
+    branchy()
+    assert _lines() == [
+        "ADD - $10 $00 $00",
+        "LST - $FE $00 $08",
+        "GLO - $FF 5",
+        "EQU - $FE $FE $00",
+        "NOP -",
+        "AMK P PTR $FE $FF",
+        "GLO - $10 5",
+        "GLO - $FF 2",
+        "NOP -",
+        "AMK P PTR 3.0 $FF",
+        "GLO - $10 1",
+        "NOP -",
+        "ADD - $08 $00 $10",
+        "AMK P PTR 2.0 LNK",
+    ]
+
+
+def test_core_domain_compiles_while_control_flow():
+    @core_domain()
+    def countdown(n):
+        x: local
+        x = n
+        while x > 0:
+            x = x - 1
+        return x
+
+    countdown()
+    assert _lines() == [
+        "ADD - $10 $00 $08",
+        "NOP -",
+        "LST - $FE $00 $10",
+        "GLO - $FF 5",
+        "EQU - $FE $FE $00",
+        "NOP -",
+        "AMK P PTR $FE $FF",
+        "SUB - $10 $10 1",
+        "GLO - $FF -9",
+        "NOP -",
+        "AMK P PTR 3.0 $FF",
+        "ADD - $08 $00 $10",
+        "AMK P PTR 2.0 LNK",
+    ]
+
+
+def test_core_domain_compiles_for_range_control_flow():
+    @core_domain()
+    def loopy(n):
+        i: local = 0
+        acc: local = 0
+        for i in range(n):
+            acc = acc + i
+        return acc
+
+    loopy()
+    assert _lines() == [
+        "ADD - $10 $00 $00",
+        "ADD - $11 $00 $00",
+        "ADD - $10 $00 $00",
+        "NOP -",
+        "LSE - $FE $08 $10",
+        "GLO - $FF 6",
+        "NOP -",
+        "AMK P PTR $FE $FF",
+        "ADD - $11 $11 $10",
+        "ADD - $10 $10 1",
+        "GLO - $FF -9",
+        "NOP -",
+        "AMK P PTR 3.0 $FF",
+        "ADD - $08 $00 $11",
+        "AMK P PTR 2.0 LNK",
+    ]

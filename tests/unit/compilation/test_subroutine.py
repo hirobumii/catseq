@@ -143,6 +143,28 @@ def test_core_domain_fixed_leaf_abi_uses_body_locals():
     ]
 
 
+def test_core_domain_fixed_leaf_abi_supports_augassign_on_locals():
+    @core_domain()
+    def bump(n):
+        r: local = 0
+        r = n
+        r += 1
+        return r
+
+    assert bump._catseq_subroutine.abi == "fixed"
+    bump()
+
+    assert _lines() == [
+        "ADD - $10 $00 $00",
+        "ADD - $10 $00 $08",
+        "NOP -",
+        "ADD - $10 $10 1",
+        "NOP -",
+        "ADD - $08 $00 $10",
+        "AMK P PTR 2.0 LNK",
+    ]
+
+
 def test_core_domain_window_abi_for_compiled_calls():
     @core_domain()
     def leaf_sum(n, m):
@@ -177,6 +199,24 @@ def test_core_domain_window_abi_for_compiled_calls():
         "AMK - STK 3.0 $22",
         "AMK P PTR 2.0 $23",
     ]
+
+
+def test_core_domain_window_abi_supports_recursive_local_augassign():
+    @core_domain(recursion_bound=10)
+    def fib(n):
+        r: local = 0
+        if n <= 2:
+            return 1
+        r = fib(n - 1)
+        r += fib(n - 2)
+        return r
+
+    assert fib._catseq_subroutine.abi == "window"
+    fib()
+
+    assembly_lines = _lines()
+    assert any("CLO P PTR" in line for line in assembly_lines)
+    assert any("AMK P PTR 2.0" in line for line in assembly_lines)
 
 
 def test_core_domain_emits_callable_subroutine_flow():

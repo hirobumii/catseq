@@ -7,14 +7,14 @@ from __future__ import annotations
 from oasm import domain
 
 from .abi import (
-    fixed_bindings,
+    fixed_slots,
     fixed_subroutine_func,
     make_call_dispatch,
     make_ctx,
-    window_bindings,
+    window_slots,
     window_subroutine_func,
 )
-from .frontend import PreparedFunction
+from .frontend import PreparedFunction, registerize_function_ast
 from .ir import CompiledSubroutine
 
 
@@ -29,16 +29,16 @@ def lower_prepared_function(
 ):
     """Create the executable OASM emitter for a prepared subroutine."""
 
-    bindings = (
-        fixed_bindings(prepared.arg_names, prepared.local_names)
+    slots = (
+        fixed_slots(prepared.arg_names, prepared.local_names)
         if abi == "fixed"
-        else window_bindings(prepared.arg_names, prepared.local_names)
+        else window_slots(prepared.arg_names, prepared.local_names)
     )
     subroutine_func = fixed_subroutine_func if abi == "fixed" else window_subroutine_func
     call_dispatch = make_call_dispatch(registry)
     ctx, regq = make_ctx(
         abi=abi,
-        bindings=bindings,
+        slots=slots,
         call_dispatch=call_dispatch,
         subroutine_func=subroutine_func,
         dump=dump,
@@ -49,7 +49,7 @@ def lower_prepared_function(
     ctx[f"#{prepared.name}"] = True
 
     def transform(_module):
-        return prepared.transformed_module
+        return registerize_function_ast(prepared.transformed_module, slots)
 
     emitter = domain(ctx, regq=regq, sub=transform, dump=dump)(original_func)
     return CompiledSubroutine(

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 
 LOCAL_ANNOTATION_NAME = "local"
+REGFILE_SYMBOL = "_catseq_regfile"
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,44 @@ def _is_local_annassign(node: ast.stmt) -> bool:
         and isinstance(node.target, ast.Name)
         and getattr(node.annotation, "id", None) == LOCAL_ANNOTATION_NAME
     )
+
+
+class _RegisterizeNames(ast.NodeTransformer):
+    """Rewrite register-backed names into regfile subscript expressions."""
+
+    def __init__(self, slots: dict[str, int], *, regfile_symbol: str = REGFILE_SYMBOL) -> None:
+        self._slots = slots
+        self._regfile_symbol = regfile_symbol
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        slot = self._slots.get(node.id)
+        if slot is None:
+            return node
+        regfile = ast.Name(
+            id=self._regfile_symbol,
+            ctx=ast.Load(),
+        )
+        replacement = ast.Subscript(
+            value=regfile,
+            slice=ast.Constant(value=slot),
+            ctx=node.ctx,
+        )
+        return ast.copy_location(replacement, node)
+
+
+def registerize_function_ast(
+    module: ast.Module,
+    slots: dict[str, int],
+    *,
+    regfile_symbol: str = REGFILE_SYMBOL,
+) -> ast.Module:
+    """Return a copy of ``module`` with arg/local names rewritten to register slots."""
+
+    transformer = _RegisterizeNames(slots, regfile_symbol=regfile_symbol)
+    transformed = copy.deepcopy(module)
+    transformed = transformer.visit(transformed)
+    ast.fix_missing_locations(transformed)
+    return transformed
 
 
 def prepare_function_ast(

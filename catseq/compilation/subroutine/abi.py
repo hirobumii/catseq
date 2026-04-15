@@ -28,29 +28,29 @@ from .ir import CompiledSubroutine
 FIXED_ARG_BASE = 8
 FIXED_LOCAL_BASE = 16
 WINDOW_LOCAL_GAP = 2
+REGFILE_SYMBOL = "_catseq_regfile"
 
 
-def fixed_bindings(arg_names: tuple[str, ...], local_names: tuple[str, ...]) -> dict[str, object]:
-    """Return the fixed low-TCS bindings for a small leaf subroutine."""
+def fixed_slots(arg_names: tuple[str, ...], local_names: tuple[str, ...]) -> dict[str, int]:
+    """Return the fixed low-TCS slot map for a small leaf subroutine."""
 
-    fixed_r = core_reg(base=0)
-    bindings: dict[str, object] = {}
+    slots: dict[str, int] = {}
     for index, name in enumerate(arg_names):
-        bindings[name] = fixed_r[FIXED_ARG_BASE + index]
+        slots[name] = FIXED_ARG_BASE + index
     for index, name in enumerate(local_names):
-        bindings[name] = fixed_r[FIXED_LOCAL_BASE + index]
-    return bindings
+        slots[name] = FIXED_LOCAL_BASE + index
+    return slots
 
 
-def window_bindings(arg_names: tuple[str, ...], local_names: tuple[str, ...]) -> dict[str, object]:
-    """Return the stack-window bindings for a general RTMQ subroutine."""
+def window_slots(arg_names: tuple[str, ...], local_names: tuple[str, ...]) -> dict[str, int]:
+    """Return the stack-window slot map for a general RTMQ subroutine."""
 
-    bindings: dict[str, object] = {}
+    slots: dict[str, int] = {}
     for index, name in enumerate(arg_names):
-        bindings[name] = window_r[index]
+        slots[name] = index
     for index, name in enumerate(local_names):
-        bindings[name] = window_r[len(arg_names) + WINDOW_LOCAL_GAP + index]
-    return bindings
+        slots[name] = len(arg_names) + WINDOW_LOCAL_GAP + index
+    return slots
 
 
 @contextmanager
@@ -116,7 +116,7 @@ def call_fixed(name: str, *args):
 def make_ctx(
     *,
     abi: str,
-    bindings: dict[str, object],
+    slots: dict[str, int],
     call_dispatch: Callable[..., object],
     subroutine_func: Callable[..., object],
     dump: bool,
@@ -126,7 +126,7 @@ def make_ctx(
     del dump  # kept in the signature so callers can thread it uniformly
 
     ctx = core_ctx().copy()
-    ctx.update(bindings)
+    ctx[REGFILE_SYMBOL] = core_reg(base=0) if abi == "fixed" else window_r
     ctx["_catseq_subroutine_func"] = subroutine_func
     ctx["Call"] = call_dispatch
     if abi == "fixed":
@@ -134,7 +134,7 @@ def make_ctx(
     regq_base = core_regq()
 
     def regq(symbol: str) -> bool:
-        return symbol in bindings or regq_base(symbol)
+        return symbol == REGFILE_SYMBOL or regq_base(symbol)
 
     return ctx, regq
 

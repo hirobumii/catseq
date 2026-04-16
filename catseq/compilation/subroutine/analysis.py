@@ -7,11 +7,6 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 
-
-FIXED_ABI_MAX_ARGS = 8
-FIXED_ABI_MAX_LOCALS = 8
-
-
 @dataclass(frozen=True)
 class SubroutineClassification:
     """Classification result for ABI selection and recursion policy."""
@@ -52,10 +47,9 @@ def classify_subroutine(
     """
     Choose an ABI and enforce the current recursion policy.
 
-    The v1 policy is intentionally conservative:
-    - any call to a known compiled subroutine forces the window ABI
+    The current policy prioritizes compatibility with legacy OASM call sites:
+    - all compiled subroutines use the standard OASM/window ABI
     - self-recursion is allowed only when an explicit recursion bound is provided
-    - fixed ABI is reserved for small call-free functions
     """
 
     is_recursive = name in named_calls
@@ -66,14 +60,8 @@ def classify_subroutine(
             f"Recursive subroutine '{name}' requires an explicit recursion_bound."
         )
 
-    fits_fixed_abi = (
-        arg_count <= FIXED_ABI_MAX_ARGS
-        and local_count <= FIXED_ABI_MAX_LOCALS
-    )
-
-    abi = "fixed" if fits_fixed_abi and not calls_subroutines else "window"
     return SubroutineClassification(
-        abi=abi,
+        abi="window",
         calls_subroutines=calls_subroutines,
         is_recursive=is_recursive,
     )

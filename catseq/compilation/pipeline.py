@@ -32,6 +32,8 @@ class LogicalEvent:
     cost_cycles: int = 0
     is_critical: bool = True
     logical_timestamp: LogicalTimestamp = field(default=None)
+    blackbox_group_id: int | None = None
+    blackbox_board: str | None = None
 
     def __post_init__(self):
         if self.logical_timestamp is None:
@@ -112,6 +114,70 @@ def _events_by_timestamp(events: List[LogicalEvent]) -> List[tuple[int, List[Log
     for event in events:
         grouped.setdefault(event.timestamp_cycles, []).append(event)
     return [(timestamp, grouped[timestamp]) for timestamp in sorted(grouped)]
+
+
+def _events_by_epoch(events: List[LogicalEvent]) -> Dict[int, List[LogicalEvent]]:
+    grouped: Dict[int, List[LogicalEvent]] = {}
+    for event in events:
+        grouped.setdefault(event.epoch, []).append(event)
+    for epoch in grouped:
+        grouped[epoch].sort(
+            key=lambda e: (
+                e.timestamp_cycles,
+                _event_priority(e),
+                e.operation.channel.global_id if e.operation.channel else "",
+            )
+        )
+    return grouped
+
+
+def _opaque_signature(event: LogicalEvent) -> tuple[int, repr, repr, int]:
+    op = event.operation
+    if not isinstance(op, BlackBoxAtomicMorphism):
+        raise TypeError("opaque signature requested for non-blackbox event")
+    return (id(op.user_func), repr(op.user_args), repr(op.user_kwargs), op.duration_cycles)
+
+
+def _collapse_board_scoped_blackboxes(
+    adr: OASMAddress, events: List[LogicalEvent]
+) -> List[LogicalEvent]:
+    collapsed: List[LogicalEvent] = []
+    for timestamp, cohort in _events_by_timestamp(events):
+        opaque = [e for e in cohort if isinstance(e.operation, BlackBoxAtomicMorphism)]
+        non_opaque = [e for e in cohort if not isinstance(e.operation, BlackBoxAtomicMorphism)]
+        collapsed.extend(non_opaque)
+        if not opaque:
+            continue
+
+        groups: Dict[tuple[int, repr, repr, int], List[LogicalEvent]] = {}
+        for event in opaque:
+            groups.setdefault(_opaque_signature(event), []).append(event)
+
+        for signature, group in groups.items():
+            rep = sorted(
+                group,
+                key=lambda e: e.operation.channel.global_id if e.operation.channel else "",
+            )[0]
+            synthetic_op = rep.operation.with_channel_and_states(None, None, None)
+            collapsed.append(
+                LogicalEvent(
+                    timestamp_cycles=timestamp,
+                    operation=synthetic_op,
+                    cost_cycles=rep.cost_cycles,
+                    is_critical=True,
+                    logical_timestamp=rep.logical_timestamp,
+                    blackbox_group_id=hash((signature[0], signature[1], signature[2], timestamp)),
+                    blackbox_board=adr.value,
+                )
+            )
+    collapsed.sort(
+        key=lambda e: (
+            e.timestamp_cycles,
+            _event_priority(e),
+            e.operation.channel.global_id if e.operation.channel else "",
+        )
+    )
+    return collapsed
 
 
 def _sync_role_for_cohort(
@@ -219,8 +285,16 @@ def extract_and_translate(morphism, verbose: bool = False) -> Dict[OASMAddress, 
             )
 
     for adr, events in events_by_board.items():
-        events.sort(key=lambda e: e.timestamp_cycles)
-        _translate_board_events(adr, events)
+        collapsed = _collapse_board_scoped_blackboxes(adr, events)
+        events_by_board[adr] = collapsed
+        collapsed.sort(
+            key=lambda e: (
+                e.timestamp_cycles,
+                _event_priority(e),
+                e.operation.channel.global_id if e.operation.channel else "",
+            )
+        )
+        _translate_board_events(adr, collapsed)
 
     return events_by_board
 
@@ -352,9 +426,21 @@ def _translate_board_events(adr: OASMAddress, events: List[LogicalEvent]) -> Non
         opaque_events = [e for e in ts_events if isinstance(e.operation, BlackBoxAtomicMorphism)]
         if opaque_events:
             first_op = opaque_events[0].operation
-            func_id = id(first_op.user_func)
+            first_sig = (
+                id(first_op.user_func),
+                repr(first_op.user_args),
+                repr(first_op.user_kwargs),
+                first_op.duration_cycles,
+            )
             for other_event in opaque_events[1:]:
-                if id(other_event.operation.user_func) != func_id:
+                other_op = other_event.operation
+                other_sig = (
+                    id(other_op.user_func),
+                    repr(other_op.user_args),
+                    repr(other_op.user_kwargs),
+                    other_op.duration_cycles,
+                )
+                if other_sig != first_sig:
                     raise ValueError(
                         f"Cannot execute two different black-box functions on the same board at the same time. "
                         f"Found {first_op.user_func.__name__} and {other_event.operation.user_func.__name__} at timestamp {ts}."
@@ -405,9 +491,17 @@ def schedule_and_optimize(
     if verbose:
         print("Compiler: scheduling with pipelining optimization...")
     for adr, events in events_by_board.items():
-        pipeline_pairs = identify_pipeline_pairs(events, verbose=verbose)
-        if pipeline_pairs:
-            events_by_board[adr] = calculate_optimal_schedule(events, pipeline_pairs, verbose=verbose)
+        optimized_events: List[LogicalEvent] = []
+        for epoch in sorted(_events_by_epoch(events)):
+            epoch_events = _events_by_epoch(events)[epoch]
+            pipeline_pairs = identify_pipeline_pairs(epoch_events, verbose=verbose)
+            if pipeline_pairs:
+                epoch_events = calculate_optimal_schedule(
+                    epoch_events, pipeline_pairs, verbose=verbose
+                )
+            optimized_events.extend(epoch_events)
+        events_by_board[adr] = optimized_events
+    detect_epoch_boundaries(events_by_board)
 
 
 def identify_load_play_pairs(
@@ -439,12 +533,36 @@ def identify_load_play_pairs(
 def validate_constraints(
     events_by_board: Dict[OASMAddress, List[LogicalEvent]], verbose: bool = False
 ) -> None:
+    validate_blackbox_group_coherence(events_by_board, verbose=verbose)
     for adr, events in events_by_board.items():
         validate_serial_load_constraints(adr, events, verbose=verbose)
         validate_load_deadlines(adr, events, verbose=verbose)
+        validate_rwg_load_play_ownership(adr, events, verbose=verbose)
         validate_timing_consistency(adr, events, verbose=verbose)
         check_cross_epoch_violations_single_board(adr, events, verbose=verbose)
         validate_black_box_exclusivity(adr, events, verbose=verbose)
+
+
+def validate_blackbox_group_coherence(
+    events_by_board: Dict[OASMAddress, List[LogicalEvent]], verbose: bool = False
+):
+    groups: Dict[int, List[LogicalEvent]] = {}
+    for events in events_by_board.values():
+        for event in events:
+            if event.blackbox_group_id is not None:
+                groups.setdefault(event.blackbox_group_id, []).append(event)
+
+    for group_id, grouped in groups.items():
+        timestamps = {event.timestamp_cycles for event in grouped}
+        durations = {event.operation.duration_cycles for event in grouped}
+        if len(timestamps) > 1:
+            raise ValueError(
+                f"Black-box group {group_id} has inconsistent start times across boards: {sorted(timestamps)}"
+            )
+        if len(durations) > 1:
+            raise ValueError(
+                f"Black-box group {group_id} has inconsistent durations across boards: {sorted(durations)}"
+            )
 
 
 def validate_black_box_exclusivity(adr, events: List[LogicalEvent], verbose: bool = False):
@@ -473,23 +591,22 @@ def validate_serial_load_constraints(adr, events: List[LogicalEvent], verbose: b
     load_events = [e for e in events if e.operation.operation_type == OperationType.RWG_LOAD_COEFFS]
     if len(load_events) <= 1:
         return
-    sorted_loads = sorted(load_events, key=lambda x: (x.epoch, _event_offset(x)))
-    for i in range(len(sorted_loads) - 1):
-        current_load = sorted_loads[i]
-        next_load = sorted_loads[i + 1]
-        if current_load.epoch != next_load.epoch:
-            continue
-        current_end = _event_offset(current_load) + (current_load.cost_cycles or 0)
-        next_start = _event_offset(next_load)
-        if next_start < current_end:
-            raise ValueError(
-                f"Serial constraint violation on board {adr.value}: "
-                f"LOAD operations overlap - load1 ends at {current_end}c, load2 starts at {next_start}c\n"
-                f"  load1: {_describe_event(current_load)}\n"
-                f"{format_event_trace(current_load, indent='    ')}\n"
-                f"  load2: {_describe_event(next_load)}\n"
-                f"{format_event_trace(next_load, indent='    ')}"
-            )
+    for epoch, epoch_events in _events_by_epoch(load_events).items():
+        del epoch
+        for i in range(len(epoch_events) - 1):
+            current_load = epoch_events[i]
+            next_load = epoch_events[i + 1]
+            current_end = current_load.timestamp_cycles + (current_load.cost_cycles or 0)
+            next_start = next_load.timestamp_cycles
+            if next_start < current_end:
+                raise ValueError(
+                    f"Serial constraint violation on board {adr.value}: "
+                    f"LOAD operations overlap - load1 ends at {current_end}c, load2 starts at {next_start}c\n"
+                    f"  load1: {_describe_event(current_load)}\n"
+                    f"{format_event_trace(current_load, indent='    ')}\n"
+                    f"  load2: {_describe_event(next_load)}\n"
+                    f"{format_event_trace(next_load, indent='    ')}"
+                )
 
 
 def validate_load_deadlines(adr, events: List[LogicalEvent], verbose: bool = False):
@@ -497,18 +614,58 @@ def validate_load_deadlines(adr, events: List[LogicalEvent], verbose: bool = Fal
     play_events = [e for e in events if e.operation.operation_type == OperationType.RWG_UPDATE_PARAMS]
     if not load_events or not play_events:
         return
-    for pair in identify_load_play_pairs(load_events, play_events):
-        load_event = pair["load_event"]
-        play_event = pair["play_event"]
-        if load_event.epoch != play_event.epoch:
-            continue
-        load_end = _event_offset(load_event) + (load_event.cost_cycles or 0)
-        play_start = _event_offset(play_event)
-        if load_end > play_start:
-            raise ValueError(
-                f"Deadline violation on board {adr.value}: "
-                f"LOAD operation ends at {load_end}c but PLAY starts at {play_start}c"
-            )
+    for epoch in sorted({event.epoch for event in events}):
+        epoch_loads = [e for e in load_events if e.epoch == epoch]
+        epoch_plays = [e for e in play_events if e.epoch == epoch]
+        for pair in identify_load_play_pairs(epoch_loads, epoch_plays):
+            load_event = pair["load_event"]
+            play_event = pair["play_event"]
+            load_end = load_event.timestamp_cycles + (load_event.cost_cycles or 0)
+            play_start = play_event.timestamp_cycles
+            if load_end > play_start:
+                raise ValueError(
+                    f"Deadline violation on board {adr.value}: "
+                    f"LOAD operation ends at {load_end}c but PLAY starts at {play_start}c"
+                )
+
+
+def validate_rwg_load_play_ownership(adr, events: List[LogicalEvent], verbose: bool = False):
+    for epoch, epoch_events in _events_by_epoch(events).items():
+        for index, event in enumerate(epoch_events):
+            if event.operation.operation_type != OperationType.RWG_UPDATE_PARAMS:
+                continue
+
+            channel = event.operation.channel
+            preceding_load = None
+            for prev in reversed(epoch_events[:index]):
+                if (
+                    prev.operation.operation_type == OperationType.RWG_LOAD_COEFFS
+                    and prev.operation.channel == channel
+                ):
+                    preceding_load = prev
+                    break
+
+            if preceding_load is None:
+                continue
+
+            for between in epoch_events:
+                if between is preceding_load or between is event:
+                    continue
+                if not (
+                    preceding_load.timestamp_cycles < between.timestamp_cycles < event.timestamp_cycles
+                ):
+                    continue
+                if (
+                    between.operation.operation_type == OperationType.RWG_LOAD_COEFFS
+                    and between.operation.channel == channel
+                ):
+                    raise ValueError(
+                        f"RWG load/play ownership violation on board {adr.value}: "
+                        f"{between.operation.operation_type.name} at {between.timestamp_cycles}c "
+                        f"intervenes between paired LOAD on {channel.global_id} at "
+                        f"{preceding_load.timestamp_cycles}c and PLAY at {event.timestamp_cycles}c "
+                        f"(epoch {epoch})"
+                    )
 
 
 def validate_timing_consistency(adr, events: List[LogicalEvent], verbose: bool = False):
@@ -569,7 +726,7 @@ def identify_pipeline_pairs(events: List[LogicalEvent], verbose: bool = False) -
         events_by_channel.setdefault(channel, []).append(event)
 
     for channel, channel_events in events_by_channel.items():
-        channel_events.sort(key=lambda e: (e.epoch, _event_offset(e)))
+        channel_events.sort(key=lambda e: (e.epoch, e.timestamp_cycles))
         for i, event in enumerate(channel_events):
             if not event.is_critical and event.operation.operation_type == OperationType.RWG_LOAD_COEFFS:
                 for j in range(i + 1, len(channel_events)):
@@ -594,16 +751,14 @@ def calculate_optimal_schedule(
     events_to_reschedule: Dict[int, int] = {id(p.load_event): 0 for p in pipeline_pairs}
     sorted_pairs = sorted(
         pipeline_pairs,
-        key=lambda p: (p.epoch, p.play_start_time, p.channel.global_id),
+        key=lambda p: (p.play_event.timestamp_cycles, p.channel.global_id),
         reverse=True,
     )
-    next_load_available_ts_by_epoch: Dict[int, float] = {}
+    next_load_available_ts = float("inf")
 
     for pair in sorted_pairs:
         load_event = pair.load_event
-        pair_epoch = pair.epoch
-        next_load_available_ts = next_load_available_ts_by_epoch.get(pair_epoch, float("inf"))
-        latest_finish_by = min(pair.play_start_time, next_load_available_ts)
+        latest_finish_by = min(pair.play_event.timestamp_cycles, next_load_available_ts)
         proposed_start_ts = latest_finish_by - pair.load_cost_cycles
 
         conflicting_events = []
@@ -612,9 +767,7 @@ def calculate_optimal_schedule(
                 continue
             if id(other_event) in events_to_reschedule:
                 continue
-            if other_event.epoch != pair_epoch:
-                continue
-            other_start = _event_offset(other_event)
+            other_start = other_event.timestamp_cycles
             other_end = other_start + (other_event.cost_cycles or 0)
             if (proposed_start_ts < other_end) and (
                 (proposed_start_ts + pair.load_cost_cycles) > other_start
@@ -628,24 +781,24 @@ def calculate_optimal_schedule(
         )
         new_load_ts = max(0, finish_by - pair.load_cost_cycles)
         events_to_reschedule[id(load_event)] = new_load_ts
-        next_load_available_ts_by_epoch[pair_epoch] = new_load_ts
+        next_load_available_ts = new_load_ts
         if verbose:
             print(
-                f"      Scheduling LOAD on {pair.channel.global_id}: e{pair_epoch}:{_event_offset(load_event)}c → e{pair_epoch}:{new_load_ts}c"
+                f"      Scheduling LOAD on {pair.channel.global_id}: {load_event.timestamp_cycles}c → {new_load_ts}c"
             )
 
     optimized_events = []
     for event in events:
         if id(event) in events_to_reschedule:
             new_timestamp = events_to_reschedule[id(event)]
-            epoch_base = event.timestamp_cycles - _event_offset(event)
             optimized_events.append(
                 LogicalEvent(
-                    timestamp_cycles=epoch_base + new_timestamp,
+                    timestamp_cycles=new_timestamp,
                     operation=event.operation,
                     oasm_calls=event.oasm_calls,
                     cost_cycles=event.cost_cycles,
-                    logical_timestamp=LogicalTimestamp.from_cycles(event.epoch, new_timestamp),
+                    is_critical=event.is_critical,
+                    logical_timestamp=event.logical_timestamp,
                 )
             )
         else:
@@ -714,13 +867,9 @@ def generate_scheduled_calls(
             calls_by_board[adr] = board_calls
             continue
         sorted_events = _sorted_epoch_events(events)
-        current_epoch = None
         last_op_end_time = 0
         for event in sorted_events:
-            if current_epoch != event.epoch:
-                current_epoch = event.epoch
-                last_op_end_time = 0
-            ts = _event_offset(event)
+            ts = event.timestamp_cycles
             wait_cycles = ts - last_op_end_time
             if wait_cycles < 0:
                 wait_cycles = 0

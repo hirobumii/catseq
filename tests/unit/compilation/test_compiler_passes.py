@@ -7,18 +7,20 @@ from catseq.compilation.pipeline import (
     LogicalEvent,
     analyze_costs_and_epochs,
     calculate_optimal_schedule,
+    detect_epoch_boundaries,
     extract_and_translate,
     generate_scheduled_calls,
     identify_pipeline_pairs,
     schedule_and_optimize,
     validate_serial_load_constraints,
+    validate_rwg_load_play_ownership,
     validate_constraints,
 )
 from catseq.compilation.timing_analysis import estimate_oasm_cost
 from catseq.compilation.types import OASMAddress, OASMFunction
 from catseq.compilation.functions import rwg_load_waveform
 from catseq.types.common import OperationType, Board, Channel, ChannelType
-from catseq.types.rwg import WaveformParams, RWGReady, RWGActive
+from catseq.types.rwg import WaveformParams, RWGReady, RWGActive, StaticWaveform
 from catseq.types.ttl import TTLState
 from catseq.morphism import identity
 from catseq.atomic import rwg_load_coeffs, rwg_update_params
@@ -915,3 +917,62 @@ def test_intelligent_scheduling_optimization():
     
     print("  ✅ All timing constraints verified after optimization")
     print("✅ Intelligent scheduling optimization test completed successfully!")
+
+
+def test_schedule_and_optimize_keeps_rwg_loads_within_epoch_boundaries():
+    main_board = Board("main")
+    rwg_board = Board("RWG0")
+    main_sync_ch = Channel(main_board, 0, ChannelType.TTL)
+    rwg_sync_ch = Channel(rwg_board, 0, ChannelType.TTL)
+    rwg_ch = Channel(rwg_board, 1, ChannelType.RWG)
+    waveform_params = WaveformParams(
+        sbg_id=0,
+        freq_coeffs=(10.0, None, None, None),
+        amp_coeffs=(0.5, None, None, None),
+        initial_phase=0.0,
+        phase_reset=True,
+    )
+
+    start_state = RWGReady(carrier_freq=100e6)
+    active_state = RWGActive(carrier_freq=100e6, rf_on=True)
+
+    pre_load = rwg_load_coeffs(rwg_ch, params=[waveform_params], start_state=start_state)
+    pre_play = rwg_update_params(rwg_ch, start_state=active_state, end_state=active_state)
+    post_load = rwg_load_coeffs(rwg_ch, params=[waveform_params], start_state=start_state)
+    post_play = rwg_update_params(rwg_ch, start_state=active_state, end_state=active_state)
+    main_sync = global_sync()(main_sync_ch, start_state=TTLState.OFF)
+    rwg_sync = global_sync()(rwg_sync_ch, start_state=TTLState.OFF)
+
+    events_by_board = {
+        OASMAddress.MAIN: [
+            LogicalEvent(timestamp_cycles=200, operation=main_sync.lanes[main_sync_ch].operations[0], cost_cycles=0),
+        ],
+        OASMAddress.RWG0: [
+            LogicalEvent(timestamp_cycles=100, operation=pre_load.lanes[rwg_ch].operations[0], cost_cycles=14),
+            LogicalEvent(timestamp_cycles=150, operation=pre_play.lanes[rwg_ch].operations[0], cost_cycles=0),
+            LogicalEvent(timestamp_cycles=200, operation=rwg_sync.lanes[rwg_sync_ch].operations[0], cost_cycles=0),
+            LogicalEvent(timestamp_cycles=240, operation=post_load.lanes[rwg_ch].operations[0], cost_cycles=14),
+            LogicalEvent(timestamp_cycles=300, operation=post_play.lanes[rwg_ch].operations[0], cost_cycles=0),
+        ],
+    }
+    detect_epoch_boundaries(events_by_board)
+
+    rwg_events = events_by_board[OASMAddress.RWG0]
+    assert [e.epoch for e in rwg_events] == [0, 0, 0, 1, 1]
+
+    schedule_and_optimize(events_by_board)
+
+    rwg_events_after = events_by_board[OASMAddress.RWG0]
+    sync_ts = next(
+        e.timestamp_cycles
+        for e in rwg_events_after
+        if e.operation.operation_type == OperationType.SYNC_SLAVE
+    )
+    epoch1_loads_after = [
+        e.timestamp_cycles
+        for e in rwg_events_after
+        if e.operation.operation_type == OperationType.RWG_LOAD_COEFFS and e.epoch == 1
+    ]
+
+    assert epoch1_loads_after, "expected a post-sync RWG load event after scheduling"
+    assert min(epoch1_loads_after) >= sync_ts

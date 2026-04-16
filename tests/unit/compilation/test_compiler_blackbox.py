@@ -1,10 +1,11 @@
 import pytest
 
-from catseq.types.common import Board, Channel, ChannelType
+from catseq.types.common import Board, Channel, ChannelType, OperationType
 from catseq.types.rwg import RWGReady, RWGActive
 from catseq.types.ttl import TTLState
 from catseq.atomic import oasm_black_box, ttl_on
 from catseq.compilation import compile_to_oasm_calls
+from catseq.compilation.pipeline import extract_and_translate
 from catseq.compilation.types import OASMAddress, OASMFunction
 from catseq.morphism import identity
 
@@ -74,6 +75,62 @@ def test_multi_channel_black_box_merge():
     assert user_func_calls[0].args[0] == mock_user_func_B
 
 
+def test_multi_channel_black_box_extracts_single_board_scoped_event():
+    start_state = RWGReady(carrier_freq=100)
+    end_state = RWGActive(carrier_freq=100, rf_on=False, snapshot=(), pending_waveforms=())
+
+    black_box = oasm_black_box(
+        channel_states={
+            ch0_rwg: (start_state, end_state),
+            ch1_rwg: (start_state, end_state),
+        },
+        duration_cycles=500,
+        board_funcs={board_rwg0: mock_user_func_B},
+    )
+
+    events_by_board = extract_and_translate(black_box)
+    rwg0_events = events_by_board[OASMAddress.RWG0]
+    opaque_events = [e for e in rwg0_events if e.operation.operation_type == OperationType.OPAQUE_OASM_FUNC]
+
+    assert len(opaque_events) == 1
+    opaque = opaque_events[0]
+    assert opaque.operation.channel is None
+    assert opaque.blackbox_board == OASMAddress.RWG0.value
+    assert len([c for c in opaque.oasm_calls if c.dsl_func == OASMFunction.USER_DEFINED_FUNC]) == 1
+
+
+def test_multi_channel_black_box_is_order_independent():
+    start_state = RWGReady(carrier_freq=100)
+    end_state = RWGActive(carrier_freq=100, rf_on=False, snapshot=(), pending_waveforms=())
+
+    black_box_a = oasm_black_box(
+        channel_states={
+            ch0_rwg: (start_state, end_state),
+            ch1_rwg: (start_state, end_state),
+        },
+        duration_cycles=500,
+        board_funcs={board_rwg0: mock_user_func_B},
+    )
+    black_box_b = oasm_black_box(
+        channel_states={
+            ch1_rwg: (start_state, end_state),
+            ch0_rwg: (start_state, end_state),
+        },
+        duration_cycles=500,
+        board_funcs={board_rwg0: mock_user_func_B},
+    )
+
+    events_a = extract_and_translate(black_box_a)[OASMAddress.RWG0]
+    events_b = extract_and_translate(black_box_b)[OASMAddress.RWG0]
+    opaque_a = next(e for e in events_a if e.blackbox_group_id is not None)
+    opaque_b = next(e for e in events_b if e.blackbox_group_id is not None)
+
+    assert opaque_a.timestamp_cycles == opaque_b.timestamp_cycles
+    assert opaque_a.operation.duration_cycles == opaque_b.operation.duration_cycles
+    assert opaque_a.operation.channel is None
+    assert opaque_b.operation.channel is None
+
+
 def test_black_box_exclusivity_fail():
     """Tests that the compiler fails if another operation overlaps with a black box."""
     start_state = RWGReady(carrier_freq=100)
@@ -117,3 +174,27 @@ def test_black_box_no_conflict():
         compile_to_oasm_calls(morphism)
     except ValueError:
         pytest.fail("Compiler incorrectly flagged a non-conflicting operation.")
+
+
+def test_multi_board_black_box_events_share_start_time_and_duration():
+    board_rwg1 = Board("RWG1")
+    ch_other = Channel(board_rwg1, 0, ChannelType.RWG)
+    start_state = RWGReady(carrier_freq=100)
+    end_state = RWGActive(carrier_freq=100, rf_on=False, snapshot=(), pending_waveforms=())
+
+    black_box = oasm_black_box(
+        channel_states={
+            ch0_rwg: (start_state, end_state),
+            ch_other: (start_state, end_state),
+        },
+        duration_cycles=500,
+        board_funcs={board_rwg0: mock_user_func_A, board_rwg1: mock_user_func_A},
+    )
+
+    events_by_board = extract_and_translate(black_box)
+    opaque0 = next(e for e in events_by_board[OASMAddress.RWG0] if e.blackbox_group_id is not None)
+    opaque1 = next(e for e in events_by_board[OASMAddress.RWG1] if e.blackbox_group_id is not None)
+
+    assert opaque0.timestamp_cycles == opaque1.timestamp_cycles
+    assert opaque0.operation.duration_cycles == opaque1.operation.duration_cycles
+    assert opaque0.blackbox_group_id == opaque1.blackbox_group_id

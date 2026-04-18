@@ -23,6 +23,7 @@ from catseq.types.common import OperationType, Board, Channel, ChannelType
 from catseq.types.rwg import WaveformParams, RWGReady, RWGActive, StaticWaveform
 from catseq.types.ttl import TTLState
 from catseq.morphism import identity
+from catseq.hardware.common import hold
 from catseq.atomic import rwg_load_coeffs, rwg_update_params
 from catseq.hardware import rwg, ttl
 from catseq.hardware.sync import global_sync
@@ -976,3 +977,100 @@ def test_schedule_and_optimize_keeps_rwg_loads_within_epoch_boundaries():
 
     assert epoch1_loads_after, "expected a post-sync RWG load event after scheduling"
     assert min(epoch1_loads_after) >= sync_ts
+
+
+@pytest.mark.skipif(not OASM_AVAILABLE, reason="OASM library not installed")
+def test_zero_gap_same_channel_linear_ramps_fuse_terminal_handoff():
+    board = Board("RWG0")
+    rwg_ch = Channel(board, 0, ChannelType.RWG)
+
+    sequence_def = (
+        rwg.initialize(carrier_freq=100.0)
+        >> rwg.set_state([rwg.StaticWaveform(sbg_id=0, freq=10.0, amp=0.5)])
+        >> rwg.linear_ramp([rwg.StaticWaveform(freq=20.0, amp=0.5)], 10 * us)
+        >> rwg.linear_ramp([rwg.StaticWaveform(freq=30.0, amp=0.5)], 10 * us)
+    )
+    morphism = sequence_def(rwg_ch)
+
+    intf = sim_intf()
+    intf.nod_adr = 0
+    intf.loc_chn = 1
+    run_all = run_cfg(intf, [0, 1])
+    assembler_seq = assembler(run_all, [("rwg0", C_RWG)])
+
+    events_by_board = compile_to_oasm_calls(
+        morphism, assembler_seq, _return_internal_events=True
+    )
+    rwg0_events = events_by_board[OASMAddress.RWG0]
+    channel_events = [
+        e
+        for e in rwg0_events
+        if e.operation.channel == rwg_ch
+        and e.operation.operation_type
+        in {OperationType.RWG_LOAD_COEFFS, OperationType.RWG_UPDATE_PARAMS}
+    ]
+
+    load_events = [
+        e for e in channel_events if e.operation.operation_type == OperationType.RWG_LOAD_COEFFS
+    ]
+    play_events = [
+        e for e in channel_events if e.operation.operation_type == OperationType.RWG_UPDATE_PARAMS
+    ]
+
+    assert len(load_events) == 4
+    assert len(play_events) == 4
+
+    def load_summary(event):
+        return event.operation.end_state.pending_waveforms[0].freq_coeffs
+
+    ramp_summaries = [load_summary(event) for event in load_events]
+    assert (20.0, 0.0, None, None) not in ramp_summaries
+    assert (20.0, 1.0, None, None) in ramp_summaries
+    assert (30.0, 0.0, None, None) in ramp_summaries
+
+
+@pytest.mark.skipif(not OASM_AVAILABLE, reason="OASM library not installed")
+def test_delayed_same_channel_linear_ramps_keep_terminal_handoff():
+    board = Board("RWG0")
+    rwg_ch = Channel(board, 0, ChannelType.RWG)
+
+    sequence_def = (
+        rwg.initialize(carrier_freq=100.0)
+        >> rwg.set_state([rwg.StaticWaveform(sbg_id=0, freq=10.0, amp=0.5)])
+        >> rwg.linear_ramp([rwg.StaticWaveform(freq=20.0, amp=0.5)], 10 * us)
+        >> hold(1 * us)
+        >> rwg.linear_ramp([rwg.StaticWaveform(freq=30.0, amp=0.5)], 10 * us)
+    )
+    morphism = sequence_def(rwg_ch)
+
+    intf = sim_intf()
+    intf.nod_adr = 0
+    intf.loc_chn = 1
+    run_all = run_cfg(intf, [0, 1])
+    assembler_seq = assembler(run_all, [("rwg0", C_RWG)])
+
+    events_by_board = compile_to_oasm_calls(
+        morphism, assembler_seq, _return_internal_events=True
+    )
+    rwg0_events = events_by_board[OASMAddress.RWG0]
+    channel_events = [
+        e
+        for e in rwg0_events
+        if e.operation.channel == rwg_ch
+        and e.operation.operation_type
+        in {OperationType.RWG_LOAD_COEFFS, OperationType.RWG_UPDATE_PARAMS}
+    ]
+
+    load_events = [
+        e for e in channel_events if e.operation.operation_type == OperationType.RWG_LOAD_COEFFS
+    ]
+    play_events = [
+        e for e in channel_events if e.operation.operation_type == OperationType.RWG_UPDATE_PARAMS
+    ]
+
+    assert len(load_events) == 5
+    assert len(play_events) == 5
+
+    ramp_summaries = [event.operation.end_state.pending_waveforms[0].freq_coeffs for event in load_events]
+    assert (20.0, 0.0, None, None) in ramp_summaries
+    assert (20.0, 1.0, None, None) in ramp_summaries

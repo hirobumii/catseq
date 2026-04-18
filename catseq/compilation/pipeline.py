@@ -116,6 +116,95 @@ def _events_by_timestamp(events: List[LogicalEvent]) -> List[tuple[int, List[Log
     return [(timestamp, grouped[timestamp]) for timestamp in sorted(grouped)]
 
 
+def _pending_waveforms(event: LogicalEvent):
+    if event.operation.operation_type != OperationType.RWG_LOAD_COEFFS:
+        return ()
+    end_state = getattr(event.operation, "end_state", None)
+    return getattr(end_state, "pending_waveforms", ()) or ()
+
+
+def _is_zero_or_none(value) -> bool:
+    return value is None or value == 0 or value == 0.0
+
+
+def _is_static_terminal_load(event: LogicalEvent) -> bool:
+    waveforms = _pending_waveforms(event)
+    if not waveforms:
+        return False
+    return all(
+        waveform.phase_reset is False
+        and _is_zero_or_none(waveform.freq_coeffs[1])
+        and _is_zero_or_none(waveform.amp_coeffs[1])
+        for waveform in waveforms
+    )
+
+
+def _is_ramping_load(event: LogicalEvent) -> bool:
+    waveforms = _pending_waveforms(event)
+    if not waveforms:
+        return False
+    return any(
+        waveform.phase_reset is False
+        and (
+            not _is_zero_or_none(waveform.freq_coeffs[1])
+            or not _is_zero_or_none(waveform.amp_coeffs[1])
+        )
+        for waveform in waveforms
+    )
+
+
+def _same_snapshot(left, right) -> bool:
+    left_snapshot = getattr(left.operation.end_state, "snapshot", None)
+    right_snapshot = getattr(right.operation.start_state, "snapshot", None)
+    return left_snapshot == right_snapshot
+
+
+def _fuse_zero_gap_ramp_handoffs(events_by_board: Dict[OASMAddress, List[LogicalEvent]]) -> None:
+    for adr, events in events_by_board.items():
+        del adr
+        indexed_events = list(enumerate(events))
+        events_by_channel: Dict[Channel, List[tuple[int, LogicalEvent]]] = {}
+        for index, event in indexed_events:
+            channel = event.operation.channel
+            if channel is None:
+                continue
+            events_by_channel.setdefault(channel, []).append((index, event))
+
+        indices_to_remove: set[int] = set()
+        for channel_events in events_by_channel.values():
+            i = 0
+            while i + 3 < len(channel_events):
+                load_static_idx, load_static = channel_events[i]
+                play_static_idx, play_static = channel_events[i + 1]
+                load_ramp_idx, load_ramp = channel_events[i + 2]
+                play_ramp_idx, play_ramp = channel_events[i + 3]
+
+                if (
+                    load_static.operation.operation_type == OperationType.RWG_LOAD_COEFFS
+                    and play_static.operation.operation_type == OperationType.RWG_UPDATE_PARAMS
+                    and load_ramp.operation.operation_type == OperationType.RWG_LOAD_COEFFS
+                    and play_ramp.operation.operation_type == OperationType.RWG_UPDATE_PARAMS
+                    and _is_static_terminal_load(load_static)
+                    and _is_ramping_load(load_ramp)
+                    and load_static.operation.channel == play_static.operation.channel
+                    == load_ramp.operation.channel
+                    == play_ramp.operation.channel
+                    and play_static.timestamp_cycles == load_ramp.timestamp_cycles
+                    and _same_snapshot(play_static, load_ramp)
+                ):
+                    indices_to_remove.add(load_static_idx)
+                    indices_to_remove.add(play_static_idx)
+                    i += 2
+                    continue
+
+                i += 1
+
+        if indices_to_remove:
+            events[:] = [
+                event for index, event in indexed_events if index not in indices_to_remove
+            ]
+
+
 def _events_by_epoch(events: List[LogicalEvent]) -> Dict[int, List[LogicalEvent]]:
     grouped: Dict[int, List[LogicalEvent]] = {}
     for event in events:
@@ -295,6 +384,8 @@ def extract_and_translate(morphism, verbose: bool = False) -> Dict[OASMAddress, 
             )
         )
         _translate_board_events(adr, collapsed)
+
+    _fuse_zero_gap_ramp_handoffs(events_by_board)
 
     return events_by_board
 

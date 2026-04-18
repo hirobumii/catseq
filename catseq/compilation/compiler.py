@@ -4,6 +4,7 @@ Compiler orchestration for Morphism -> OASM call translation.
 
 from typing import Dict, List, Union
 
+from ..expr import contains_expr
 from . import execution
 from .pipeline import (
     LogicalEvent,
@@ -25,6 +26,11 @@ def compile_to_oasm_calls(
     verbose: bool = False,
 ) -> Union[Dict[OASMAddress, List[OASMCall]], Dict[OASMAddress, List[LogicalEvent]]]:
     """Compile a morphism into scheduled OASM calls."""
+    if contains_expr(morphism):
+        raise TypeError(
+            "compile_to_oasm_calls requires a fully concrete morphism. "
+            "Resolve symbolic expressions first with realize_morphism(...)."
+        )
     events_by_board = extract_and_translate(morphism, verbose=verbose)
     analyze_costs_and_epochs(events_by_board, assembler_seq, verbose=verbose)
     schedule_and_optimize(events_by_board, verbose=verbose)

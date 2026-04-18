@@ -9,15 +9,18 @@ operations across multiple channels for hardware execution.
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
-from .types import AtomicMorphism, Board, Channel, OperationType
+from .expr import Expr
+from .types import AtomicMorphism, Board, Channel, OperationType, TimedRegion
 from .time_utils import cycles_to_us
+
+LaneOperation = AtomicMorphism | TimedRegion
 
 
 @dataclass(frozen=True)
 class Lane:
     """通道 Lane - 单个通道的操作序列"""
-    operations: Tuple[AtomicMorphism, ...]  # 操作序列
-    _total_duration_cycles: int = field(init=False, repr=False)
+    operations: Tuple[LaneOperation, ...]  # 操作序列
+    _total_duration_cycles: int | Expr = field(init=False, repr=False)
     _initial_state: object | None = field(init=False, repr=False)
     _end_state: object | None = field(init=False, repr=False)
     _effective_start_state: object | None = field(init=False, repr=False)
@@ -58,6 +61,12 @@ class Lane:
     @property
     def total_duration_cycles(self) -> int:
         """总时长（时钟周期）"""
+        if isinstance(self._total_duration_cycles, Expr):
+            raise TypeError("Lane duration is symbolic; realize the morphism before requesting concrete cycles.")
+        return self._total_duration_cycles
+
+    @property
+    def total_duration_expr(self) -> int | Expr:
         return self._total_duration_cycles
     
     @property
@@ -91,7 +100,7 @@ class Lane:
 @dataclass(frozen=True)
 class PhysicalOperation:
     """物理操作 - 带时间戳的原子操作"""
-    operation: AtomicMorphism
+    operation: LaneOperation
     timestamp_cycles: int  # 操作开始时间（时钟周期）
     
     @property
@@ -107,10 +116,11 @@ class PhysicalLane:
     operations: Tuple[PhysicalOperation, ...]
     
     def __str__(self):
-        total_cycles = max(
-            (op.timestamp_cycles + op.operation.duration_cycles for op in self.operations),
-            default=0
-        )
+        total_cycles = 0
+        for op in self.operations:
+            if isinstance(op.operation.duration_cycles, Expr):
+                raise TypeError("PhysicalLane requires concrete durations.")
+            total_cycles = max(total_cycles, op.timestamp_cycles + op.operation.duration_cycles)
         total_us = cycles_to_us(total_cycles)
         return f"⚡ {self.board.id}[{len(self.operations)}ops] ({total_us:.1f}μs)"
 
@@ -130,6 +140,8 @@ def merge_board_lanes(board: Board, board_lanes: Dict[Channel, Lane]) -> Physica
     for channel, lane in board_lanes.items():
         timestamp = 0
         for op in lane.operations:
+            if isinstance(op.duration_cycles, Expr):
+                raise TypeError("Cannot merge board lanes with symbolic durations. Realize first.")
             # Skip IDENTITY operations - they are only for timing alignment
             if op.operation_type != OperationType.IDENTITY:
                 physical_ops.append(PhysicalOperation(op, timestamp))

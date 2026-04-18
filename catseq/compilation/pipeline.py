@@ -13,6 +13,7 @@ from ..types.common import (
     Channel,
     OperationType,
     TIMING_CRITICAL_OPERATIONS,
+    TimedRegion,
 )
 from ..types.rwg import RWGActive
 from ..types.timing import LogicalTimestamp
@@ -222,7 +223,7 @@ def _events_by_epoch(events: List[LogicalEvent]) -> Dict[int, List[LogicalEvent]
 
 def _opaque_signature(event: LogicalEvent) -> tuple[int, repr, repr, int]:
     op = event.operation
-    if not isinstance(op, BlackBoxAtomicMorphism):
+    if not isinstance(op, (BlackBoxAtomicMorphism, TimedRegion)):
         raise TypeError("opaque signature requested for non-blackbox event")
     return (id(op.user_func), repr(op.user_args), repr(op.user_kwargs), op.duration_cycles)
 
@@ -232,8 +233,8 @@ def _collapse_board_scoped_blackboxes(
 ) -> List[LogicalEvent]:
     collapsed: List[LogicalEvent] = []
     for timestamp, cohort in _events_by_timestamp(events):
-        opaque = [e for e in cohort if isinstance(e.operation, BlackBoxAtomicMorphism)]
-        non_opaque = [e for e in cohort if not isinstance(e.operation, BlackBoxAtomicMorphism)]
+        opaque = [e for e in cohort if isinstance(e.operation, (BlackBoxAtomicMorphism, TimedRegion))]
+        non_opaque = [e for e in cohort if not isinstance(e.operation, (BlackBoxAtomicMorphism, TimedRegion))]
         collapsed.extend(non_opaque)
         if not opaque:
             continue
@@ -514,7 +515,7 @@ def _translate_board_events(adr: OASMAddress, events: List[LogicalEvent]) -> Non
                     )
                     break
 
-        opaque_events = [e for e in ts_events if isinstance(e.operation, BlackBoxAtomicMorphism)]
+        opaque_events = [e for e in ts_events if isinstance(e.operation, (BlackBoxAtomicMorphism, TimedRegion))]
         if opaque_events:
             first_op = opaque_events[0].operation
             first_sig = (
@@ -556,7 +557,7 @@ def analyze_costs_and_epochs(
 
     for events in events_by_board.values():
         for event in events:
-            if isinstance(event.operation, BlackBoxAtomicMorphism):
+            if isinstance(event.operation, (BlackBoxAtomicMorphism, TimedRegion)):
                 event.cost_cycles = event.operation.duration_cycles
 
     if assembler_seq is None:
@@ -566,7 +567,7 @@ def analyze_costs_and_epochs(
 
     for adr, events in events_by_board.items():
         for event in events:
-            if isinstance(event.operation, BlackBoxAtomicMorphism):
+            if isinstance(event.operation, (BlackBoxAtomicMorphism, TimedRegion)):
                 continue
             event.cost_cycles = (
                 analyze_operation_cost(event, adr, assembler_seq, verbose=verbose)
@@ -657,20 +658,19 @@ def validate_blackbox_group_coherence(
 
 
 def validate_black_box_exclusivity(adr, events: List[LogicalEvent], verbose: bool = False):
-    opaque_events = [e for e in events if isinstance(e.operation, BlackBoxAtomicMorphism)]
-    other_events = [e for e in events if not isinstance(e.operation, BlackBoxAtomicMorphism)]
+    opaque_events = [e for e in events if isinstance(e.operation, (BlackBoxAtomicMorphism, TimedRegion))]
+    other_events = [e for e in events if not isinstance(e.operation, (BlackBoxAtomicMorphism, TimedRegion))]
     if not opaque_events:
         return
     black_box_windows = {}
     for event in opaque_events:
-        func_id = id(event.operation.user_func)
-        if func_id not in black_box_windows:
-            black_box_windows[func_id] = (event.timestamp_cycles, event.timestamp_cycles + event.cost_cycles)
+        region_id = getattr(event.operation, "region_id", id(event.operation.user_func))
+        if region_id not in black_box_windows:
+            black_box_windows[region_id] = (event.timestamp_cycles, event.timestamp_cycles + event.cost_cycles)
     for start_a, end_a in black_box_windows.values():
         for event_b in other_events:
             start_b = event_b.timestamp_cycles
-            end_b = start_b + event_b.cost_cycles
-            if (start_a < end_b) and (end_a > start_b):
+            if start_a < start_b <= end_a:
                 raise ValueError(
                     f"Constraint violation on board {adr.value}: Operation {event_b.operation} at t={start_b}c "
                     f"conflicts with a black-box operation running in window [{start_a}c, {end_a}c]. "

@@ -14,7 +14,9 @@ from .types.common import (
     OperationType, 
     AtomicMorphism, 
     State,
-    BlackBoxAtomicMorphism
+    BlackBoxAtomicMorphism,
+    TimedRegion,
+    TimingKind,
 )
 from .types.ttl import TTLState
 from .types.rwg import (
@@ -30,8 +32,9 @@ def ttl_init(channel: Channel, initial_state: TTLState = TTLState.OFF) -> Morphi
         channel=channel,
         start_state=None,
         end_state=initial_state,
-        duration_cycles=2,
+        duration_cycles=0,
         operation_type=OperationType.TTL_INIT,
+        timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),
     )
     return from_atomic(op)
@@ -42,8 +45,9 @@ def ttl_on(channel: Channel, start_state: State = TTLState.OFF) -> Morphism:
         channel=channel,
         start_state=start_state,
         end_state=TTLState.ON,
-        duration_cycles=1,
+        duration_cycles=0,
         operation_type=OperationType.TTL_ON,
+        timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),
     )
     return from_atomic(op)
@@ -54,8 +58,9 @@ def ttl_off(channel: Channel, start_state: State = TTLState.ON) -> Morphism:
         channel=channel,
         start_state=start_state,
         end_state=TTLState.OFF,
-        duration_cycles=1,
+        duration_cycles=0,
         operation_type=OperationType.TTL_OFF,
+        timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),
     )
     return from_atomic(op)
@@ -66,8 +71,9 @@ def rwg_board_init(channel: Channel) -> Morphism:
         channel=channel,
         start_state=RWGUninitialized(),
         end_state=RWGUninitialized(),  # Still uninitialized until carrier is set
-        duration_cycles=1,  # All atomic operations use 1 cycle for stable compiler ordering
+        duration_cycles=0,
         operation_type=OperationType.RWG_INIT,
+        timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),
     )
     return from_atomic(op)
@@ -78,8 +84,9 @@ def rwg_set_carrier(channel: Channel, carrier_freq: float) -> Morphism:
         channel=channel,
         start_state=RWGUninitialized(),
         end_state=RWGReady(carrier_freq=carrier_freq),
-        duration_cycles=1,  # All atomic operations use 1 cycle for stable compiler ordering
+        duration_cycles=0,
         operation_type=OperationType.RWG_SET_CARRIER,
+        timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),
     )
     return from_atomic(op)
@@ -113,8 +120,9 @@ def rwg_load_coeffs(
         channel=channel,
         start_state=start_state,
         end_state=end_state,
-        duration_cycles=1,  # All atomic operations use 1 cycle for stable compiler ordering
+        duration_cycles=0,
         operation_type=OperationType.RWG_LOAD_COEFFS,
+        timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),
     )
     return from_atomic(op)
@@ -137,6 +145,7 @@ def rwg_update_params(
         end_state=end_state,
         duration_cycles=0,  
         operation_type=OperationType.RWG_UPDATE_PARAMS,
+        timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),
     )
     return from_atomic(op)
@@ -149,11 +158,7 @@ def oasm_black_box(
     user_kwargs: dict = {},
     metadata: dict | None = None,
 ) -> Morphism:
-    """Creates a multi-channel, potentially multi-board black-box Morphism.
-
-    This factory creates a single Morphism that contains multiple BlackBoxAtomicMorphisms,
-    one for each specified channel. It looks up the correct user-defined function
-    from the board_funcs dictionary based on the channel's board.
+    """Creates a multi-channel, potentially multi-board opaque timed region morphism.
 
     Args:
         channel_states: A dictionary mapping each channel to a tuple of its
@@ -188,12 +193,14 @@ def oasm_black_box(
         # Look up the correct function for this channel's board
         board_func = board_funcs[channel.board]
 
-        op = BlackBoxAtomicMorphism(
+        op = TimedRegion(
             channel=channel,
             start_state=start_state,
             end_state=end_state,
             duration_cycles=duration_cycles,
+            board_funcs=board_funcs,
             operation_type=OperationType.OPAQUE_OASM_FUNC,
+            timing_kind=TimingKind.TIMED_REGION,
             debug_trace=(factory_breadcrumb(stacklevel=1),),
             user_func=board_func,
             user_args=user_args,

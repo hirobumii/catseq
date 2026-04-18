@@ -3,7 +3,7 @@ import pytest
 from catseq.types.common import Board, Channel, ChannelType, OperationType
 from catseq.types.rwg import RWGReady, RWGActive
 from catseq.types.ttl import TTLState
-from catseq.atomic import oasm_black_box, ttl_on
+from catseq.atomic import oasm_black_box, ttl_off, ttl_on
 from catseq.compilation import compile_to_oasm_calls
 from catseq.compilation.pipeline import extract_and_translate
 from catseq.compilation.types import OASMAddress, OASMFunction
@@ -154,7 +154,7 @@ def test_black_box_exclusivity_fail():
 
 
 def test_black_box_no_conflict():
-    """Tests that operations outside the black box window do not cause an error."""
+    """Tests that operations strictly after the black box window do not cause an error."""
     start_state = RWGReady(carrier_freq=100)
     end_state = RWGActive(carrier_freq=100, rf_on=False, snapshot=(), pending_waveforms=())
 
@@ -165,15 +165,43 @@ def test_black_box_no_conflict():
         board_funcs={board_rwg0: mock_user_func_A}
     )
 
-    # A TTL pulse starting exactly when the black box ends
-    ttl_pulse = identity(1000/250e6) >> ttl_on(ch2_ttl, start_state=TTLState.OFF)
+    # A TTL pulse starting strictly after the black box ends
+    ttl_pulse = identity(1001/250e6) >> ttl_on(ch2_ttl, start_state=TTLState.OFF)
 
     # This should compile without errors
     morphism = black_box | ttl_pulse
-    try:
-        compile_to_oasm_calls(morphism)
-    except ValueError:
-        pytest.fail("Compiler incorrectly flagged a non-conflicting operation.")
+    compile_to_oasm_calls(morphism)
+
+
+def test_black_box_allows_instantaneous_ops_at_start_boundary():
+    """Opaque timed regions should allow same-board point events at the left boundary."""
+    start_state = RWGReady(carrier_freq=100)
+    end_state = RWGActive(carrier_freq=100, rf_on=False, snapshot=(), pending_waveforms=())
+
+    black_box = oasm_black_box(
+        channel_states={ch0_rwg: (start_state, end_state)},
+        duration_cycles=1000,
+        board_funcs={board_rwg0: mock_user_func_A},
+    )
+
+    compile_to_oasm_calls(ttl_on(ch2_ttl, start_state=TTLState.OFF) | black_box)
+
+
+def test_black_box_rejects_instantaneous_ops_at_end_boundary():
+    """Opaque timed regions should still reject same-board point events at the right boundary."""
+    start_state = RWGReady(carrier_freq=100)
+    end_state = RWGActive(carrier_freq=100, rf_on=False, snapshot=(), pending_waveforms=())
+
+    black_box = oasm_black_box(
+        channel_states={ch0_rwg: (start_state, end_state)},
+        duration_cycles=1000,
+        board_funcs={board_rwg0: mock_user_func_A},
+    )
+
+    with pytest.raises(ValueError, match="conflicts with a black-box operation"):
+        compile_to_oasm_calls(
+            black_box | (identity(1000/250e6) >> ttl_on(ch2_ttl, start_state=TTLState.OFF))
+        )
 
 
 def test_multi_board_black_box_events_share_start_time_and_duration():

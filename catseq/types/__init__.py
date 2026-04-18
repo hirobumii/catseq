@@ -10,6 +10,8 @@ from .common import (
     DebugFrame,
     OperationType,
     State,
+    TimingKind,
+    TimedRegion,
 )
 from .ttl import TTLState
 from .rwg import (

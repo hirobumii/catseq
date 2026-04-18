@@ -24,6 +24,7 @@ from .morphism import identity
 
 # Morphism system
 from .morphism import Morphism, from_atomic
+from .expr import Expr, input_state, realize_morphism, var
 
 # Hardware abstraction
 from .hardware import pulse, initialize, set_high, set_low, hold
@@ -31,7 +32,7 @@ from .hardware import pulse, initialize, set_high, set_low, hold
 # OASM interface
 from .compilation import compile_to_oasm_calls, execute_oasm_calls, OASMCall
 
-__version__ = "0.1.0"
+__version__ = "0.2.3"
 
 __all__ = [
     # Core types
@@ -58,6 +59,10 @@ __all__ = [
     # Morphism system
     'Morphism',
     'from_atomic',
+    'Expr',
+    'var',
+    'input_state',
+    'realize_morphism',
     
     # Hardware abstraction
     'pulse',

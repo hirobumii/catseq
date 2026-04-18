@@ -8,6 +8,8 @@ from enum import Enum, auto
 from itertools import count
 from typing import Callable
 
+from ..expr import Expr
+
 class ChannelType(Enum):
     """硬件通道类型"""
     TTL = auto()
@@ -63,6 +65,13 @@ class OperationType(Enum):
 
     # 黑盒操作
     OPAQUE_OASM_FUNC = auto()
+
+
+class TimingKind(Enum):
+    DELAY = auto()
+    EXACT_EVENT = auto()
+    RELAXED_WORK = auto()
+    TIMED_REGION = auto()
 
 
 TIMING_CRITICAL_OPERATIONS = {
@@ -159,13 +168,14 @@ class AtomicMorphism:
     channel: Channel | None
     start_state: State | None  # Generic state
     end_state: State | None    # Generic state
-    duration_cycles: int
+    duration_cycles: int | Expr
     operation_type: OperationType
+    timing_kind: TimingKind = TimingKind.EXACT_EVENT
     debug_trace: tuple[DebugBreadcrumb, ...] = field(default_factory=tuple, kw_only=True)
     debug_id: int = field(default=0, kw_only=True)
 
     def __post_init__(self):
-        if self.duration_cycles < 0:
+        if not isinstance(self.duration_cycles, Expr) and self.duration_cycles < 0:
             raise ValueError("Duration must be non-negative")
         if self.debug_id == 0:
             object.__setattr__(self, "debug_id", next(_DEBUG_ID_COUNTER))
@@ -211,7 +221,7 @@ class AtomicMorphism:
     
     def __str__(self):
         from ..time_utils import cycles_to_us
-        duration_us = cycles_to_us(self.duration_cycles)
+        duration_us = None if isinstance(self.duration_cycles, Expr) else cycles_to_us(self.duration_cycles)
         
         # 简化操作类型显示
         op_name = {
@@ -229,13 +239,86 @@ class AtomicMorphism:
             OperationType.OPAQUE_OASM_FUNC: "opaque_oasm_func",
         }.get(self.operation_type, str(self.operation_type))
         
+        if duration_us is None:
+            return f"{op_name}(expr)"
         if duration_us > 0:
             return f"{op_name}({duration_us:.1f}μs)"
         else:
             return op_name
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
+class TimedRegion:
+    """Concrete duration-bearing source primitive for opaque board-local execution regions."""
+    channel: Channel | None
+    start_state: State | None
+    end_state: State | None
+    duration_cycles: int
+    board_funcs: dict[Board, Callable]
+    metadata: dict = field(default_factory=dict)
+    operation_type: OperationType = OperationType.OPAQUE_OASM_FUNC
+    timing_kind: TimingKind = TimingKind.TIMED_REGION
+    user_func: Callable | None = None
+    user_args: tuple = ()
+    user_kwargs: dict = field(default_factory=dict)
+    debug_trace: tuple[DebugBreadcrumb, ...] = field(default_factory=tuple)
+    debug_id: int = field(default=0)
+    region_id: int = field(default=0)
+
+    def __post_init__(self):
+        if self.duration_cycles < 0:
+            raise ValueError("Timed region duration must be non-negative")
+        if self.debug_id == 0:
+            object.__setattr__(self, "debug_id", next(_DEBUG_ID_COUNTER))
+        if self.region_id == 0:
+            object.__setattr__(self, "region_id", next(_DEBUG_ID_COUNTER))
+
+    @property
+    def debug_origin(self) -> DebugFrame | None:
+        for breadcrumb in reversed(self.debug_trace):
+            if breadcrumb.frame is not None:
+                return breadcrumb.frame
+        return None
+
+    def with_debug_trace(self, debug_trace: tuple[DebugBreadcrumb, ...]) -> TimedRegion:
+        return replace(self, debug_trace=debug_trace)
+
+    def append_debug_breadcrumb(self, breadcrumb: DebugBreadcrumb) -> TimedRegion:
+        return replace(self, debug_trace=self.debug_trace + (breadcrumb,))
+
+    def append_debug_breadcrumbs(
+        self,
+        breadcrumbs: tuple[DebugBreadcrumb, ...],
+    ) -> TimedRegion:
+        return replace(self, debug_trace=self.debug_trace + breadcrumbs)
+
+    def with_states(
+        self,
+        start_state: State | None,
+        end_state: State | None,
+    ) -> TimedRegion:
+        return replace(self, start_state=start_state, end_state=end_state)
+
+    def with_channel_and_states(
+        self,
+        channel: Channel | None,
+        start_state: State | None,
+        end_state: State | None,
+    ) -> TimedRegion:
+        return replace(
+            self,
+            channel=channel,
+            start_state=start_state,
+            end_state=end_state,
+        )
+
+    def __str__(self):
+        from ..time_utils import cycles_to_us
+
+        return f"timed_region({cycles_to_us(self.duration_cycles):.1f}μs)"
+
+
+@dataclass(frozen=True, kw_only=True)
 class BlackBoxAtomicMorphism(AtomicMorphism):
     """An atomic morphism that wraps a user-defined OASM function (black box)."""
     user_func: Callable

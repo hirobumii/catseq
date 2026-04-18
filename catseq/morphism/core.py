@@ -14,9 +14,10 @@ from ..debug import (
     dict_apply_breadcrumb,
     next_compose_id,
 )
+from ..expr import Expr, structurally_equal
 from ..lanes import Lane
 from ..time_utils import cycles_to_time, cycles_to_us, time_to_cycles, us
-from ..types.common import AtomicMorphism, Board, Channel, DebugBreadcrumb, OperationType
+from ..types.common import AtomicMorphism, Board, Channel, DebugBreadcrumb, OperationType, TimingKind
 from .views import lanes_view as render_lanes_view
 from .views import morphism_str, timeline_view as render_timeline_view
 
@@ -26,25 +27,28 @@ class Morphism:
     """组合 Morphism - 多通道操作的集合"""
 
     lanes: Dict[Channel, Lane]
-    _duration_cycles: int = -1  # 内部使用，用于无通道的IdentityMorphism
+    _duration_cycles: int | Expr = -1  # 内部使用，用于无通道的IdentityMorphism
 
     def __post_init__(self):
         """验证所有Lane的时长一致（Monoidal Category要求）"""
         if not self.lanes:
-            if self._duration_cycles < 0:
+            if not isinstance(self._duration_cycles, Expr) and self._duration_cycles < 0:
                 # This is a true empty morphism, which is fine.
                 pass
             return
 
-        reference_duration = next(iter(self.lanes.values())).total_duration_cycles
+        reference_duration = next(iter(self.lanes.values())).total_duration_expr
         mismatched_durations = [
-            lane.total_duration_cycles
+            lane.total_duration_expr
             for lane in self.lanes.values()
-            if lane.total_duration_cycles != reference_duration
+            if not structurally_equal(lane.total_duration_expr, reference_duration)
         ]
         if mismatched_durations:
             durations = [reference_duration, *mismatched_durations]
-            duration_strs = [f"{cycles_to_us(d):.1f}μs" for d in durations]
+            duration_strs = [
+                f"{cycles_to_us(d):.1f}μs" if not isinstance(d, Expr) else repr(d)
+                for d in durations
+            ]
             raise ValueError(
                 "All lanes must have equal duration for parallel composition. "
                 f"Got: {duration_strs}"
@@ -54,6 +58,14 @@ class Morphism:
     @property
     def total_duration_cycles(self) -> int:
         """总时长（时钟周期）"""
+        if isinstance(self._duration_cycles, Expr):
+            raise TypeError("Morphism duration is symbolic; realize the morphism before requesting concrete cycles.")
+        return self._duration_cycles if self._duration_cycles >= 0 else 0
+
+    @property
+    def total_duration_expr(self) -> int | Expr:
+        if isinstance(self._duration_cycles, Expr):
+            return self._duration_cycles
         return self._duration_cycles if self._duration_cycles >= 0 else 0
 
     @property
@@ -90,11 +102,13 @@ class Morphism:
         if isinstance(other, AtomicMorphism):
             other = from_atomic(other)
 
-        if isinstance(other, Morphism) and not other.lanes and other.total_duration_cycles > 0:
+        if isinstance(other, Morphism) and not other.lanes and not structurally_equal(other.total_duration_expr, 0):
             compose_id = next_compose_id()
             lhs_breadcrumb = compose_breadcrumb("serial", "lhs", compose_id, stacklevel=1)
             rhs_breadcrumb = compose_breadcrumb("serial", "rhs", compose_id, stacklevel=1)
             if not self.lanes:
+                if isinstance(self.total_duration_expr, Expr) or isinstance(other.total_duration_expr, Expr):
+                    raise TypeError("Cannot compare symbolic morphism durations without realization.")
                 return self if self.total_duration_cycles >= other.total_duration_cycles else other
 
             new_lanes = {}
@@ -108,8 +122,9 @@ class Morphism:
                     channel=channel,
                     start_state=inferred_state,
                     end_state=inferred_state,
-                    duration_cycles=other.total_duration_cycles,
+                    duration_cycles=other.total_duration_expr,
                     operation_type=OperationType.IDENTITY,
+                    timing_kind=TimingKind.DELAY,
                     debug_trace=(
                         auto_generated_breadcrumb("channelless_identity_expansion"),
                         rhs_breadcrumb,
@@ -222,6 +237,6 @@ def from_atomic(op: AtomicMorphism) -> Morphism:
 def identity(duration: float) -> Morphism:
     """Creates a channelless identity morphism (a pure wait)."""
     duration_cycles = time_to_cycles(duration)
-    if duration_cycles < 0:
+    if not isinstance(duration_cycles, Expr) and duration_cycles < 0:
         raise ValueError("Identity duration must be non-negative.")
     return Morphism(lanes={}, _duration_cycles=duration_cycles)

@@ -2,8 +2,8 @@
 
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Version](https://img.shields.io/badge/version-0.2.0-orange.svg)
-![Tests](https://img.shields.io/badge/tests-49%20passed-brightgreen.svg)
+![Version](https://img.shields.io/badge/version-0.2.3-orange.svg)
+![Tests](https://img.shields.io/badge/tests-136%20passed-brightgreen.svg)
 
 > **A Category Theory-based framework for quantum experiment sequencing** - A mathematically rigorous abstraction for hardware timing in quantum physics experiments.
 

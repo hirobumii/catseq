@@ -17,7 +17,6 @@ def pulse(duration: float) -> MorphismDef:
     """创建 TTL 脉冲序列：ON → wait → OFF
 
     脉冲的总时长（从ON指令发出到OFF指令发出）等于指定的 duration。
-    框架会自动减去 on_op 的执行开销。
 
     Args:
         duration: Pulse duration in seconds (SI unit)
@@ -26,23 +25,7 @@ def pulse(duration: float) -> MorphismDef:
     def generator(channel: Channel, start_state: State) -> Morphism:
         on_op = ttl_on(channel)
         off_op = ttl_off(channel)
-
-        # 用户的意图是 on 指令发出到 off 指令发出的总时长
-        total_duration_cycles = time_to_cycles(duration)
-
-        # 减去 on_op 的执行开销，得到实际的 wait 时长
-        wait_duration_cycles = total_duration_cycles - on_op.total_duration_cycles
-
-        if wait_duration_cycles < 0:
-            duration_us = duration * 1e6  # Convert to microseconds for error message
-            on_cost_us = cycles_to_time(on_op.total_duration_cycles) * 1e6
-            raise ValueError(
-                f"Pulse duration ({duration_us:.3f}μs) is too short to accommodate "
-                f"the 'on' instruction cost ({on_cost_us:.3f}μs)."
-            )
-
-        wait_op = identity(cycles_to_time(wait_duration_cycles))
-
+        wait_op = identity(duration)
         return on_op >> wait_op >> off_op
 
     return MorphismDef(generator)

@@ -37,14 +37,14 @@ def test_ttl_on_creates_correct_morphism():
     assert op.operation_type == OperationType.TTL_ON, "Operation type should be TTL_ON"
     assert op.start_state == TTLState.OFF, "Start state should be OFF"
     assert op.end_state == TTLState.ON, "End state should be ON"
-    assert op.duration_cycles == 1, "Duration should be 1 cycle"
+    assert op.duration_cycles == 0, "TTL_ON should be logically instantaneous"
 
 def test_ttl_on_has_correct_duration():
     """
     Tests that the Morphism created by ttl_on has the correct total duration.
     """
     m = ttl_on(CH0)
-    assert m.total_duration_cycles == 1, "Morphism duration should be 1 cycle"
+    assert m.total_duration_cycles == 0, "Morphism duration should be 0 cycles"
 
 def test_ttl_on_raises_error_for_invalid_channel():
     """

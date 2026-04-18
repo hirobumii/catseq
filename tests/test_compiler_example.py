@@ -151,7 +151,7 @@ def test_complex_ttl_sequence_compilation():
     print("  t=750:  CH0开启 [单独操作] → 1条TTL_SET指令")
     print("  t=900:  CH0关闭, CH1开启 [同时混合操作] → 1条TTL_SET指令")
     print("  t=1000: CH1关闭 [单独操作] → 1条TTL_SET指令")
-    print("\n预期结果: 1个CONFIG + 9个SET，并在状态变化间插入WAIT")
+    print("\n预期结果: 1个CONFIG + 7个SET，并在状态变化间插入WAIT")
     print("展示编译器的同时操作合并优化能力，包括真正的混合操作")
     
     # 创建复杂时序
@@ -176,16 +176,16 @@ def test_complex_ttl_sequence_compilation():
         on_off_count = sum(1 for call in calls if call.dsl_func == OASMFunction.TTL_SET)
         
         print(f"✓ TTL_INIT → TTL_CONFIG: {init_count}/1 (预期1个，同时操作合并)")
-        print(f"✓ TTL_ON/OFF → TTL_SET: {on_off_count}/9 (预期9个)")
+        print(f"✓ TTL_ON/OFF → TTL_SET: {on_off_count}/7 (预期7个)")
 
-        if init_count == 1 and on_off_count == 9:
+        if init_count == 1 and on_off_count == 7:
             print("🎉 所有映射都正确！同时操作合并功能完美工作！")
             print("✨ 特别展示了真正的混合操作：同时进行一个开启和一个关闭")
-            print("✨ 编译器成功将复杂时序压缩为1个CONFIG、9个SET和必要的WAIT")
+            print("✨ 编译器成功将复杂时序压缩为1个CONFIG、7个SET和必要的WAIT")
         else:
             print("❌ 映射数量不符合预期")
             print(f"   实际: TTL_CONFIG={init_count}, TTL_SET={on_off_count}")
-            print("   预期: TTL_CONFIG=1, TTL_SET=9")
+            print("   预期: TTL_CONFIG=1, TTL_SET=7")
             pytest.fail(
                 f"Unexpected mapping counts: TTL_CONFIG={init_count}, TTL_SET={on_off_count}"
             )

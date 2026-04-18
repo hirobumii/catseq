@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Callable, Dict, Self
 
+from ..expr import Expr, structurally_equal
 from ..debug import (
     annotate_atomic,
     annotate_morphism,
@@ -21,6 +22,7 @@ from ..types.common import (
     DebugFrame,
     OperationType,
     State,
+    TimingKind,
 )
 from ..types.rwg import RWGUninitialized
 from .core import Morphism
@@ -119,8 +121,9 @@ class MorphismDef:
                             channel=channel,
                             start_state=current_state,
                             end_state=current_state,
-                            duration_cycles=morphism_piece.total_duration_cycles,
+                            duration_cycles=morphism_piece.total_duration_expr,
                             operation_type=OperationType.IDENTITY,
+                            timing_kind=TimingKind.DELAY,
                             debug_trace=(
                                 auto_generated_breadcrumb("deferred_channelless_identity"),
                             )
@@ -155,12 +158,16 @@ def _inferred_morphism_end_state(morphism: Morphism, channel: Channel, fallback:
 def _pad_channel_morphism(
     result_morphism: Morphism,
     channel: Channel,
-    target_duration_cycles: int,
+    target_duration_cycles: int | Expr,
     application_trace: tuple[DebugBreadcrumb, ...] = (),
 ) -> Morphism:
-    current_duration = result_morphism.total_duration_cycles
-    if current_duration >= target_duration_cycles:
+    current_duration = result_morphism.total_duration_expr
+    if structurally_equal(current_duration, target_duration_cycles):
         return result_morphism
+    if isinstance(current_duration, Expr) or isinstance(target_duration_cycles, Expr):
+        raise TypeError(
+            "Deferred channel application requires concrete or structurally equal symbolic durations."
+        )
     padding_cycles = target_duration_cycles - current_duration
     end_state = _inferred_morphism_end_state(result_morphism, channel, RWGUninitialized())
     padding_op = AtomicMorphism(
@@ -169,6 +176,7 @@ def _pad_channel_morphism(
         end_state=end_state,
         duration_cycles=padding_cycles,
         operation_type=OperationType.IDENTITY,
+        timing_kind=TimingKind.DELAY,
         debug_trace=(auto_generated_breadcrumb("deferred_padding"),) + application_trace,
     )
     channel_lane = result_morphism.lanes.get(channel, Lane(()))
@@ -201,7 +209,21 @@ def _apply_deferred_operations(
                 application_breadcrumbs.get(channel, ()),
             )
         operation_results[channel] = result_morphism
-        max_duration_cycles = max(max_duration_cycles, result_morphism.total_duration_cycles)
+        result_duration = result_morphism.total_duration_expr
+        if isinstance(result_duration, Expr):
+            if not structurally_equal(max_duration_cycles, 0) and not structurally_equal(max_duration_cycles, result_duration):
+                raise TypeError(
+                    "Deferred channel application requires concrete or structurally equal durations. "
+                    "Realize symbolic durations first."
+                )
+            max_duration_cycles = result_duration
+        else:
+            if isinstance(max_duration_cycles, Expr):
+                raise TypeError(
+                    "Deferred channel application requires concrete or structurally equal durations. "
+                    "Realize symbolic durations first."
+                )
+            max_duration_cycles = max(max_duration_cycles, result_duration)
 
     aligned_results = {
         channel: _pad_channel_morphism(
@@ -232,6 +254,7 @@ def _apply_deferred_operations(
                 end_state=end_state,
                 duration_cycles=max_duration_cycles,
                 operation_type=OperationType.IDENTITY,
+                timing_kind=TimingKind.DELAY,
                 debug_trace=(auto_generated_breadcrumb("deferred_idle_alignment"),)
                 + breadcrumb_trace,
             )

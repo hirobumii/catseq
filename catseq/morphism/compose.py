@@ -4,9 +4,10 @@ Morphism composition algorithms.
 
 from __future__ import annotations
 
+from ..expr import Expr, structurally_equal
 from ..debug import annotate_morphism, auto_generated_breadcrumb
 from ..lanes import Lane
-from ..types.common import AtomicMorphism, DebugBreadcrumb, OperationType
+from ..types.common import AtomicMorphism, DebugBreadcrumb, OperationType, TimingKind
 from ..types.ttl import TTLState
 from .core import Morphism
 
@@ -49,13 +50,14 @@ def strict_compose_morphisms(
         second_ops = second.lanes.get(channel, Lane(())).operations
 
         if channel not in first.lanes:
-            duration = first.total_duration_cycles
+            duration = first.total_duration_expr
             identity_op = AtomicMorphism(
                 channel,
                 second_start_states[channel],
                 second_start_states[channel],
                 duration,
                 OperationType.IDENTITY,
+                timing_kind=TimingKind.DELAY,
                 debug_trace=(
                     auto_generated_breadcrumb("strict_compose_missing_lhs_channel"),
                 )
@@ -64,13 +66,14 @@ def strict_compose_morphisms(
             first_ops = (identity_op,)
 
         if channel not in second.lanes:
-            duration = second.total_duration_cycles
+            duration = second.total_duration_expr
             identity_op = AtomicMorphism(
                 channel,
                 first_end_states[channel],
                 first_end_states[channel],
                 duration,
                 OperationType.IDENTITY,
+                timing_kind=TimingKind.DELAY,
                 debug_trace=(
                     auto_generated_breadcrumb("strict_compose_missing_rhs_channel"),
                 )
@@ -114,13 +117,14 @@ def auto_compose_morphisms(
 
         if channel not in first.lanes and channel in second.lanes:
             first_state = second.lanes[channel].operations[0].start_state
-            duration = first.total_duration_cycles
+            duration = first.total_duration_expr
             identity_op = AtomicMorphism(
                 channel,
                 first_state,
                 first_state,
                 duration,
                 OperationType.IDENTITY,
+                timing_kind=TimingKind.DELAY,
                 debug_trace=(
                     auto_generated_breadcrumb("auto_compose_missing_lhs_channel"),
                 )
@@ -129,13 +133,14 @@ def auto_compose_morphisms(
             first_ops = (identity_op,)
         elif channel not in second.lanes and channel in first.lanes:
             end_state = first_end_states[channel]
-            duration = second.total_duration_cycles
+            duration = second.total_duration_expr
             identity_op = AtomicMorphism(
                 channel,
                 end_state,
                 end_state,
                 duration,
                 OperationType.IDENTITY,
+                timing_kind=TimingKind.DELAY,
                 debug_trace=(
                     auto_generated_breadcrumb("auto_compose_missing_rhs_channel"),
                 )
@@ -184,11 +189,17 @@ def parallel_compose_morphisms(
         channel_names = [ch.global_id for ch in overlapping_channels]
         raise ValueError(f"Cannot compose: overlapping channels {channel_names}")
 
-    left_duration = left.total_duration_cycles
-    right_duration = right.total_duration_cycles
+    left_duration = left.total_duration_expr
+    right_duration = right.total_duration_expr
 
-    if left_duration == right_duration:
+    if structurally_equal(left_duration, right_duration):
         return Morphism({**left.lanes, **right.lanes})
+
+    if isinstance(left_duration, Expr) or isinstance(right_duration, Expr):
+        raise TypeError(
+            "Parallel composition requires concrete or structurally equal durations. "
+            "Realize symbolic durations first."
+        )
 
     if left_duration < right_duration:
         left = _pad_parallel_side(
@@ -210,13 +221,15 @@ def parallel_compose_morphisms(
 
 def _pad_parallel_side(
     morphism: Morphism,
-    target_duration_cycles: int,
+    target_duration_cycles: int | Expr,
     auto_breadcrumb: DebugBreadcrumb,
     compose_breadcrumb: DebugBreadcrumb | None,
 ) -> Morphism:
     if not morphism.lanes:
         return morphism
 
+    if isinstance(target_duration_cycles, Expr):
+        raise TypeError("Parallel padding requires a concrete target duration.")
     padding_cycles = target_duration_cycles - morphism.total_duration_cycles
     if padding_cycles <= 0:
         return morphism
@@ -233,6 +246,7 @@ def _pad_parallel_side(
             end_state=end_state,
             duration_cycles=padding_cycles,
             operation_type=OperationType.IDENTITY,
+            timing_kind=TimingKind.DELAY,
             debug_trace=padding_trace,
         )
         new_lanes[channel] = Lane(lane.operations + (padding_op,))

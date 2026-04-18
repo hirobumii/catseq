@@ -15,7 +15,12 @@ from catseq.atomic import ttl_init, ttl_on, ttl_off
 from catseq.morphism import identity
 from catseq.types.common import Board, Channel, ChannelType
 from catseq.types.ttl import TTLState
-from catseq.control import repeat_morphism, compile_morphism_to_board_funcs, extract_channel_states_from_morphism
+from catseq.control import (
+    _estimate_morphism_cycles_from_assembly,
+    compile_morphism_to_board_funcs,
+    extract_channel_states_from_morphism,
+    repeat_morphism,
+)
 
 
 def test_repeat_morphism_hardware_loop_timing():
@@ -42,16 +47,6 @@ def test_repeat_morphism_hardware_loop_timing():
         ttl_off(laser)
     )
 
-    # Get actual base morphism cycle count for accurate calculations
-    base_cycles = base_morphism.total_duration_cycles
-
-    # Test different repeat counts using actual base cycle count
-    test_cases = [
-        (1, 15 + 1 * (24 + base_cycles)),
-        (3, 15 + 3 * (24 + base_cycles)),
-        (10, 15 + 10 * (24 + base_cycles)),
-    ]
-
     # Create OASM assembler for compilation
     try:
         intf_usb = sim_intf()
@@ -59,6 +54,12 @@ def test_repeat_morphism_hardware_loop_timing():
         intf_usb.loc_chn = 1
         seq = assembler(run_cfg(intf_usb, [0]), [('rwg0', C_RWG)])
 
+        base_cycles = _estimate_morphism_cycles_from_assembly(base_morphism, seq)
+        test_cases = [
+            (1, 15 + 1 * (24 + base_cycles)),
+            (3, 15 + 3 * (24 + base_cycles)),
+            (10, 15 + 10 * (24 + base_cycles)),
+        ]
         for count, expected_cycles in test_cases:
             print(f"📊 Testing repeat count: {count}")
 
@@ -238,8 +239,8 @@ def test_repeat_morphism_multi_channel_loop():
         print(f"   Base cycles: {multi_channel_morphism.total_duration_cycles}")
         print(f"   Total cycles: {repeated_multi.total_duration_cycles}")
 
-        # Verify timing calculation
-        base_cycles = multi_channel_morphism.total_duration_cycles
+        # Verify timing calculation using the same compiled cost model as repeat_morphism
+        base_cycles = _estimate_morphism_cycles_from_assembly(multi_channel_morphism, seq)
         expected_cycles = 15 + count * (24 + base_cycles)
         actual_cycles = repeated_multi.total_duration_cycles
 
@@ -301,6 +302,32 @@ def test_repeat_morphism_error_conditions():
     except Exception as e:
         print(f"❌ Error condition test failed: {e}")
         pytest.fail(f"Error condition test failed: {e}")
+
+
+def test_repeat_morphism_rejects_immediate_same_board_tail_morphism():
+    """
+    A repeat_morphism opaque timed region should reject an immediate same-board tail morphism
+    that starts exactly on the black-box boundary.
+
+    This mirrors the `start >> repeat_morphism(body) >> end` shape seen in real experiments
+    like `Rb1-rtmq` state-preparation flows.
+    """
+    rwg_board = Board("RWG_0")
+    laser = Channel(rwg_board, 0, ChannelType.TTL)
+
+    base_morphism = ttl_on(laser) @ identity(5e-6) @ ttl_off(laser)
+    tail_morphism = ttl_on(laser) @ identity(1e-6) @ ttl_off(laser)
+
+    intf_usb = sim_intf()
+    intf_usb.nod_adr = 0
+    intf_usb.loc_chn = 1
+    seq = assembler(run_cfg(intf_usb, [0]), [('rwg0', C_RWG)])
+
+    repeated = repeat_morphism(base_morphism, 3, seq)
+    combined = repeated >> tail_morphism
+
+    with pytest.raises(ValueError, match="conflicts with a black-box operation"):
+        compile_morphism_to_board_funcs(combined, seq)
 
 
 if __name__ == "__main__":

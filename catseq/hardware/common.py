@@ -6,7 +6,7 @@ such as hold/wait operations.
 """
 
 from ..debug import factory_breadcrumb
-from ..types.common import Channel, State, AtomicMorphism, OperationType
+from ..types.common import AtomicMorphism, Channel, OperationType, State, TimingKind
 from ..morphism import Morphism, MorphismDef
 from ..time_utils import us_to_cycles, time_to_cycles
 from ..lanes import Lane
@@ -34,6 +34,7 @@ def hold(duration: float) -> MorphismDef:
             end_state=start_state,
             duration_cycles=duration_cycles,
             operation_type=OperationType.IDENTITY,
+            timing_kind=TimingKind.DELAY,
             debug_trace=(factory_breadcrumb(stacklevel=1),),
         )
         

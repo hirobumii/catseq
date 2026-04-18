@@ -1,9 +1,16 @@
 """
 Types specific to RWG hardware.
 """
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Tuple, Optional
+from typing import Optional, Tuple
+
+from ..expr import Expr
 from .common import State
+
+FloatLike = float | Expr
+OptionalFloatLike = float | Expr | None
 
 # --- Dynamic Description ---
 @dataclass(frozen=True)
@@ -13,9 +20,9 @@ class WaveformParams:
     for frequency and amplitude.
     """
     sbg_id: int
-    freq_coeffs: Tuple[Optional[float], ...] = (0.0, None, None, None)
-    amp_coeffs: Tuple[Optional[float], ...] = (0.0, None, None, None)
-    initial_phase: Optional[float] = None  # Radian
+    freq_coeffs: Tuple[OptionalFloatLike, ...] = (0.0, None, None, None)
+    amp_coeffs: Tuple[OptionalFloatLike, ...] = (0.0, None, None, None)
+    initial_phase: OptionalFloatLike = None  # Radian
     phase_reset: bool = False
     fct:Optional[int] = None
 
@@ -25,10 +32,10 @@ class StaticWaveform:
     """
     An instantaneous snapshot of a single waveform's properties (freq, amp, phase).
     """
-    freq: Optional[float] = None  # MHz
-    amp: Optional[float] = None  # FS
+    freq: OptionalFloatLike = None  # MHz
+    amp: OptionalFloatLike = None  # FS
     sbg_id: Optional[int] = None
-    phase: float = 0.0 # Radian
+    phase: FloatLike = 0.0 # Radian
     fct:Optional[int] = None
 
 # --- Channel States ---
@@ -44,12 +51,12 @@ class RWGUninitialized(RWGState):
 @dataclass(frozen=True)
 class RWGReady(RWGState):
     """State after the RWG is configured with a carrier but is not yet outputting."""
-    carrier_freq: float
+    carrier_freq: FloatLike
 
 @dataclass(frozen=True)
 class RWGActive(RWGState):
     """State where the RWG is actively generating a dynamic waveform."""
-    carrier_freq: float
+    carrier_freq: FloatLike
     rf_on: bool
     snapshot: Tuple[StaticWaveform, ...] = field(default_factory=tuple)
     pending_waveforms: Optional[Tuple[WaveformParams, ...]] = None
@@ -69,4 +76,3 @@ class RWGActive(RWGState):
     def is_active(self) -> bool:
         """The channel is active if any waveform has non-zero amplitude."""
         return any(abs(wf.amp) > 1e-12 for wf in self.snapshot)
-

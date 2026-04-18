@@ -9,6 +9,7 @@ using the >> operator to build complex sequences.
 from typing import List, Optional
 
 from ..debug import factory_breadcrumb
+from ..expr import Expr
 from ..morphism import Morphism, MorphismDef, from_atomic
 from ..atomic import rwg_board_init, rwg_set_carrier, rwg_load_coeffs, rwg_update_params
 from ..morphism import identity
@@ -23,9 +24,22 @@ from ..types import (
     RWGUninitialized,
     AtomicMorphism,
     OperationType,
+    TimingKind,
 )
 
 from catseq.types.rwg import StaticWaveform
+
+
+def _is_runtime_expr(value) -> bool:
+    return isinstance(value, Expr)
+
+
+def _coeff_tuple_or_none(start_value, delta_value):
+    if _is_runtime_expr(delta_value):
+        return (start_value, delta_value, None, None)
+    if delta_value != 0:
+        return (start_value, delta_value, None, None)
+    return (None, None, None, None)
 
 
 def initialize(carrier_freq: float) -> MorphismDef:
@@ -113,7 +127,7 @@ def linear_ramp(targets: List[Optional[StaticWaveform]], duration: float) -> Mor
             raise TypeError(
                 "RWG linear_ramp must follow an operation that leaves the channel in an Active state."
             )
-        if duration <= 0:
+        if not isinstance(duration, Expr) and duration <= 0:
             raise ValueError("Ramp duration must be positive.")
 
         active_waveforms = start_state.snapshot
@@ -150,8 +164,8 @@ def linear_ramp(targets: List[Optional[StaticWaveform]], duration: float) -> Mor
             amp_ramp_rate = (target_amp - start_amp) / duration_us     # units/us
 
             # Ramp coefficients (for the PLAY phase)
-            freq_coeffs = (start_freq, freq_ramp_rate, None, None) if freq_ramp_rate != 0 else (None, None, None, None)
-            amp_coeffs = (start_amp, amp_ramp_rate, None, None) if amp_ramp_rate != 0 else (None, None, None, None)
+            freq_coeffs = _coeff_tuple_or_none(start_freq, freq_ramp_rate)
+            amp_coeffs = _coeff_tuple_or_none(start_amp, amp_ramp_rate)
 
             ramp_params.append(
                 WaveformParams(
@@ -243,7 +257,7 @@ def cubic_ramp(targets: List[Optional[StaticWaveform]], duration: float, pure_co
             raise TypeError(
                 "RWG cubic_ramp must follow an operation that leaves the channel in an Active state."
             )
-        if duration <= 0:
+        if not isinstance(duration, Expr) and duration <= 0:
             raise ValueError("Ramp duration must be positive.")
 
         active_waveforms = start_state.snapshot
@@ -435,7 +449,7 @@ def spline_arbi_func_ramp(targets: List[Optional[StaticWaveform]], duration: flo
             raise TypeError(
                 "RWG cubic_ramp must follow an operation that leaves the channel in an Active state."
             )
-        if duration <= 0:
+        if not isinstance(duration, Expr) and duration <= 0:
             raise ValueError("Ramp duration must be positive.")
 
         active_waveforms = start_state.snapshot
@@ -586,7 +600,7 @@ def constant_jerk_ramp(targets: List[Optional[StaticWaveform]], duration: float 
             raise TypeError(
                 "RWG cubic_ramp must follow an operation that leaves the channel in an Active state."
             )
-        if duration <= 0:
+        if not isinstance(duration, Expr) and duration <= 0:
             raise ValueError("Ramp duration must be positive.")
 
         active_waveforms = start_state.snapshot
@@ -739,8 +753,9 @@ def _create_rf_switch_morphism(on: bool) -> MorphismDef:
             channel=channel,
             start_state=start_state,
             end_state=end_state,
-            duration_cycles=1,
+            duration_cycles=0,
             operation_type=OperationType.RWG_RF_SWITCH,
+            timing_kind=TimingKind.EXACT_EVENT,
             debug_trace=(factory_breadcrumb(stacklevel=1),),
         )
         return from_atomic(op)

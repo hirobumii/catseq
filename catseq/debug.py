@@ -11,7 +11,7 @@ from pathlib import Path
 from types import FrameType
 from typing import TYPE_CHECKING
 
-from .types.common import AtomicMorphism, DebugBreadcrumb, DebugFrame
+from .types.common import AtomicMorphism, DebugBreadcrumb, DebugFrame, TimedRegion
 
 if TYPE_CHECKING:
     from .compilation.pipeline import LogicalEvent
@@ -135,9 +135,9 @@ def label_breadcrumb(name: str) -> DebugBreadcrumb:
 
 
 def annotate_atomic(
-    atomic: AtomicMorphism,
+    atomic: AtomicMorphism | TimedRegion,
     breadcrumbs: tuple[DebugBreadcrumb, ...],
-) -> AtomicMorphism:
+) -> AtomicMorphism | TimedRegion:
     if not breadcrumbs:
         return atomic
     if not hasattr(type(atomic), "__dataclass_fields__"):
@@ -185,7 +185,7 @@ def _format_breadcrumb_lines(
 
 
 def format_atomic_trace(
-    atomic: AtomicMorphism,
+    atomic: AtomicMorphism | TimedRegion,
     indent: str = "  ",
 ) -> str:
     lines = [f"{indent}trace:"]

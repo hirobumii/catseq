@@ -177,12 +177,12 @@ def test_pass3_pipelined_scheduling():
     play_calls = [i for i, func in enumerate(func_sequence) if func == OASMFunction.RWG_PLAY]
     load_calls = [i for i, func in enumerate(func_sequence) if func == OASMFunction.RWG_LOAD_WAVEFORM]
     
-    # Should have 5 PLAY calls and 5 LOAD calls
+    # Should have 4 PLAY calls and 4 LOAD calls.
     # set_state: 1 LOAD + 1 PLAY
-    # linear_ramp #1: 2 LOAD + 2 PLAY (start + stop)
+    # linear_ramp #1: 1 LOAD + 1 PLAY after zero-gap handoff fusion
     # linear_ramp #2: 2 LOAD + 2 PLAY (start + stop)
-    assert len(play_calls) == 5
-    assert len(load_calls) == 5
+    assert len(play_calls) == 4
+    assert len(load_calls) == 4
 
     # Verify pipelining occurred by checking that some LOAD operations were rescheduled
     # The exact ordering depends on the scheduler but there should be pipelining optimization

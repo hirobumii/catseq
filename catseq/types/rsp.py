@@ -21,7 +21,7 @@ class RSPPIDConfig:
     adc_in: int      # AI0/AI1
     rf_out: int      # RF0/RF1
     dgt_source: int       # DGT Channel Enable 
-    setpoint: float       # physical or normalized unit; must decide
+    setpoint: float       # 0-10 V
     kp: float = -1.0
     ki: float = -0.02
     kd: float = 0.0

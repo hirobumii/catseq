@@ -189,7 +189,9 @@ def rsp_init(flt_typ='rr', chn_cpl='dd'):
     clo(R.ext_adc, 0b00)
 
 def rsp_pid_config(config: RSPPIDConfig):
-    
+    """
+    连接DSP units  adc -> mix -> cnv -> acu -> mua -> rfg ，构建PID回路
+    """
     R.dgt_cfg[config.dgt_source] = dgt_cfg("cst0")
 
     # error signal: mix0 = adc{config.adc_in} - set_point
@@ -218,10 +220,16 @@ def rsp_pid_config(config: RSPPIDConfig):
     
 
 def rsp_pid_start(loop_id:int):
+    """
+    开启 dgt 通道，开始PID过程
+    """
     R.dgt_cfg[loop_id] = dgt_cfg("cst1")
 
 def rsp_pid_hold(loop_id: int):
-    R.dgt_cfg[loop_id] = dgt_cfg("cst1")
+    """
+    关闭 dgt 通道，使得对应的 pid 回路完全停止，所有寄存器的值保持不变。
+    """
+    R.dgt_cfg[loop_id] = dgt_cfg("cst0")
 
 def rsp_pid_release(loop_id: int):
     pass

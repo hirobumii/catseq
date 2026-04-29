@@ -444,6 +444,45 @@ def _translate_board_events(adr: OASMAddress, events: List[LogicalEvent]) -> Non
                                     args=(waveform_params,),
                                 )
                             )
+                case OperationType.RSP_INIT:
+                    event.oasm_calls.append(
+                        OASMCall(adr=adr, dsl_func=OASMFunction.RSP_INIT, args=())
+                    )
+
+                case OperationType.RSP_PID_CONFIG:
+                    event.oasm_calls.append(
+                        OASMCall(
+                            adr=adr,
+                            dsl_func=OASMFunction.RSP_PID_CONFIG,
+                            args=(op.channel.local_id, op.end_state.config),
+                        )
+                    )
+
+                case OperationType.RSP_PID_START:
+                    event.oasm_calls.append(
+                        OASMCall(
+                            adr=adr,
+                            dsl_func=OASMFunction.RSP_PID_START,
+                            args=(op.channel.local_id,),
+                        )
+                    )
+
+                case OperationType.RSP_PID_HOLD:
+                    event.oasm_calls.append(
+                        OASMCall(
+                            adr=adr,
+                            dsl_func=OASMFunction.RSP_PID_HOLD,
+                            args=(op.channel.local_id,),
+                        )
+                    )
+                case OperationType.RSP_PID_RELEASE:
+                    event.oasm_calls.append(
+                        OASMCall(
+                            adr=adr,
+                            dsl_func=OASMFunction.RSP_PID_RELEASE,
+                            args=(op.channel.local_id,),
+                        )
+                    )
                 case _:
                     pass
 

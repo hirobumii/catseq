@@ -7,11 +7,23 @@ when executing compiled sequences on the hardware.
 # Import actual OASM functions
 from oasm.rtmq2 import sfs, amk, wait, send_trig_code, wait_rtlk_trig, asm, nop, H, P
 from oasm.dev.rwg import fte, rwg, sbg
-
+from oasm.dev.rsp import (
+    dds_prof, dds_carrier, dds_signal, R, rsp_signal,
+    mua_cph, mua_cpl, mua_gan, mua_ofs,
+    acu_prh, acu_prl,
+    mod_inp,
+    mix_cfg,
+    dgt_cfg,
+    clo,
+    cnv_cfg, cnv_pid,
+    adc_ctrl,
+    
+)
 
 from ..types.rwg import WaveformParams
 from .mask_utils import binary_to_rtmq_mask
 from ..time_utils import us
+from ..types.rsp import RSPPIDConfig
 
 def ttl_config(mask, dir):
     """配置 TTL 通道方向/初始化
@@ -158,3 +170,58 @@ def rwg_play(pud_mask: int, iou_mask: int):
     """Trigger the waveform playback."""
     sbg.ctrl(iou=0, pud=pud_mask, mrk=0)
 
+
+# ----- RSP Placeholder Functions -----
+def rsp_set_carrier(chn:int, carrier:float):
+    # config rfg
+    dds_prof(1<<chn, 0, carrier, 1.0, 0.0)
+    dds_carrier(1<<chn, carrier)
+    dds_signal()
+
+def rsp_init(flt_typ='rr', chn_cpl='dd'):
+    # config adc
+    ofs = 0.0
+    dly = 0b000
+    for chn in range(2):
+        R.dac_inp[4+chn] = mod_inp("reg", "reg", rsp_signal(ofs))
+    adc_ctrl(flt_typ, chn_cpl, dly<<(0*3))
+    wait(250)
+    clo(R.ext_adc, 0b00)
+
+def rsp_pid_config(config: RSPPIDConfig):
+    
+    R.dgt_cfg[config.dgt_source] = dgt_cfg("cst0")
+
+    # error signal: mix0 = adc{config.adc_in} - set_point
+    R.mix_ipa[config.rf_out] = mod_inp(f"adc{config.adc_in}", f"dgt{config.dgt_source}")
+    R.mix_ipb = mod_inp("reg", f"dgt{config.dgt_source}", config.setpoint)
+    R.mix_cfg = mix_cfg("+", 0, "", "-")
+    
+    # PID: acu0 = pid(mix0)
+    R.cnv_inp[config.rf_out] = mod_inp(f"mix{config.rf_out}", f"dgt{config.dgt_source}")
+    R.cnv_cfg = cnv_cfg(0, 0, 1, 1)
+    atn_cnv = 3
+    R.cnv_cfg = cnv_cfg(atn_cnv, 0)
+    cnv_pid(config.kp, config.ki, config.kd)
+    R.acu_inp[config.rf_out] = mod_inp(f"cnv{config.rf_out}", f"dgt{config.dgt_source}")
+    atn_acu = 2
+    R.acu_prh = acu_prh(-1048576*2, atn_acu)
+    R.acu_prl = acu_prl(-1048576*2)
+    
+    R.mua_inp[config.rf_out] = mod_inp(f"acu{config.rf_out}", f"dgt{config.dgt_source}")
+    R.mua_gan = mua_gan(1.0)
+    R.mua_ofs = mua_ofs(0.0)
+    R.mua_cpl = mua_cpl(-1.0+2*config.output_min)
+    R.mua_cph = mua_cph(-1.0+2*config.output_max)
+    
+    R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", f"dgt{config.dgt_source}")
+    
+
+def rsp_pid_start(loop_id:int):
+    R.dgt_cfg[loop_id] = dgt_cfg("cst1")
+
+def rsp_pid_hold(loop_id: int):
+    R.dgt_cfg[loop_id] = dgt_cfg("cst1")
+
+def rsp_pid_release(loop_id: int):
+    pass

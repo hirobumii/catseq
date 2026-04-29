@@ -16,6 +16,12 @@ from .functions import (
     wait_master,
     wait_mu,
     wait_us,
+    rsp_init,
+    rsp_set_carrier,
+    rsp_pid_config,
+    rsp_pid_start,
+    rsp_pid_hold,
+    rsp_pid_release,
 )
 from .types import OASMAddress, OASMCall, OASMFunction
 
@@ -41,6 +47,12 @@ OASM_FUNCTION_MAP: Dict[OASMFunction, Callable] = {
     OASMFunction.RWG_RF_SWITCH: rwg_rf_switch,
     OASMFunction.RWG_LOAD_WAVEFORM: rwg_load_waveform,
     OASMFunction.RWG_PLAY: rwg_play,
+    OASMFunction.RSP_INIT: rsp_init,
+    OASMFunction.RSP_SET_CARRIER: rsp_set_carrier,
+    OASMFunction.RSP_PID_CONFIG: rsp_pid_config,
+    OASMFunction.RSP_PID_START: rsp_pid_start,
+    OASMFunction.RSP_PID_HOLD: rsp_pid_hold,
+    OASMFunction.RSP_PID_RELEASE: rsp_pid_release,
 }
 
 

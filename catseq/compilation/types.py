@@ -22,10 +22,12 @@ class OASMAddress(Enum):
     RWG3 = "rwg3"
     RWG4 = "rwg4"
     RWG5 = "rwg5"
-    RWG6 = "rwg6"
-    RWG7 = "rwg7"
+    RSP6 = "rsp6"
+    RSP7 = "rsp7"
     RWG8 = "rwg8"
     RWG9 = "rwg9"
+    RSP10 = "rsp10"
+    RSP11 = "rsp11"
 
 
 class OASMFunction(Enum):
@@ -52,6 +54,13 @@ class OASMFunction(Enum):
     WAIT_MASTER = auto()            # 主设备等待同步触发
     TRIG_SLAVE = auto()             # 从设备发送同步触发码
 
+    # RSP 函数 
+    RSP_INIT = auto()
+    RSP_SET_CARRIER = auto()
+    RSP_PID_CONFIG = auto()
+    RSP_PID_START = auto()
+    RSP_PID_HOLD = auto()
+    RSP_PID_RELEASE = auto()
 
 @dataclass(frozen=True)
 class OASMCall:

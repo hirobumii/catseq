@@ -25,6 +25,13 @@ from .types.rwg import (
     RWGUninitialized,
     WaveformParams,
 )
+from .types.rsp import (
+    RSPPIDActive,
+    RSPPIDReady,
+    RSPPIDConfig,
+    RSPUninitialized,
+    RSPState,
+)
 
 def ttl_init(channel: Channel, initial_state: TTLState = TTLState.OFF) -> Morphism:
     """Creates a TTL initialization morphism."""
@@ -210,3 +217,18 @@ def oasm_black_box(
         lanes[channel] = Lane((op,))
 
     return Morphism(lanes)
+
+def rsp_board_init(channel: Channel) -> Morphism:
+    ...
+
+def rsp_set_carrier(channel: Channel) -> Morphism:
+    ...
+
+def rsp_pid_config(channel: Channel, config: RSPPIDConfig, start_state: RSPState) -> Morphism:
+    ...
+
+def rsp_pid_start(channel: Channel, start_state: RSPPIDReady | RSPPIDActive) -> Morphism:
+    ...
+
+def rsp_pid_hold(channel: Channel, start_state: RSPPIDActive) -> Morphism:
+    ...

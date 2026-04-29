@@ -14,6 +14,7 @@ class ChannelType(Enum):
     """硬件通道类型"""
     TTL = auto()
     RWG = auto()
+    RSP = auto()
 
 @dataclass(frozen=True)
 class Board:
@@ -66,6 +67,13 @@ class OperationType(Enum):
     # 黑盒操作
     OPAQUE_OASM_FUNC = auto()
 
+    # RSP 操作
+    RSP_INIT = auto()
+    RSP_PID_CONFIG = auto()
+    RSP_PID_START = auto()
+    RSP_PID_HOLD = auto()
+    RSP_PID_RELEASE = auto() 
+
 
 class TimingKind(Enum):
     DELAY = auto()
@@ -83,6 +91,9 @@ TIMING_CRITICAL_OPERATIONS = {
     OperationType.SYNC_MASTER,
     OperationType.SYNC_SLAVE,
     OperationType.OPAQUE_OASM_FUNC, # Black boxes are critical by definition
+    OperationType.RSP_PID_START,
+    OperationType.RSP_PID_HOLD,
+    OperationType.RSP_PID_RELEASE,
 }
 """Set of operations that must be executed at their precise timestamp."""
 
@@ -91,6 +102,8 @@ TIMING_NON_CRITICAL_OPERATIONS = {
     OperationType.RWG_INIT,
     OperationType.RWG_SET_CARRIER,
     OperationType.RWG_LOAD_COEFFS,
+    OperationType.RSP_INIT,
+    OperationType.RSP_PID_CONFIG,
 }
 """Set of operations that can be rescheduled by the compiler for optimization."""
 

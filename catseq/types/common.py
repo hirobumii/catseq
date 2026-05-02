@@ -69,6 +69,7 @@ class OperationType(Enum):
 
     # RSP 操作
     RSP_INIT = auto()
+    RSP_SET_CARRIER = auto()
     RSP_PID_CONFIG = auto()
     RSP_PID_START = auto()
     RSP_PID_HOLD = auto()
@@ -103,6 +104,7 @@ TIMING_NON_CRITICAL_OPERATIONS = {
     OperationType.RWG_SET_CARRIER,
     OperationType.RWG_LOAD_COEFFS,
     OperationType.RSP_INIT,
+    OperationType.RSP_SET_CARRIER,
     OperationType.RSP_PID_CONFIG,
 }
 """Set of operations that can be rescheduled by the compiler for optimization."""
@@ -250,6 +252,12 @@ class AtomicMorphism:
             OperationType.SYNC_MASTER: "sync_master",
             OperationType.SYNC_SLAVE: "sync_slave",
             OperationType.OPAQUE_OASM_FUNC: "opaque_oasm_func",
+            OperationType.RSP_INIT: "rsp_init",
+            OperationType.RSP_SET_CARRIER: "rsp_set_carrier",
+            OperationType.RSP_PID_CONFIG: "rsp_pid_config",
+            OperationType.RSP_PID_START: "rsp_pid_start",
+            OperationType.RSP_PID_HOLD: "rsp_pid_hold",
+            OperationType.RSP_PID_RELEASE: "rsp_pid_release",
         }.get(self.operation_type, str(self.operation_type))
         
         if duration_us is None:

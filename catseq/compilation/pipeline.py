@@ -449,12 +449,21 @@ def _translate_board_events(adr: OASMAddress, events: List[LogicalEvent]) -> Non
                         OASMCall(adr=adr, dsl_func=OASMFunction.RSP_INIT, args=())
                     )
 
+                case OperationType.RSP_SET_CARRIER:
+                    event.oasm_calls.append(
+                        OASMCall(
+                            adr=adr,
+                            dsl_func=OASMFunction.RSP_SET_CARRIER,
+                            args=(op.channel.local_id, op.end_state.carrier_freq),
+                        )
+                    )
+
                 case OperationType.RSP_PID_CONFIG:
                     event.oasm_calls.append(
                         OASMCall(
                             adr=adr,
                             dsl_func=OASMFunction.RSP_PID_CONFIG,
-                            args=(op.channel.local_id, op.end_state.config),
+                            args=(op.end_state.config,),
                         )
                     )
 
@@ -463,7 +472,7 @@ def _translate_board_events(adr: OASMAddress, events: List[LogicalEvent]) -> Non
                         OASMCall(
                             adr=adr,
                             dsl_func=OASMFunction.RSP_PID_START,
-                            args=(op.channel.local_id,),
+                            args=(op.end_state.config.dgt_source,),
                         )
                     )
 
@@ -472,7 +481,7 @@ def _translate_board_events(adr: OASMAddress, events: List[LogicalEvent]) -> Non
                         OASMCall(
                             adr=adr,
                             dsl_func=OASMFunction.RSP_PID_HOLD,
-                            args=(op.channel.local_id,),
+                            args=(op.start_state.config.dgt_source,),
                         )
                     )
                 case OperationType.RSP_PID_RELEASE:
@@ -480,7 +489,7 @@ def _translate_board_events(adr: OASMAddress, events: List[LogicalEvent]) -> Non
                         OASMCall(
                             adr=adr,
                             dsl_func=OASMFunction.RSP_PID_RELEASE,
-                            args=(op.channel.local_id,),
+                            args=(op.end_state.config.dgt_source,),
                         )
                     )
                 case _:

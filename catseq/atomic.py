@@ -14,7 +14,6 @@ from .types.common import (
     OperationType, 
     AtomicMorphism, 
     State,
-    BlackBoxAtomicMorphism,
     TimedRegion,
     TimingKind,
 )
@@ -29,6 +28,7 @@ from .types.rsp import (
     RSPPIDActive,
     RSPPIDReady,
     RSPPIDConfig,
+    RSPReady,
     RSPUninitialized,
     RSPState,
 )
@@ -219,16 +219,97 @@ def oasm_black_box(
     return Morphism(lanes)
 
 def rsp_board_init(channel: Channel) -> Morphism:
-    ...
+    """Creates an RSP board-level initialization morphism."""
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=RSPUninitialized(),
+        end_state=RSPReady(),
+        duration_cycles=0,
+        operation_type=OperationType.RSP_INIT,
+        timing_kind=TimingKind.EXACT_EVENT,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
+    )
+    return from_atomic(op)
 
-def rsp_set_carrier(channel: Channel) -> Morphism:
-    ...
+
+def rsp_set_carrier(channel: Channel, carrier_freq: float) -> Morphism:
+    """Creates an RSP carrier-frequency setup morphism for one RF output."""
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=RSPReady(),
+        end_state=RSPReady(carrier_freq),
+        duration_cycles=0,
+        operation_type=OperationType.RSP_SET_CARRIER,
+        timing_kind=TimingKind.EXACT_EVENT,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
+    )
+    return from_atomic(op)
+
 
 def rsp_pid_config(channel: Channel, config: RSPPIDConfig, start_state: RSPState) -> Morphism:
-    ...
+    """Creates an RSP PID-loop configuration morphism."""
+    if not isinstance(start_state, (RSPReady, RSPPIDReady, RSPPIDActive)):
+        raise TypeError(
+            "RSP pid_config must start from RSPReady/RSPPIDReady/RSPPIDActive, "
+            f"not {type(start_state)}"
+        )
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=start_state,
+        end_state=RSPPIDReady(config),
+        duration_cycles=0,
+        operation_type=OperationType.RSP_PID_CONFIG,
+        timing_kind=TimingKind.EXACT_EVENT,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
+    )
+    return from_atomic(op)
+
 
 def rsp_pid_start(channel: Channel, start_state: RSPPIDReady | RSPPIDActive) -> Morphism:
-    ...
+    """Starts or resumes an already configured RSP PID loop."""
+    if not isinstance(start_state, (RSPPIDReady, RSPPIDActive)):
+        raise TypeError(
+            f"RSP pid_start must start from RSPPIDReady/RSPPIDActive, not {type(start_state)}"
+        )
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=start_state,
+        end_state=RSPPIDActive(start_state.config, hold=False),
+        duration_cycles=0,
+        operation_type=OperationType.RSP_PID_START,
+        timing_kind=TimingKind.EXACT_EVENT,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
+    )
+    return from_atomic(op)
+
 
 def rsp_pid_hold(channel: Channel, start_state: RSPPIDActive) -> Morphism:
-    ...
+    """Holds an active RSP PID loop by deasserting its DGT valid source."""
+    if not isinstance(start_state, RSPPIDActive):
+        raise TypeError(f"RSP pid_hold must start from RSPPIDActive, not {type(start_state)}")
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=start_state,
+        end_state=RSPPIDActive(start_state.config, hold=True),
+        duration_cycles=0,
+        operation_type=OperationType.RSP_PID_HOLD,
+        timing_kind=TimingKind.EXACT_EVENT,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
+    )
+    return from_atomic(op)
+
+
+def rsp_pid_release(channel: Channel, start_state: RSPPIDActive) -> Morphism:
+    """Releases a held RSP PID loop, allowing it to update again."""
+    if not isinstance(start_state, RSPPIDActive):
+        raise TypeError(f"RSP pid_release must start from RSPPIDActive, not {type(start_state)}")
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=start_state,
+        end_state=RSPPIDActive(start_state.config, hold=False),
+        duration_cycles=0,
+        operation_type=OperationType.RSP_PID_RELEASE,
+        timing_kind=TimingKind.EXACT_EVENT,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
+    )
+    return from_atomic(op)

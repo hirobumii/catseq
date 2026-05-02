@@ -13,7 +13,7 @@ class RSPUninitialized(RSPState):
 
 @dataclass(frozen=True)
 class RSPReady(RSPState):
-    pass
+    carrier_freq: float | None = None
 
 
 @dataclass(frozen=True)

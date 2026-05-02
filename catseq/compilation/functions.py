@@ -5,7 +5,7 @@ This module contains the actual OASM DSL functions that will be called
 when executing compiled sequences on the hardware.
 """
 # Import actual OASM functions
-from oasm.rtmq2 import sfs, amk, wait, send_trig_code, wait_rtlk_trig, asm, nop, H, P
+from oasm.rtmq2 import sfs, amk, wait, send_trig_code, wait_rtlk_trig, asm, nop, P
 from oasm.dev.rwg import fte, rwg, sbg
 from oasm.dev.rsp import (
     dds_prof, dds_carrier, dds_signal, R, rsp_signal,
@@ -22,7 +22,6 @@ from oasm.dev.rsp import (
 
 from ..types.rwg import WaveformParams
 from .mask_utils import binary_to_rtmq_mask
-from ..time_utils import us
 from ..types.rsp import RSPPIDConfig
 
 def ttl_config(mask, dir):
@@ -232,4 +231,7 @@ def rsp_pid_hold(loop_id: int):
     R.dgt_cfg[loop_id] = dgt_cfg("cst0")
 
 def rsp_pid_release(loop_id: int):
-    pass
+    """
+    释放 hold：重新使能对应 DGT valid source，使 PID 链路继续更新。
+    """
+    R.dgt_cfg[loop_id] = dgt_cfg("cst1")

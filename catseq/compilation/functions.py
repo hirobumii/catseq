@@ -22,7 +22,7 @@ from oasm.dev.rsp import (
 
 from ..types.rwg import WaveformParams
 from .mask_utils import binary_to_rtmq_mask
-from ..types.rsp import RSPPIDConfig
+from ..types.rsp import RSPPIDConfig, RSPWaveformParams
 
 def ttl_config(mask, dir):
     """配置 TTL 通道方向/初始化
@@ -187,6 +187,15 @@ def rsp_init(flt_typ='rr', chn_cpl='dd'):
     wait(250)
     clo(R.ext_adc, 0b00)
 
+def rsp_rf_config(config: RSPWaveformParams):
+    R.mua_inp[config.rf_out] = mod_inp("reg", "reg", rsp_signal(config.amp*2.0-1.0))
+    R.mua_gan = mua_gan(1.0)
+    R.mua_ofs = mua_ofs(0.0)
+    R.mua_cpl = mua_cpl(-1.0)
+    R.mua_cph = mua_cph(-1.0+2*config.output_max)
+    
+    R.rfg_inp[config.rf_out] = mod_inp("mua0", "reg")
+
 def rsp_pid_config(config: RSPPIDConfig):
     """
     连接DSP units  adc -> mix -> cnv -> acu -> mua -> rfg ，构建PID回路
@@ -212,7 +221,7 @@ def rsp_pid_config(config: RSPPIDConfig):
     R.mua_inp[config.rf_out] = mod_inp(f"acu{config.rf_out}", f"dgt{config.dgt_source}")
     R.mua_gan = mua_gan(1.0)
     R.mua_ofs = mua_ofs(0.0)
-    R.mua_cpl = mua_cpl(-1.0+2*config.output_min)
+    R.mua_cpl = mua_cpl(-1.0)
     R.mua_cph = mua_cph(-1.0+2*config.output_max)
     
     R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", f"dgt{config.dgt_source}")
@@ -230,8 +239,17 @@ def rsp_pid_hold(loop_id: int):
     """
     R.dgt_cfg[loop_id] = dgt_cfg("cst0")
 
-def rsp_pid_release(loop_id: int):
+def rsp_pid_release(config: RSPPIDConfig):
     """
-    释放 hold：重新使能对应 DGT valid source，使 PID 链路继续更新。
+    释放PID回路，将RF输出设置为0。
     """
-    R.dgt_cfg[loop_id] = dgt_cfg("cst1")
+    R.dgt_cfg[config.dgt_source] = dgt_cfg("cst0")
+
+    R.mua_inp[config.rf_out] = mod_inp("reg", "reg", rsp_signal(-1.0))
+    R.mua_gan = mua_gan(1.0)
+    R.mua_ofs = mua_ofs(0.0)
+    R.mua_cpl = mua_cpl(-1.0)
+    R.mua_cph = mua_cph(-1.0+2*config.output_max)
+    
+    R.rfg_inp[config.rf_out] = mod_inp("mua0", "reg")
+

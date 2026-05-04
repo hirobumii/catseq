@@ -12,15 +12,16 @@ class RSPUninitialized(RSPState):
 
 
 @dataclass(frozen=True)
-class RSPReady(RSPState):
-    carrier_freq: float | None = None
+class RSPWaveformParams:
+    rf_out: int # RF0/RF1
+    amp: float # 0.0 ~ 1.0
+    output_max: float | None = 0.01
 
 
 @dataclass(frozen=True)
-class RSPWaveformParams:
-    rf_out:int # RF0/RF1
-    amp: float # 0.0 ~ 1.0
-    output_max: float | None = 0.01
+class RSPReady(RSPState):
+    carrier_freq: float | None = None
+    static_rf: RSPWaveformParams | None = None
 
 
 @dataclass(frozen=True)

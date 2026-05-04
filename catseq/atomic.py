@@ -31,6 +31,7 @@ from .types.rsp import (
     RSPReady,
     RSPUninitialized,
     RSPState,
+    RSPWaveformParams,
 )
 
 def ttl_init(channel: Channel, initial_state: TTLState = TTLState.OFF) -> Morphism:
@@ -315,15 +316,20 @@ def rsp_pid_release(channel: Channel, start_state: RSPPIDActive) -> Morphism:
     return from_atomic(op)
 
 
-def rsp_rf_config(channel: Channel, start_state: RSPPIDActive) -> Morphism:
-    """Releases a held RSP PID loop, allowing it to update again."""
-    if not isinstance(start_state, RSPPIDActive):
-        raise TypeError(f"RSP pid_release must start from RSPPIDActive, not {type(start_state)}")
+def rsp_rf_config(channel: Channel, config: RSPWaveformParams, start_state: RSPReady) -> Morphism:
+    """Sets one RSP RF output to a static configured value."""
+    if not isinstance(start_state, RSPReady):
+        raise TypeError(f"RSP rf_config must start from RSPReady, not {type(start_state)}")
+    if channel.local_id != config.rf_out:
+        raise TypeError(
+            f"RF configuration mismatch: expected RF channel rf{channel.local_id}, "
+            f"but got channel rf{config.rf_out}."
+        )
     op = AtomicMorphism(
         channel=channel,
         start_state=start_state,
-        end_state=RSPPIDActive(start_state.config, hold=False),
-        duration_cycles=0, #13
+        end_state=RSPReady(carrier_freq=start_state.carrier_freq, static_rf=config),
+        duration_cycles=0,  # 13 expected
         operation_type=OperationType.RSP_RF_CONFIG,
         timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),

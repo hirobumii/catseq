@@ -4,6 +4,7 @@ RTMQ timing and cost-analysis helpers.
 
 from typing import List
 
+from ..types.common import OperationType
 from .execution import OASM_FUNCTION_MAP
 from .types import OASMAddress
 
@@ -47,6 +48,21 @@ RTMQ_INSTRUCTION_COSTS = {
     "ROL": 1,
     "SAR": 1,
 }
+
+
+STATIC_OPERATION_COSTS = {
+    # RSP helper occupancy measured/expected at the compiled OASM layer.
+    # These costs intentionally do not change source-level AtomicMorphism
+    # duration_cycles, which remain logical timestamps rather than instruction
+    # occupancy.
+    OperationType.RSP_RF_CONFIG: 13,
+    OperationType.RSP_PID_CONFIG: 39,
+}
+
+
+def static_operation_cost(operation_type: OperationType) -> int:
+    """Return a static compiled-instruction occupancy estimate in cycles."""
+    return STATIC_OPERATION_COSTS.get(operation_type, 0)
 
 
 def estimate_oasm_cost(assembly_lines: List[str]) -> int:

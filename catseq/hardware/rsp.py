@@ -11,6 +11,7 @@ from catseq.atomic import (
     rsp_pid_hold as atomic_rsp_pid_hold,
     rsp_pid_release as atomic_rsp_pid_release,
     rsp_pid_start as atomic_rsp_pid_start,
+    rsp_rf_config as atomic_rsp_rf_config,
     rsp_set_carrier as atomic_rsp_set_carrier,
 )
 from catseq.morphism import Morphism, MorphismDef
@@ -50,29 +51,44 @@ def set_carrier(carrier_freq: float) -> MorphismDef:
 
 
 def pid_config(
-        config: RSPPIDConfig
+    config: RSPPIDConfig | None = None,
+    *,
+    ai_channel: int | None = None,
+    ao_channel: int | None = None,
+    setpoint: float | None = None,
+    kp: float = -1.0,
+    ki: float = -0.02,
+    kd: float = 0.0,
+    output_max: float | None = 0.01,
+    dgt_source: int | None = None,
 ) -> MorphismDef:
     """Create a PID-loop configuration definition.
 
     Args:
-    config: PID configuration object containing the following fields:
-        -adc_in: ADC input index used as the measured signal.
-        -rf_out: RF/DAC output index controlled by the loop.
-        -setpoint: PID setpoint in the RSP signal units used by the OASM helper.
-        -kp, ki, kd: PID gains.
-        -dgt_source: Optional DGT-valid source index.  Defaults to ``rf_out``
-            so each RF output has a matching enable source unless specified.
+    config: PID configuration object.  Alternatively, pass ``ai_channel``,
+        ``ao_channel`` and ``setpoint`` to build a default :class:`RSPPIDConfig`.
     """
+    if config is None:
+        if ai_channel is None or ao_channel is None or setpoint is None:
+            raise TypeError(
+                "pid_config requires either config=RSPPIDConfig(...) or "
+                "ai_channel=..., ao_channel=..., setpoint=..."
+            )
+        config = RSPPIDConfig(
+            adc_in=ai_channel,
+            rf_out=ao_channel,
+            dgt_source=ao_channel if dgt_source is None else dgt_source,
+            setpoint=setpoint,
+            kp=kp,
+            ki=ki,
+            kd=kd,
+            output_max=output_max,
+        )
 
     def generator(channel: Channel, start_state: State) -> Morphism:
-        if not isinstance(start_state, (RSPPIDReady, RSPPIDActive)):
+        if not isinstance(start_state, (RSPReady, RSPPIDReady, RSPPIDActive)):
             raise TypeError(
-                f"RSP pid_start must start from RSPPIDReady/RSPPIDActive, not {type(start_state)}"
-            )
-        if channel.local_id != config.rf_out:
-            raise TypeError(
-                f"PID configuration mismatch: expected RF channel rf{channel.local_id}, "
-                f"but got channel rf{config.rf_out}."
+                f"RSP pid_config must start from RSPReady/RSPPIDReady/RSPPIDActive, not {type(start_state)}"
             )
         return atomic_rsp_pid_config(channel, config, start_state)
 
@@ -116,4 +132,16 @@ def pid_release() -> MorphismDef:
     return MorphismDef(generator)
 
 def rf_config(config: RSPWaveformParams) -> MorphismDef:
-    ...
+    """Create a static RSP RF-output configuration definition."""
+
+    def generator(channel: Channel, start_state: State) -> Morphism:
+        if not isinstance(start_state, RSPReady):
+            raise TypeError(f"RSP rf_config must start from RSPReady, not {type(start_state)}")
+        if channel.local_id != config.rf_out:
+            raise TypeError(
+                f"RF configuration mismatch: expected RF channel rf{channel.local_id}, "
+                f"but got channel rf{config.rf_out}."
+            )
+        return atomic_rsp_rf_config(channel, config, start_state)
+
+    return MorphismDef(generator)

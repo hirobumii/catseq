@@ -61,6 +61,7 @@ class OASMFunction(Enum):
     RSP_PID_START = auto()
     RSP_PID_HOLD = auto()
     RSP_PID_RELEASE = auto()
+    RSP_RF_CONFIG = auto()
 
 @dataclass(frozen=True)
 class OASMCall:

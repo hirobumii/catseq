@@ -62,6 +62,7 @@ def _install_fake_oasm_modules():
 
 _install_fake_oasm_modules()
 
+from catseq import hold, us  # noqa: E402
 from catseq.atomic import (  # noqa: E402
     rsp_board_init,
     rsp_set_carrier,
@@ -75,7 +76,14 @@ from catseq.compilation.types import OASMAddress, OASMFunction  # noqa: E402
 from catseq.hardware import rsp  # noqa: E402
 from catseq.types import Board, Channel, ChannelType  # noqa: E402
 from catseq.types.common import OperationType  # noqa: E402
-from catseq.types.rsp import RSPPIDActive, RSPPIDConfig, RSPPIDReady, RSPReady, RSPUninitialized  # noqa: E402
+from catseq.types.rsp import (  # noqa: E402
+    RSPPIDActive,
+    RSPPIDConfig,
+    RSPPIDReady,
+    RSPReady,
+    RSPUninitialized,
+    RSPWaveformParams,
+)
 
 
 def _rsp_channel():
@@ -167,6 +175,48 @@ def test_rsp_high_level_defs_build_default_pid_config_sequence():
         kp=-0.8,
         ki=-0.03,
         kd=0.0,
-        output_min=0.0,
         output_max=0.01,
     )
+
+
+def test_rsp_rf_config_builds_static_rf_state_and_compiler_call():
+    ch = _rsp_channel()
+    params = RSPWaveformParams(rf_out=0, amp=0.6, output_max=0.02)
+
+    morphism = rsp.rf_config(params)(ch, RSPReady(carrier_freq=80.0))
+    op = morphism.lanes[ch].operations[0]
+
+    assert op.operation_type is OperationType.RSP_RF_CONFIG
+    assert op.start_state == RSPReady(carrier_freq=80.0)
+    assert op.end_state == RSPReady(carrier_freq=80.0, static_rf=params)
+
+    calls = compile_to_oasm_calls(morphism)
+    assert calls[OASMAddress.RSP6] == [
+        # RSP static RF output should compile to exactly one RF_CONFIG call.
+        type(calls[OASMAddress.RSP6][0])(
+            adr=OASMAddress.RSP6,
+            dsl_func=OASMFunction.RSP_RF_CONFIG,
+            args=(params,),
+        )
+    ]
+
+
+def test_compiler_rsp_static_rf_occupancy_time():
+    ch = _rsp_channel()
+    params = RSPWaveformParams(rf_out=0, amp=0.6)
+    cfg = RSPPIDConfig(adc_in=0, rf_out=0, dgt_source=0, setpoint=0.25)
+
+    morphism = (
+        rsp.rf_config(params)
+        >> hold(1 * us)
+        >> rsp.pid_config(config=cfg)
+    )(ch, RSPReady(carrier_freq=80.0))
+
+    calls = compile_to_oasm_calls(morphism)
+    funcs_and_args = [(call.dsl_func, call.args) for call in calls[OASMAddress.RSP6]]
+
+    assert funcs_and_args == [
+        (OASMFunction.RSP_RF_CONFIG, (params,)),
+        (OASMFunction.WAIT, (250 - 13,)),
+        (OASMFunction.RSP_PID_CONFIG, (cfg,)),
+    ]

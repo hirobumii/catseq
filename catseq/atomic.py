@@ -224,7 +224,7 @@ def rsp_board_init(channel: Channel) -> Morphism:
         channel=channel,
         start_state=RSPUninitialized(),
         end_state=RSPReady(),
-        duration_cycles=256,
+        duration_cycles=0, # 256 expected
         operation_type=OperationType.RSP_INIT,
         timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),
@@ -238,7 +238,7 @@ def rsp_set_carrier(channel: Channel, carrier_freq: float) -> Morphism:
         channel=channel,
         start_state=RSPReady(),
         end_state=RSPReady(carrier_freq),
-        duration_cycles=737,
+        duration_cycles=0, # 737 expected
         operation_type=OperationType.RSP_SET_CARRIER,
         timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),
@@ -257,7 +257,7 @@ def rsp_pid_config(channel: Channel, config: RSPPIDConfig, start_state: RSPState
         channel=channel,
         start_state=start_state,
         end_state=RSPPIDReady(config),
-        duration_cycles=39,
+        duration_cycles=0, # 39
         operation_type=OperationType.RSP_PID_CONFIG,
         timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),
@@ -275,7 +275,7 @@ def rsp_pid_start(channel: Channel, start_state: RSPPIDReady | RSPPIDActive) -> 
         channel=channel,
         start_state=start_state,
         end_state=RSPPIDActive(start_state.config, hold=False),
-        duration_cycles=3,
+        duration_cycles=0, # 3
         operation_type=OperationType.RSP_PID_START,
         timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),
@@ -291,7 +291,7 @@ def rsp_pid_hold(channel: Channel, start_state: RSPPIDActive) -> Morphism:
         channel=channel,
         start_state=start_state,
         end_state=RSPPIDActive(start_state.config, hold=True),
-        duration_cycles=2,
+        duration_cycles=0, #2
         operation_type=OperationType.RSP_PID_HOLD,
         timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),
@@ -307,7 +307,7 @@ def rsp_pid_release(channel: Channel, start_state: RSPPIDActive) -> Morphism:
         channel=channel,
         start_state=start_state,
         end_state=RSPPIDActive(start_state.config, hold=False),
-        duration_cycles=15,
+        duration_cycles=0, #15
         operation_type=OperationType.RSP_PID_RELEASE,
         timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),
@@ -323,7 +323,7 @@ def rsp_rf_config(channel: Channel, start_state: RSPPIDActive) -> Morphism:
         channel=channel,
         start_state=start_state,
         end_state=RSPPIDActive(start_state.config, hold=False),
-        duration_cycles=13,
+        duration_cycles=0, #13
         operation_type=OperationType.RSP_RF_CONFIG,
         timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),

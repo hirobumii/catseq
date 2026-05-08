@@ -173,7 +173,7 @@ def rwg_play(pud_mask: int, iou_mask: int):
 # ----- RSP Placeholder Functions -----
 def rsp_set_carrier(chn:int, carrier:float):
     # config rfg
-    dds_prof(1<<chn, 0, carrier, 1.0, 0.0)
+    dds_prof(1<<chn, 0, carrier, 0.0, 0.0)
     dds_carrier(1<<chn, carrier)
     dds_signal()
 
@@ -184,7 +184,7 @@ def rsp_init(flt_typ='rr', chn_cpl='dd'):
     for chn in range(2):
         R.dac_inp[4+chn] = mod_inp("reg", "reg", rsp_signal(ofs))
     adc_ctrl(flt_typ, chn_cpl, dly<<(0*3))
-    wait(250)
+    wait(2500)
     clo(R.ext_adc, 0b00)
 
 def rsp_rf_config(config: RSPWaveformParams):

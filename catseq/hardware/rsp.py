@@ -16,10 +16,11 @@ from catseq.atomic import (
 )
 from catseq.morphism import Morphism, MorphismDef
 from catseq.types import Channel, State
+from ..morphism import identity
 from catseq.types.rsp import RSPPIDActive, RSPPIDConfig, RSPPIDReady, RSPReady, RSPUninitialized, RSPWaveformParams
 
 
-def initialize() -> MorphismDef:
+def initialize(carrier_freq: float) -> MorphismDef:
     """Create an RSP board-initialization definition."""
 
     def generator(channel: Channel, start_state: State) -> Morphism:
@@ -32,20 +33,7 @@ def initialize() -> MorphismDef:
             # Idempotent from CatSeq's state-model perspective: emitting init again is
             # allowed and leaves the board ready.
             return rsp_board_init(channel)
-        return rsp_board_init(channel)
-
-    return MorphismDef(generator)
-
-
-def set_carrier(carrier_freq: float) -> MorphismDef:
-    """Create an RSP RF-carrier setup definition for the target channel."""
-
-    def generator(channel: Channel, start_state: State) -> Morphism:
-        if not isinstance(start_state, RSPReady):
-            raise TypeError(
-                f"RSP set_carrier must start from RSPReady, not {type(start_state)}"
-            )
-        return atomic_rsp_set_carrier(channel, carrier_freq)
+        return rsp_board_init(channel) >> identity(10e-6) >> atomic_rsp_set_carrier(channel, carrier_freq=carrier_freq)
 
     return MorphismDef(generator)
 

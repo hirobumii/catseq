@@ -149,8 +149,7 @@ def test_rsp_high_level_defs_build_default_pid_config_sequence():
     ch = _rsp_channel()
 
     seq_def = (
-        rsp.initialize()
-        >> rsp.set_carrier(80.0)
+        rsp.initialize(80.0)
         >> rsp.pid_config(ai_channel=0, ao_channel=1, setpoint=0.4, kp=-0.8, ki=-0.03)
         >> rsp.pid_start()
         >> rsp.pid_hold()
@@ -161,13 +160,14 @@ def test_rsp_high_level_defs_build_default_pid_config_sequence():
 
     assert [op.operation_type for op in ops] == [
         OperationType.RSP_INIT,
+        OperationType.IDENTITY,
         OperationType.RSP_SET_CARRIER,
         OperationType.RSP_PID_CONFIG,
         OperationType.RSP_PID_START,
         OperationType.RSP_PID_HOLD,
         OperationType.RSP_PID_RELEASE,
     ]
-    assert ops[2].end_state.config == RSPPIDConfig(
+    assert ops[3].end_state.config == RSPPIDConfig(
         adc_in=0,
         rf_out=1,
         dgt_source=1,

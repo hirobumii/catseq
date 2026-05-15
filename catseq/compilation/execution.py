@@ -22,6 +22,7 @@ from .functions import (
     rsp_pid_start,
     rsp_pid_hold,
     rsp_pid_release,
+    rsp_pid_relink,
     rsp_rf_config,
 )
 from .types import OASMAddress, OASMCall, OASMFunction
@@ -54,6 +55,7 @@ OASM_FUNCTION_MAP: Dict[OASMFunction, Callable] = {
     OASMFunction.RSP_PID_START: rsp_pid_start,
     OASMFunction.RSP_PID_HOLD: rsp_pid_hold,
     OASMFunction.RSP_PID_RELEASE: rsp_pid_release,
+    OASMFunction.RSP_PID_RELINK: rsp_pid_relink,
     OASMFunction.RSP_RF_CONFIG: rsp_rf_config,
 }
 

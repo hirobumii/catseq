@@ -74,6 +74,7 @@ class OperationType(Enum):
     RSP_PID_START = auto()
     RSP_PID_HOLD = auto()
     RSP_PID_RELEASE = auto()
+    RSP_PID_RELINK = auto()
     RSP_RF_CONFIG = auto()
 
 
@@ -96,6 +97,7 @@ TIMING_CRITICAL_OPERATIONS = {
     OperationType.RSP_PID_START,
     OperationType.RSP_PID_HOLD,
     OperationType.RSP_PID_RELEASE,
+    OperationType.RSP_PID_RELINK,
     OperationType.RSP_RF_CONFIG,
 }
 """Set of operations that must be executed at their precise timestamp."""
@@ -260,6 +262,7 @@ class AtomicMorphism:
             OperationType.RSP_PID_START: "rsp_pid_start",
             OperationType.RSP_PID_HOLD: "rsp_pid_hold",
             OperationType.RSP_PID_RELEASE: "rsp_pid_release",
+            OperationType.RSP_PID_RELINK: "rsp_pid_relink",
             OperationType.RSP_RF_CONFIG: "rsp_rf_config",
         }.get(self.operation_type, str(self.operation_type))
         

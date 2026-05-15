@@ -489,7 +489,15 @@ def _translate_board_events(adr: OASMAddress, events: List[LogicalEvent]) -> Non
                         OASMCall(
                             adr=adr,
                             dsl_func=OASMFunction.RSP_PID_RELEASE,
-                            args=(op.end_state.config.dgt_source,),
+                            args=(op.end_state.config,),
+                        )
+                    )
+                case OperationType.RSP_PID_RELINK:
+                    event.oasm_calls.append(
+                        OASMCall(
+                            adr=adr,
+                            dsl_func=OASMFunction.RSP_PID_RELINK,
+                            args=(op.end_state.config,),
                         )
                     )
                 case OperationType.RSP_RF_CONFIG:

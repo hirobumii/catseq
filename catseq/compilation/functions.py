@@ -253,3 +253,17 @@ def rsp_pid_release(config: RSPPIDConfig):
     
     R.rfg_inp[config.rf_out] = mod_inp("mua0", "reg")
 
+def rsp_pid_relink(config: RSPPIDConfig):
+    """
+    重新连接PID回路，将RF输出设置为保持值。
+    """
+    R.dgt_cfg[config.dgt_source] = dgt_cfg("cst0")
+
+    R.mua_inp[config.rf_out] = mod_inp(f"acu{config.rf_out}", f"dgt{config.dgt_source}")
+    R.mua_gan = mua_gan(1.0)
+    R.mua_ofs = mua_ofs(0.0)
+    R.mua_cpl = mua_cpl(-1.0)
+    R.mua_cph = mua_cph(-1.0+2*config.output_max)
+    
+    R.rfg_inp[config.rf_out] = mod_inp("mua0", f"dgt{config.dgt_source}")
+

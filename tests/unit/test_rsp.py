@@ -70,6 +70,7 @@ from catseq.atomic import (  # noqa: E402
     rsp_pid_start,
     rsp_pid_hold,
     rsp_pid_release,
+    rsp_pid_relink,
 )
 from catseq.compilation.compiler import compile_to_oasm_calls  # noqa: E402
 from catseq.compilation.types import OASMAddress, OASMFunction  # noqa: E402
@@ -131,7 +132,8 @@ def test_rsp_pid_compilation_uses_dgt_source_not_channel_id():
         >> rsp_pid_config(ch, cfg, RSPReady())
         >> rsp_pid_start(ch, RSPPIDReady(cfg))
         >> rsp_pid_hold(ch, RSPPIDActive(cfg, hold=False))
-        >> rsp_pid_release(ch, RSPPIDActive(cfg, hold=True))
+        >> rsp_pid_release(ch, RSPPIDActive(cfg, hold=False))
+        >> rsp_pid_relink(ch, RSPPIDActive(cfg, hold=False))
     )
 
     calls = compile_to_oasm_calls(morphism)
@@ -142,7 +144,8 @@ def test_rsp_pid_compilation_uses_dgt_source_not_channel_id():
     assert (OASMFunction.RSP_PID_CONFIG, (cfg,)) in funcs_and_args
     assert (OASMFunction.RSP_PID_START, (3,)) in funcs_and_args
     assert (OASMFunction.RSP_PID_HOLD, (3,)) in funcs_and_args
-    assert (OASMFunction.RSP_PID_RELEASE, (3,)) in funcs_and_args
+    assert (OASMFunction.RSP_PID_RELEASE, (cfg,)) in funcs_and_args
+    assert (OASMFunction.RSP_PID_RELINK, (cfg,)) in funcs_and_args
 
 
 def test_rsp_high_level_defs_build_default_pid_config_sequence():
@@ -154,6 +157,7 @@ def test_rsp_high_level_defs_build_default_pid_config_sequence():
         >> rsp.pid_start()
         >> rsp.pid_hold()
         >> rsp.pid_release()
+        >> rsp.pid_relink()
     )
     morphism = seq_def(ch)
     ops = morphism.lanes[ch].operations
@@ -166,6 +170,7 @@ def test_rsp_high_level_defs_build_default_pid_config_sequence():
         OperationType.RSP_PID_START,
         OperationType.RSP_PID_HOLD,
         OperationType.RSP_PID_RELEASE,
+        OperationType.RSP_PID_RELINK,
     ]
     assert ops[3].end_state.config == RSPPIDConfig(
         adc_in=0,

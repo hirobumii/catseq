@@ -315,6 +315,21 @@ def rsp_pid_release(channel: Channel, start_state: RSPPIDActive) -> Morphism:
     )
     return from_atomic(op)
 
+def rsp_pid_relink(channel: Channel, start_state: RSPPIDActive) -> Morphism:
+    """Reconnects a held RSP PID loop, restoring the ACU→MUA→RFG signal chain."""
+    if not isinstance(start_state, RSPPIDActive):
+        raise TypeError(f"RSP pid_relink must start from RSPPIDActive, not {type(start_state)}")
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=start_state,
+        end_state=RSPPIDActive(start_state.config, hold=False),
+        duration_cycles=0,  # 15 expected
+        operation_type=OperationType.RSP_PID_RELINK,
+        timing_kind=TimingKind.EXACT_EVENT,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
+    )
+    return from_atomic(op)
+
 
 def rsp_rf_config(channel: Channel, config: RSPWaveformParams, start_state: RSPReady) -> Morphism:
     """Sets one RSP RF output to a static configured value."""

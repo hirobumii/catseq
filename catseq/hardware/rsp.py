@@ -10,6 +10,7 @@ from catseq.atomic import (
     rsp_pid_config as atomic_rsp_pid_config,
     rsp_pid_hold as atomic_rsp_pid_hold,
     rsp_pid_release as atomic_rsp_pid_release,
+    rsp_pid_relink as atomic_rsp_pid_relink,
     rsp_pid_start as atomic_rsp_pid_start,
     rsp_rf_config as atomic_rsp_rf_config,
     rsp_set_carrier as atomic_rsp_set_carrier,
@@ -116,6 +117,18 @@ def pid_release() -> MorphismDef:
                 f"RSP pid_release must start from RSPPIDActive, not {type(start_state)}"
             )
         return atomic_rsp_pid_release(channel, start_state)
+
+    return MorphismDef(generator)
+
+def pid_relink() -> MorphismDef:
+    """Create a definition that reconnects a held PID loop, restoring the ACU→MUA→RFG signal chain."""
+
+    def generator(channel: Channel, start_state: State) -> Morphism:
+        if not isinstance(start_state, RSPPIDActive):
+            raise TypeError(
+                f"RSP pid_relink must start from RSPPIDActive, not {type(start_state)}"
+            )
+        return atomic_rsp_pid_relink(channel, start_state)
 
     return MorphismDef(generator)
 

@@ -31,7 +31,7 @@ class TestMorphismDictOperations:
     def test_basic_dict_operation(self):
         """Test basic dictionary operation with two channels."""
         # Create initial morphism with two channels
-        init_morphism = rwg.initialize(100.0)(self.ch1) | rwg.initialize(200.0)(self.ch2)
+        init_morphism = rwg.initialize(100.0, hard_init=True)(self.ch1) | rwg.initialize(200.0, hard_init=True)(self.ch2)
         
         # Apply different operations to each channel
         target1 = StaticWaveform(freq=10.0, amp=0.5, sbg_id=0)
@@ -53,7 +53,7 @@ class TestMorphismDictOperations:
 
     def test_empty_dict_returns_original(self):
         """Test that empty dictionary returns the original morphism."""
-        init_morphism = rwg.initialize(100.0)(self.ch1)
+        init_morphism = rwg.initialize(100.0, hard_init=True)(self.ch1)
         result = init_morphism >> {}
         
         assert result is init_morphism
@@ -61,9 +61,9 @@ class TestMorphismDictOperations:
     def test_time_alignment_with_different_durations(self):
         """Test automatic time alignment when operations have different durations."""
         # Create initial morphism
-        init_morphism = (rwg.initialize(100.0)(self.ch1) | 
-                        rwg.initialize(200.0)(self.ch2) |
-                        rwg.initialize(300.0)(self.ch3))
+        init_morphism = (rwg.initialize(100.0, hard_init=True)(self.ch1) | 
+                        rwg.initialize(200.0, hard_init=True)(self.ch2) |
+                        rwg.initialize(300.0, hard_init=True)(self.ch3))
         
         # Operations with different durations
         target = StaticWaveform(freq=10.0, amp=0.5, sbg_id=0)
@@ -83,7 +83,7 @@ class TestMorphismDictOperations:
 
     def test_unspecified_channels_get_identity(self):
         """Test that unspecified channels get identity operations."""
-        init_morphism = rwg.initialize(100.0)(self.ch1) | rwg.initialize(200.0)(self.ch2)
+        init_morphism = rwg.initialize(100.0, hard_init=True)(self.ch1) | rwg.initialize(200.0)(self.ch2)
         
         # Only operate on ch1, ch2 should get identity
         result = init_morphism >> {
@@ -102,7 +102,7 @@ class TestMorphismDictOperations:
 
     def test_chain_multiple_dict_operations(self):
         """Test chaining multiple dictionary operations."""
-        init_morphism = rwg.initialize(100.0)(self.ch1) | rwg.initialize(200.0)(self.ch2)
+        init_morphism = rwg.initialize(100.0, hard_init=True)(self.ch1) | rwg.initialize(200.0)(self.ch2)
         
         target1 = StaticWaveform(freq=10.0, amp=0.5, sbg_id=0)
         target2 = StaticWaveform(freq=20.0, amp=0.8, sbg_id=0)
@@ -123,7 +123,7 @@ class TestMorphismDictOperations:
 
     def test_error_on_nonexistent_channel(self):
         """Test error when dictionary contains a channel not in the morphism."""
-        init_morphism = rwg.initialize(100.0)(self.ch1)
+        init_morphism = rwg.initialize(100.0, hard_init=True)(self.ch1)
         
         # ch2 is not in init_morphism
         with pytest.raises(ValueError, match="Channel.*not found in morphism"):
@@ -134,7 +134,7 @@ class TestMorphismDictOperations:
 
     def test_type_checking_rejects_invalid_dict(self):
         """Test that invalid dictionary types are rejected."""
-        init_morphism = rwg.initialize(100.0)(self.ch1)
+        init_morphism = rwg.initialize(100.0, hard_init=True)(self.ch1)
         
         # Invalid key type should raise TypeError
         with pytest.raises(TypeError, match="unsupported operand type"):
@@ -147,7 +147,7 @@ class TestMorphismDictOperations:
     def test_mixed_channel_types(self):
         """Test dictionary operations with different channel types."""
         # Create morphism with both RWG and TTL channels  
-        init_morphism = rwg.initialize(100.0)(self.ch1) | ttl.off()(self.ttl_ch)
+        init_morphism = rwg.initialize(100.0, hard_init=True)(self.ch1) | ttl.off()(self.ttl_ch)
         
         target = StaticWaveform(freq=10.0, amp=0.5, sbg_id=0)
         
@@ -162,7 +162,7 @@ class TestMorphismDictOperations:
 
     def test_zero_duration_operations(self):
         """Test handling of zero-duration operations."""
-        init_morphism = rwg.initialize(100.0)(self.ch1) | rwg.initialize(200.0)(self.ch2)
+        init_morphism = rwg.initialize(100.0, hard_init=True)(self.ch1) | rwg.initialize(200.0)(self.ch2)
         
         target = StaticWaveform(freq=10.0, amp=0.5, sbg_id=0)
         
@@ -179,7 +179,7 @@ class TestMorphismDictOperations:
 
     def test_equivalence_with_manual_parallel_composition(self):
         """Test that dictionary operations are equivalent to manual | composition."""
-        init_morphism = rwg.initialize(100.0)(self.ch1) | rwg.initialize(200.0)(self.ch2)
+        init_morphism = rwg.initialize(100.0, hard_init=True)(self.ch1) | rwg.initialize(200.0, hard_init=True)(self.ch2)
         
         target1 = StaticWaveform(freq=10.0, amp=0.5, sbg_id=0)
         target2 = StaticWaveform(freq=20.0, amp=0.8, sbg_id=0)

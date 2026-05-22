@@ -985,7 +985,7 @@ def test_zero_gap_same_channel_linear_ramps_fuse_terminal_handoff():
     rwg_ch = Channel(board, 0, ChannelType.RWG)
 
     sequence_def = (
-        rwg.initialize(carrier_freq=100.0)
+        rwg.initialize(carrier_freq=100.0, hard_init=True)
         >> rwg.set_state([rwg.StaticWaveform(sbg_id=0, freq=10.0, amp=0.5)])
         >> rwg.linear_ramp([rwg.StaticWaveform(freq=20.0, amp=0.5)], 10 * us)
         >> rwg.linear_ramp([rwg.StaticWaveform(freq=30.0, amp=0.5)], 10 * us)
@@ -1035,7 +1035,7 @@ def test_delayed_same_channel_linear_ramps_keep_terminal_handoff():
     rwg_ch = Channel(board, 0, ChannelType.RWG)
 
     sequence_def = (
-        rwg.initialize(carrier_freq=100.0)
+        rwg.initialize(carrier_freq=100.0, hard_init=True)
         >> rwg.set_state([rwg.StaticWaveform(sbg_id=0, freq=10.0, amp=0.5)])
         >> rwg.linear_ramp([rwg.StaticWaveform(freq=20.0, amp=0.5)], 10 * us)
         >> hold(1 * us)

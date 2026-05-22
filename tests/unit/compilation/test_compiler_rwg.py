@@ -35,7 +35,7 @@ def test_pass1_cost_analysis(capsys):
     # The first (from set_state) has 1 param.
     # The second and third (from linear_ramp) have 1 param each (ramp + static).
     sequence_def = (
-        rwg.initialize(carrier_freq=100.0) >>
+        rwg.initialize(carrier_freq=100.0, hard_init=True) >>
         rwg.set_state([rwg.StaticWaveform(sbg_id=0, freq=10, amp=0.5)]) >>
         rwg.linear_ramp([rwg.StaticWaveform(freq=20, amp=0.8)], 10 * us)
     )
@@ -81,7 +81,7 @@ def test_pass3_generates_correct_rwg_calls():
     board = Board("RWG0")
     rwg_ch = Channel(board, 0, ChannelType.RWG)
     sequence_def = (
-        rwg.initialize(carrier_freq=120.0) >>
+        rwg.initialize(carrier_freq=120.0, hard_init=True) >>
         rwg.set_state([rwg.StaticWaveform(sbg_id=0, freq=15, amp=0.6)])
     )
     morphism = sequence_def(rwg_ch)
@@ -147,7 +147,7 @@ def test_pass3_pipelined_scheduling():
     # The first ramp (10us) is long enough to load the params for the second ramp.
     # 10us = 2500 cycles. Load cost is 1*20=20 cycles.
     sequence_def = (
-        rwg.initialize(carrier_freq=100.0) >>
+        rwg.initialize(carrier_freq=100.0, hard_init=True) >>
         rwg.set_state([rwg.StaticWaveform(sbg_id=0, freq=10, amp=0.5)]) >>
         rwg.linear_ramp([rwg.StaticWaveform(freq=20, amp=0.8)], 10 * us) >>
         rwg.linear_ramp([rwg.StaticWaveform(freq=15, amp=0.7)], 5 * us)
@@ -199,7 +199,7 @@ def test_pass2_pipelining_constraint():
     # Ramp duration (10us) is long enough for the next load (cost=20*1=20 cycles).
     # 10us = 2500 cycles at 250MHz. 2500 > 20.
     success_def = (
-        rwg.initialize(carrier_freq=100.0) >>
+        rwg.initialize(carrier_freq=100.0, hard_init=True) >>
         rwg.hold(100.0) >>
         rwg.set_state([rwg.StaticWaveform(sbg_id=0, freq=10, amp=0.5)]) >>
         rwg.hold(100.0) >>
@@ -226,7 +226,7 @@ def test_pass2_pipelining_constraint():
     # Skip this for now and investigate proper handling of short ramps later.
 
     # short_ramp_def = (
-    #     rwg.initialize(carrier_freq=100.0) >>
+    #     rwg.initialize(carrier_freq=100.0, hard_init=True) >>
     #     rwg.hold(100.0) >>
     #     rwg.set_state([rwg.StaticWaveform(sbg_id=0, freq=10, amp=0.5)]) >>
     #     rwg.hold(100.0) >>

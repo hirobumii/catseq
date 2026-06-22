@@ -24,6 +24,7 @@ def _install_fake_oasm_modules():
     rtmq2.H = object()
     rtmq2.P = object()
     rtmq2.disassembler = lambda core=None: (lambda asm: [])
+    rtmq2.assembler = type("assembler", (), {"__call__": lambda self, *args, **kwargs: None, "clear": lambda self: None, "asm": {}})()
 
     dev = types.ModuleType("oasm.dev")
     rwg = types.ModuleType("oasm.dev.rwg")
@@ -98,29 +99,29 @@ def test_rsp_atomic_pid_state_transitions_and_operation_types():
     init_op = rsp_board_init(ch).lanes[ch].operations[0]
     assert init_op.operation_type is OperationType.RSP_INIT
     assert init_op.start_state == RSPUninitialized()
-    assert init_op.end_state == RSPReady()
+    assert init_op.end_state == RSPUninitialized()
 
     carrier_op = rsp_set_carrier(ch, 80.0).lanes[ch].operations[0]
     assert carrier_op.operation_type is OperationType.RSP_SET_CARRIER
-    assert carrier_op.start_state == RSPReady()
+    assert carrier_op.start_state == RSPUninitialized()
     assert carrier_op.end_state == RSPReady(80.0)
 
-    config_op = rsp_pid_config(ch, cfg, RSPReady()).lanes[ch].operations[0]
+    config_op = rsp_pid_config(ch, cfg, RSPReady(80.0)).lanes[ch].operations[0]
     assert config_op.operation_type is OperationType.RSP_PID_CONFIG
-    assert config_op.start_state == RSPReady()
-    assert config_op.end_state == RSPPIDReady(cfg)
+    assert config_op.start_state == RSPReady(80.0)
+    assert config_op.end_state == RSPPIDReady(80.0, cfg)
 
-    start_op = rsp_pid_start(ch, RSPPIDReady(cfg)).lanes[ch].operations[0]
+    start_op = rsp_pid_start(ch, RSPPIDReady(80.0, cfg)).lanes[ch].operations[0]
     assert start_op.operation_type is OperationType.RSP_PID_START
-    assert start_op.end_state == RSPPIDActive(cfg, hold=False)
+    assert start_op.end_state == RSPPIDActive(80.0, cfg, hold=False)
 
-    hold_op = rsp_pid_hold(ch, RSPPIDActive(cfg, hold=False)).lanes[ch].operations[0]
+    hold_op = rsp_pid_hold(ch, RSPPIDActive(80.0, cfg, hold=False)).lanes[ch].operations[0]
     assert hold_op.operation_type is OperationType.RSP_PID_HOLD
-    assert hold_op.end_state == RSPPIDActive(cfg, hold=True)
+    assert hold_op.end_state == RSPPIDActive(80.0, cfg, hold=True)
 
-    release_op = rsp_pid_release(ch, RSPPIDActive(cfg, hold=True)).lanes[ch].operations[0]
+    release_op = rsp_pid_release(ch, RSPPIDActive(80.0, cfg, hold=True)).lanes[ch].operations[0]
     assert release_op.operation_type is OperationType.RSP_PID_RELEASE
-    assert release_op.end_state == RSPPIDActive(cfg, hold=False)
+    assert release_op.end_state == RSPPIDActive(80.0, cfg, hold=False)
 
 
 def test_rsp_pid_compilation_uses_dgt_source_not_channel_id():
@@ -129,11 +130,11 @@ def test_rsp_pid_compilation_uses_dgt_source_not_channel_id():
     morphism = (
         rsp_board_init(ch)
         >> rsp_set_carrier(ch, 80.0)
-        >> rsp_pid_config(ch, cfg, RSPReady())
-        >> rsp_pid_start(ch, RSPPIDReady(cfg))
-        >> rsp_pid_hold(ch, RSPPIDActive(cfg, hold=False))
-        >> rsp_pid_release(ch, RSPPIDActive(cfg, hold=False))
-        >> rsp_pid_relink(ch, RSPPIDActive(cfg, hold=False))
+        >> rsp_pid_config(ch, cfg, RSPReady(80.0))
+        >> rsp_pid_start(ch, RSPPIDReady(80.0, cfg))
+        >> rsp_pid_hold(ch, RSPPIDActive(80.0, cfg, hold=False))
+        >> rsp_pid_release(ch, RSPPIDActive(80.0, cfg, hold=False))
+        >> rsp_pid_relink(ch, RSPPIDActive(80.0, cfg, hold=False))
     )
 
     calls = compile_to_oasm_calls(morphism)

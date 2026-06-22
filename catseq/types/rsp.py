@@ -20,7 +20,7 @@ class RSPWaveformParams:
 
 @dataclass(frozen=True)
 class RSPReady(RSPState):
-    carrier_freq: float | None = None
+    carrier_freq: float 
     static_rf: RSPWaveformParams | None = None
 
 
@@ -39,10 +39,12 @@ class RSPPIDConfig:
 
 @dataclass(frozen=True)
 class RSPPIDReady(RSPState):
+    carrier_freq: float 
     config: RSPPIDConfig
 
 
 @dataclass(frozen=True)
 class RSPPIDActive(RSPState):
+    carrier_freq: float 
     config: RSPPIDConfig
     hold: bool = False

@@ -2,7 +2,7 @@
 Execution helpers for OASM call streams.
 """
 
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .functions import (
     rwg_init,
@@ -28,7 +28,7 @@ from .functions import (
 from .types import OASMAddress, OASMCall, OASMFunction
 
 try:
-    from oasm.rtmq2 import disassembler
+    from oasm.rtmq2 import disassembler, assembler, asm
     from oasm.dev.rwg import C_RWG
 
     OASM_AVAILABLE = True
@@ -62,10 +62,10 @@ OASM_FUNCTION_MAP: Dict[OASMFunction, Callable] = {
 
 def execute_oasm_calls(
     calls_by_board: Dict[OASMAddress, List[OASMCall]],
-    assembler_seq=None,
+    assembler_seq: Optional[assembler]=None,
     clear: bool = True,
     verbose: bool = False,
-):
+)-> Tuple[bool, Optional[assembler]]:
     """Execute OASM calls and optionally generate RTMQ assembly."""
     if verbose:
         print("\n--- Executing OASM Calls ---")

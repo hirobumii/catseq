@@ -108,6 +108,7 @@ def pid_hold() -> MorphismDef:
     return MorphismDef(generator)
 
 
+# TODO pid_release 和 pid_relink 不能关闭和开启，此外时间和别的板卡对不上
 def pid_release() -> MorphismDef:
     """Create a definition that releases a held PID loop and resumes updates."""
 
@@ -136,7 +137,7 @@ def rf_config(config: RSPWaveformParams) -> MorphismDef:
     """Create a static RSP RF-output configuration definition."""
 
     def generator(channel: Channel, start_state: State) -> Morphism:
-        if not isinstance(start_state, RSPReady):
+        if not isinstance(start_state, (RSPReady, RSPPIDReady, RSPPIDActive) ):
             raise TypeError(f"RSP rf_config must start from RSPReady, not {type(start_state)}")
         if channel.local_id != config.rf_out:
             raise TypeError(

@@ -8,7 +8,10 @@ class RSPState(State):
 
 @dataclass(frozen=True)
 class RSPUninitialized(RSPState):
-    pass
+    offset_0: float = 0.0
+    offset_1: float = 0.0
+    flt_typ: str = 'rr'
+    chn_cpl: str = 'dd'
 
 
 @dataclass(frozen=True)

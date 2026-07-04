@@ -140,7 +140,7 @@ def test_rsp_pid_compilation_uses_dgt_source_not_channel_id():
     calls = compile_to_oasm_calls(morphism)
     funcs_and_args = [(call.dsl_func, call.args) for call in calls[OASMAddress.RSP6]]
 
-    assert (OASMFunction.RSP_INIT, ()) in funcs_and_args
+    assert (OASMFunction.RSP_INIT, (0.0, 0.0, 'rr', 'dd')) in funcs_and_args
     assert (OASMFunction.RSP_SET_CARRIER, (0, 80.0)) in funcs_and_args
     assert (OASMFunction.RSP_PID_CONFIG, (cfg,)) in funcs_and_args
     assert (OASMFunction.RSP_PID_START, (3,)) in funcs_and_args

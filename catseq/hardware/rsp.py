@@ -21,7 +21,13 @@ from ..morphism import identity
 from catseq.types.rsp import RSPPIDActive, RSPPIDConfig, RSPPIDReady, RSPReady, RSPUninitialized, RSPWaveformParams
 
 
-def initialize(carrier_freq: float) -> MorphismDef:
+def initialize(
+    carrier_freq: float,
+    offset_0: float = 0.0,
+    offset_1: float = 0.0,
+    flt_typ: str = 'rr',
+    chn_cpl: str = 'dd',
+) -> MorphismDef:
     """Create an RSP board-initialization definition."""
 
     def generator(channel: Channel, start_state: State) -> Morphism:
@@ -31,10 +37,10 @@ def initialize(carrier_freq: float) -> MorphismDef:
                 f"not {type(start_state)}"
             )
         if isinstance(start_state, RSPReady):
-            # Idempotent from CatSeq's state-model perspective: emitting init again is
-            # allowed and leaves the board ready.
-            return rsp_board_init(channel)
-        return rsp_board_init(channel) >> identity(10e-6) >> atomic_rsp_set_carrier(channel, carrier_freq=carrier_freq)
+            return rsp_board_init(channel, offset_0=offset_0, offset_1=offset_1,
+                                  flt_typ=flt_typ, chn_cpl=chn_cpl)
+        return rsp_board_init(channel, offset_0=offset_0, offset_1=offset_1,
+                              flt_typ=flt_typ, chn_cpl=chn_cpl) >> identity(10e-6) >> atomic_rsp_set_carrier(channel, carrier_freq=carrier_freq)
 
     return MorphismDef(generator)
 

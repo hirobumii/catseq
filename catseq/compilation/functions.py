@@ -177,14 +177,17 @@ def rsp_set_carrier(chn:int, carrier:float):
     dds_carrier(1<<chn, carrier)
     dds_signal()
 
-def rsp_init(flt_typ='rr', chn_cpl='dd'):
+def rsp_init(offset_0 = 0.0, offset_1 = 0.0, flt_typ='rr', chn_cpl='dd'):
     # config adc
-    ofs = 0.0
-    dly = 0b000
-    for chn in range(2):
-        R.dac_inp[4+chn] = mod_inp("reg", "reg", rsp_signal(ofs))
-    adc_ctrl(flt_typ, chn_cpl, dly<<(0*3))
-    wait(2500)
+    ofs0 = offset_0/10
+    ofs1 = offset_1/10
+    dly = 0b000000
+    # flt_typ = ("i" + flt) if chn == 0 else (flt + "i")
+    # chn_cpl = ("a" + cpl) if chn == 0 else (cpl + "a")
+    R.dac_inp[4+0] = mod_inp("reg", "reg", rsp_signal(ofs0))
+    R.dac_inp[4+1] = mod_inp('reg', 'reg', rsp_signal(ofs1))
+    adc_ctrl(flt_typ, chn_cpl, dly)
+    wait(10*250)
     clo(R.ext_adc, 0b00)
 
 def rsp_rf_config(config: RSPWaveformParams):

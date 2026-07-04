@@ -219,13 +219,20 @@ def oasm_black_box(
 
     return Morphism(lanes)
 
-def rsp_board_init(channel: Channel) -> Morphism:
+def rsp_board_init(
+    channel: Channel,
+    offset_0: float = 0.0,
+    offset_1: float = 0.0,
+    flt_typ: str = 'rr',
+    chn_cpl: str = 'dd',
+) -> Morphism:
     """Creates an RSP board-level initialization morphism."""
+    state = RSPUninitialized(offset_0=offset_0, offset_1=offset_1, flt_typ=flt_typ, chn_cpl=chn_cpl)
     op = AtomicMorphism(
         channel=channel,
-        start_state=RSPUninitialized(),
-        end_state=RSPUninitialized(),
-        duration_cycles=0, # 256 expected
+        start_state=state,
+        end_state=state,
+        duration_cycles=0,
         operation_type=OperationType.RSP_INIT,
         timing_kind=TimingKind.EXACT_EVENT,
         debug_trace=(factory_breadcrumb(stacklevel=1),),

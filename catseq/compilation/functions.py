@@ -254,7 +254,7 @@ def rsp_pid_release(config: RSPPIDConfig):
     R.mua_cpl = mua_cpl(-1.0)
     R.mua_cph = mua_cph(-1.0+2*config.output_max)
     
-    R.rfg_inp[config.rf_out] = mod_inp("mua0", "reg")
+    R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", "reg")
 
 def rsp_pid_relink(config: RSPPIDConfig):
     """
@@ -268,5 +268,5 @@ def rsp_pid_relink(config: RSPPIDConfig):
     R.mua_cpl = mua_cpl(-1.0)
     R.mua_cph = mua_cph(-1.0+2*config.output_max)
     
-    R.rfg_inp[config.rf_out] = mod_inp("mua0", f"dgt{config.dgt_source}")
+    R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", f"dgt{config.dgt_source}")
 

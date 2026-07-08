@@ -47,9 +47,9 @@ def test_multi_board_global_sync():
     
     # Create initial morphism with all boards
     init_morphism = (
-        rwg.initialize(100.0)(main_ch) |
-        rwg.initialize(150.0)(rwg0_ch) |
-        rwg.initialize(200.0)(rwg1_ch)
+        rwg.initialize(100.0, hard_init=True)(main_ch) |
+        rwg.initialize(150.0, hard_init=True)(rwg0_ch) |
+        rwg.initialize(200.0, hard_init=True)(rwg1_ch)
     )
     
     # Apply global sync to all channels using >> operator
@@ -97,14 +97,14 @@ def test_rwg_init_constraint_violation():
     rwg0_ch = Channel(rwg0_board, 0, ChannelType.RWG)
     
     main_seq = (
-        rwg.initialize(100.0) >>
+        rwg.initialize(100.0, hard_init=True) >>
         rwg.hold(200.0 * us) >>
         rwg.set_state([StaticWaveform(sbg_id=0, freq=10, amp=0.5)])
     )
     
     rwg0_seq = (
         rwg.hold(300.0 * us) >>
-        rwg.initialize(150.0) >>
+        rwg.initialize(150.0, hard_init=True) >>
         rwg.set_state([StaticWaveform(sbg_id=0, freq=20, amp=0.8)])
     )
     
@@ -138,18 +138,18 @@ def test_dynamic_master_wait_calculation():
     rwg1_ch = Channel(rwg1_board, 0, ChannelType.RWG)
     
     main_seq = (
-        rwg.initialize(100.0) >>
+        rwg.initialize(100.0, hard_init=True) >>
         rwg.set_state([StaticWaveform(sbg_id=0, freq=10, amp=0.5)])
     )
     
     rwg0_seq = (
-        rwg.initialize(150.0) >>
+        rwg.initialize(150.0, hard_init=True) >>
         rwg.hold(50.0 * us) >>
         rwg.set_state([StaticWaveform(sbg_id=0, freq=20, amp=0.8)])
     )
     
     rwg1_seq = (
-        rwg.initialize(200.0) >>
+        rwg.initialize(200.0, hard_init=True) >>
         rwg.hold(150.0 * us) >>
         rwg.set_state([StaticWaveform(sbg_id=0, freq=30, amp=0.6)]) >>
         rwg.set_state([StaticWaveform(sbg_id=1, freq=35, amp=0.7)])
@@ -204,7 +204,7 @@ def test_single_board_no_sync():
     ch = Channel(board, 0, ChannelType.RWG)
     
     sequence = (
-        rwg.initialize(100.0) >>
+        rwg.initialize(100.0, hard_init=True) >>
         rwg.hold(50.0 * us) >>
         rwg.set_state([StaticWaveform(sbg_id=0, freq=10, amp=0.5)])
     )
@@ -245,13 +245,13 @@ def test_global_sync_timing_accuracy():
     rwg0_ch = Channel(rwg0_board, 0, ChannelType.RWG)
     
     main_seq = (
-        rwg.initialize(100.0) >>
+        rwg.initialize(100.0, hard_init=True) >>
         rwg.hold(100.0 * us) >>
         rwg.set_state([StaticWaveform(sbg_id=0, freq=10, amp=0.5)])
     )
 
     rwg0_seq = (
-        rwg.initialize(150.0) >>
+        rwg.initialize(150.0, hard_init=True) >>
         rwg.hold(80.0 * us) >>
         rwg.set_state([StaticWaveform(sbg_id=0, freq=20, amp=0.8)])
     )
@@ -310,7 +310,7 @@ def test_complex_multi_board_sequence_with_sync():
 
     # -- Part 1: Pre-sync operations (epoch 0) --
     ttl_ops_pre = ttl_pulse(10)
-    rwg_ops_pre = rwg.initialize(100.0)(ch_rwg) >> rwg.set_state(
+    rwg_ops_pre = rwg.initialize(100.0, hard_init=True)(ch_rwg) >> rwg.set_state(
         [rwg.StaticWaveform(sbg_id=0, freq=10, amp=0.5)]
     )
     pre_sync_morphism = ttl_ops_pre | rwg_ops_pre

@@ -18,7 +18,7 @@ from ..types.common import (
 from ..types.rwg import RWGActive
 from ..types.timing import LogicalTimestamp
 from .execution import OASM_AVAILABLE
-from .timing_analysis import analyze_operation_cost
+from .timing_analysis import analyze_batch_costs, analyze_operation_cost, static_operation_cost
 from .types import OASMAddress, OASMCall, OASMFunction
 
 
@@ -444,6 +444,79 @@ def _translate_board_events(adr: OASMAddress, events: List[LogicalEvent]) -> Non
                                     args=(waveform_params,),
                                 )
                             )
+                case OperationType.RSP_INIT:
+                    event.oasm_calls.append(
+                        OASMCall(
+                            adr=adr,
+                            dsl_func=OASMFunction.RSP_INIT,
+                            args=(
+                                op.end_state.offset_0,
+                                op.end_state.offset_1,
+                                op.end_state.flt_typ,
+                                op.end_state.chn_cpl,
+                            ),
+                        )
+                    )
+
+                case OperationType.RSP_SET_CARRIER:
+                    event.oasm_calls.append(
+                        OASMCall(
+                            adr=adr,
+                            dsl_func=OASMFunction.RSP_SET_CARRIER,
+                            args=(op.channel.local_id, op.end_state.carrier_freq),
+                        )
+                    )
+
+                case OperationType.RSP_PID_CONFIG:
+                    event.oasm_calls.append(
+                        OASMCall(
+                            adr=adr,
+                            dsl_func=OASMFunction.RSP_PID_CONFIG,
+                            args=(op.end_state.config,),
+                        )
+                    )
+
+                case OperationType.RSP_PID_START:
+                    event.oasm_calls.append(
+                        OASMCall(
+                            adr=adr,
+                            dsl_func=OASMFunction.RSP_PID_START,
+                            args=(op.end_state.config.dgt_source,),
+                        )
+                    )
+
+                case OperationType.RSP_PID_HOLD:
+                    event.oasm_calls.append(
+                        OASMCall(
+                            adr=adr,
+                            dsl_func=OASMFunction.RSP_PID_HOLD,
+                            args=(op.start_state.config.dgt_source,),
+                        )
+                    )
+                case OperationType.RSP_PID_RELEASE:
+                    event.oasm_calls.append(
+                        OASMCall(
+                            adr=adr,
+                            dsl_func=OASMFunction.RSP_PID_RELEASE,
+                            args=(op.end_state.config,),
+                        )
+                    )
+                case OperationType.RSP_PID_RELINK:
+                    event.oasm_calls.append(
+                        OASMCall(
+                            adr=adr,
+                            dsl_func=OASMFunction.RSP_PID_RELINK,
+                            args=(op.end_state.config,),
+                        )
+                    )
+                case OperationType.RSP_RF_CONFIG:
+                    event.oasm_calls.append(
+                        OASMCall(
+                            adr=adr,
+                            dsl_func=OASMFunction.RSP_RF_CONFIG,
+                            args=(op.end_state.static_rf,),
+                        )
+                    )
                 case _:
                     pass
 
@@ -559,21 +632,16 @@ def analyze_costs_and_epochs(
         for event in events:
             if isinstance(event.operation, (BlackBoxAtomicMorphism, TimedRegion)):
                 event.cost_cycles = event.operation.duration_cycles
+            else:
+                event.cost_cycles = static_operation_cost(event.operation.operation_type)
 
     if assembler_seq is None:
         if OASM_AVAILABLE and verbose:
-            print("    Warning: No assembler provided. Standard cost analysis will be skipped.")
+            print("    Warning: No assembler provided. Using static standard-operation cost estimates where available.")
         return
 
     for adr, events in events_by_board.items():
-        for event in events:
-            if isinstance(event.operation, (BlackBoxAtomicMorphism, TimedRegion)):
-                continue
-            event.cost_cycles = (
-                analyze_operation_cost(event, adr, assembler_seq, verbose=verbose)
-                if event.oasm_calls
-                else 0
-            )
+        analyze_batch_costs(events, adr, assembler_seq, verbose=verbose)
 
 
 def schedule_and_optimize(

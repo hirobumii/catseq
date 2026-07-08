@@ -42,8 +42,15 @@ def _coeff_tuple_or_none(start_value, delta_value):
     return (None, None, None, None)
 
 
-def initialize(carrier_freq: float) -> MorphismDef:
-    """Creates a definition for an RWG initialization morphism (composite: board init + carrier set)."""
+def initialize(carrier_freq: float, hard_init:bool = False) -> MorphismDef:
+    """
+    Creates a definition for an RWG initialization morphism (composite: board init + carrier set). 
+    
+    Args:
+    carrier_freq: Carrier frequency in MHz for the RWG channel.
+    hard_init: If True, performs a full board initialization (including resetting all SBG states).
+               If False, only sets the carrier frequency, assuming the board is already
+    """
 
     def generator(channel: Channel, start_state: State) -> Morphism:
         if not isinstance(start_state, RWGUninitialized):
@@ -52,7 +59,10 @@ def initialize(carrier_freq: float) -> MorphismDef:
                     f"RWG initialize must start from Uninitialized or Ready, got {type(start_state)}"
                 )
         # Composite operation: board initialization followed by carrier setting
-        return rwg_board_init(channel) >> identity(1e-6) >> rwg_set_carrier(channel, carrier_freq)
+        if hard_init:
+            return rwg_board_init(channel) >> identity(1e-6) >> rwg_set_carrier(channel, carrier_freq)
+        else:
+            return rwg_set_carrier(channel, carrier_freq)
 
     return MorphismDef(generator)
 
@@ -432,7 +442,7 @@ def gen_coeff(start, end, n_knots, T, func):
     return rtmq_params, dur
 
 
-def spline_arbi_func_ramp(targets: List[Optional[StaticWaveform]], duration: float, trace, n_knots:int = 11, ) -> MorphismDef:
+def spline_arbi_func_ramp(targets: List[Optional[StaticWaveform]], duration: float, trace_f=None, trace_a=None, n_knots:int = 11, ) -> MorphismDef:
     """Creates a definition for a cubic ramp with phase continuity.
 
     This ensures smooth start/stop (zero derivative at endpoints is NOT guaranteed;
@@ -482,14 +492,14 @@ def spline_arbi_func_ramp(targets: List[Optional[StaticWaveform]], duration: flo
             duration_us = duration * 1e6
             # --- Frequency: still use linear ramp (or static) ---
             if target_freq != start_freq:
-                freq_coeffs, durs_us = gen_coeff(start_freq, target_freq, n_knots, duration_us, trace)
+                freq_coeffs, durs_us = gen_coeff(start_freq, target_freq, n_knots, duration_us, trace_f if trace_f is not None else lambda x:x)
             else:
                 freq_coeffs = [[start_freq, None, None, None]]* (n_knots-1)
 
             # --- Amplitude: use cubic polynomial in MICROSECONDS ---
             if target_amp != start_amp:
                 # Compute cubic coefficients in SECONDS first
-                amp_coeffs, durs_us = gen_coeff(start_amp, target_amp, n_knots, duration_us, trace)
+                amp_coeffs, durs_us = gen_coeff(start_amp, target_amp, n_knots, duration_us, trace_a if trace_a is not None else lambda x:x)
             else:
                 amp_coeffs = [[start_amp, None, None, None]] * (n_knots-1)
             t_knots = np.linspace(0, duration_us, n_knots)

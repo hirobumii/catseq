@@ -2,7 +2,7 @@
 Execution helpers for OASM call streams.
 """
 
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .functions import (
     rwg_init,
@@ -16,11 +16,19 @@ from .functions import (
     wait_master,
     wait_mu,
     wait_us,
+    rsp_init,
+    rsp_set_carrier,
+    rsp_pid_config,
+    rsp_pid_start,
+    rsp_pid_hold,
+    rsp_pid_release,
+    rsp_pid_relink,
+    rsp_rf_config,
 )
 from .types import OASMAddress, OASMCall, OASMFunction
 
 try:
-    from oasm.rtmq2 import disassembler
+    from oasm.rtmq2 import disassembler, assembler, asm
     from oasm.dev.rwg import C_RWG
 
     OASM_AVAILABLE = True
@@ -41,15 +49,23 @@ OASM_FUNCTION_MAP: Dict[OASMFunction, Callable] = {
     OASMFunction.RWG_RF_SWITCH: rwg_rf_switch,
     OASMFunction.RWG_LOAD_WAVEFORM: rwg_load_waveform,
     OASMFunction.RWG_PLAY: rwg_play,
+    OASMFunction.RSP_INIT: rsp_init,
+    OASMFunction.RSP_SET_CARRIER: rsp_set_carrier,
+    OASMFunction.RSP_PID_CONFIG: rsp_pid_config,
+    OASMFunction.RSP_PID_START: rsp_pid_start,
+    OASMFunction.RSP_PID_HOLD: rsp_pid_hold,
+    OASMFunction.RSP_PID_RELEASE: rsp_pid_release,
+    OASMFunction.RSP_PID_RELINK: rsp_pid_relink,
+    OASMFunction.RSP_RF_CONFIG: rsp_rf_config,
 }
 
 
 def execute_oasm_calls(
     calls_by_board: Dict[OASMAddress, List[OASMCall]],
-    assembler_seq=None,
+    assembler_seq: Optional[assembler]=None,
     clear: bool = True,
     verbose: bool = False,
-):
+)-> Tuple[bool, Optional[assembler]]:
     """Execute OASM calls and optionally generate RTMQ assembly."""
     if verbose:
         print("\n--- Executing OASM Calls ---")

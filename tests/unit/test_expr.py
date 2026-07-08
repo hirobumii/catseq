@@ -147,7 +147,7 @@ def test_compile_time_float_exprs_are_allowed_in_rwg_values():
 
 
 def test_compile_time_float_exprs_are_allowed_in_rwg_initialize():
-    morphism = rwg.initialize(carrier_freq=var("carrier") + 0.125)(
+    morphism = rwg.initialize(carrier_freq=var("carrier") + 0.125, hard_init=True)(
         RWG_CH0,
         start_state=rwg.RWGUninitialized(),
     )
@@ -164,7 +164,7 @@ def test_compile_rejects_unresolved_expr():
 
 
 def test_rwg_initialize_and_set_state_accept_expr_values():
-    state = rwg.initialize(carrier_freq=var("carrier"))(
+    state = rwg.initialize(carrier_freq=var("carrier"), hard_init=True)(
         RWG_CH0,
         start_state=rwg.RWGUninitialized(),
     )

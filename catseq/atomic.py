@@ -14,7 +14,6 @@ from .types.common import (
     OperationType, 
     AtomicMorphism, 
     State,
-    BlackBoxAtomicMorphism,
     TimedRegion,
     TimingKind,
 )
@@ -24,6 +23,15 @@ from .types.rwg import (
     RWGReady,
     RWGUninitialized,
     WaveformParams,
+)
+from .types.rsp import (
+    RSPPIDActive,
+    RSPPIDReady,
+    RSPPIDConfig,
+    RSPReady,
+    RSPUninitialized,
+    RSPState,
+    RSPWaveformParams,
 )
 
 def ttl_init(channel: Channel, initial_state: TTLState = TTLState.OFF) -> Morphism:
@@ -210,3 +218,142 @@ def oasm_black_box(
         lanes[channel] = Lane((op,))
 
     return Morphism(lanes)
+
+def rsp_board_init(
+    channel: Channel,
+    offset_0: float = 0.0,
+    offset_1: float = 0.0,
+    flt_typ: str = 'rr',
+    chn_cpl: str = 'dd',
+) -> Morphism:
+    """Creates an RSP board-level initialization morphism."""
+    state = RSPUninitialized(offset_0=offset_0, offset_1=offset_1, flt_typ=flt_typ, chn_cpl=chn_cpl)
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=state,
+        end_state=state,
+        duration_cycles=0,
+        operation_type=OperationType.RSP_INIT,
+        timing_kind=TimingKind.EXACT_EVENT,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
+    )
+    return from_atomic(op)
+
+
+def rsp_set_carrier(channel: Channel, carrier_freq: float) -> Morphism:
+    """Creates an RSP carrier-frequency setup morphism for one RF output."""
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=RSPUninitialized(),
+        end_state=RSPReady(carrier_freq),
+        duration_cycles=0, # 737 expected
+        operation_type=OperationType.RSP_SET_CARRIER,
+        timing_kind=TimingKind.EXACT_EVENT,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
+    )
+    return from_atomic(op)
+
+
+def rsp_pid_config(channel: Channel, config: RSPPIDConfig, start_state: RSPState) -> Morphism:
+    """Creates an RSP PID-loop configuration morphism."""
+    if not isinstance(start_state, (RSPReady, RSPPIDReady, RSPPIDActive)):
+        raise TypeError(
+            "RSP pid_config must start from RSPReady/RSPPIDReady/RSPPIDActive, "
+            f"not {type(start_state)}"
+        )
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=start_state,
+        end_state=RSPPIDReady(start_state.carrier_freq, config),
+        duration_cycles=0, # 39
+        operation_type=OperationType.RSP_PID_CONFIG,
+        timing_kind=TimingKind.EXACT_EVENT,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
+    )
+    return from_atomic(op)
+
+
+def rsp_pid_start(channel: Channel, start_state: RSPPIDReady | RSPPIDActive) -> Morphism:
+    """Starts or resumes an already configured RSP PID loop."""
+    if not isinstance(start_state, (RSPPIDReady, RSPPIDActive)):
+        raise TypeError(
+            f"RSP pid_start must start from RSPPIDReady/RSPPIDActive, not {type(start_state)}"
+        )
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=start_state,
+        end_state=RSPPIDActive(start_state.carrier_freq, start_state.config, hold=False),
+        duration_cycles=0, # 3
+        operation_type=OperationType.RSP_PID_START,
+        timing_kind=TimingKind.EXACT_EVENT,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
+    )
+    return from_atomic(op)
+
+
+def rsp_pid_hold(channel: Channel, start_state: RSPPIDActive) -> Morphism:
+    """Holds an active RSP PID loop by deasserting its DGT valid source."""
+    if not isinstance(start_state, RSPPIDActive):
+        raise TypeError(f"RSP pid_hold must start from RSPPIDActive, not {type(start_state)}")
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=start_state,
+        end_state=RSPPIDActive(start_state.carrier_freq, start_state.config, hold=True),
+        duration_cycles=0, #2
+        operation_type=OperationType.RSP_PID_HOLD,
+        timing_kind=TimingKind.EXACT_EVENT,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
+    )
+    return from_atomic(op)
+
+
+def rsp_pid_release(channel: Channel, start_state: RSPPIDActive) -> Morphism:
+    """Releases a held RSP PID loop, allowing it to update again."""
+    if not isinstance(start_state, RSPPIDActive):
+        raise TypeError(f"RSP pid_release must start from RSPPIDActive, not {type(start_state)}")
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=start_state,
+        end_state=RSPPIDActive(start_state.carrier_freq, start_state.config, hold=False),
+        duration_cycles=0, #15
+        operation_type=OperationType.RSP_PID_RELEASE,
+        timing_kind=TimingKind.EXACT_EVENT,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
+    )
+    return from_atomic(op)
+
+def rsp_pid_relink(channel: Channel, start_state: RSPPIDActive) -> Morphism:
+    """Reconnects a held RSP PID loop, restoring the ACU→MUA→RFG signal chain."""
+    if not isinstance(start_state, RSPPIDActive):
+        raise TypeError(f"RSP pid_relink must start from RSPPIDActive, not {type(start_state)}")
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=start_state,
+        end_state=RSPPIDActive(start_state.carrier_freq, start_state.config, hold=False),
+        duration_cycles=0,  # 15 expected
+        operation_type=OperationType.RSP_PID_RELINK,
+        timing_kind=TimingKind.EXACT_EVENT,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
+    )
+    return from_atomic(op)
+
+
+def rsp_rf_config(channel: Channel, config: RSPWaveformParams, start_state: RSPReady) -> Morphism:
+    """Sets one RSP RF output to a static configured value."""
+    if not isinstance(start_state, (RSPReady, RSPPIDReady, RSPPIDActive)):
+        raise TypeError(f"RSP rf_config must start from RSPReady, not {type(start_state)}")
+    if channel.local_id != config.rf_out:
+        raise TypeError(
+            f"RF configuration mismatch: expected RF channel rf{channel.local_id}, "
+            f"but got channel rf{config.rf_out}."
+        )
+    op = AtomicMorphism(
+        channel=channel,
+        start_state=start_state,
+        end_state=RSPReady(carrier_freq=start_state.carrier_freq, static_rf=config),
+        duration_cycles=0,  # 13 expected
+        operation_type=OperationType.RSP_RF_CONFIG,
+        timing_kind=TimingKind.EXACT_EVENT,
+        debug_trace=(factory_breadcrumb(stacklevel=1),),
+    )
+    return from_atomic(op)

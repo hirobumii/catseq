@@ -4,6 +4,7 @@ RTMQ timing and cost-analysis helpers.
 
 from typing import List
 
+from ..types.common import OperationType
 from .execution import OASM_FUNCTION_MAP
 from .types import OASMAddress
 
@@ -47,6 +48,21 @@ RTMQ_INSTRUCTION_COSTS = {
     "ROL": 1,
     "SAR": 1,
 }
+
+
+STATIC_OPERATION_COSTS = {
+    # RSP helper occupancy measured/expected at the compiled OASM layer.
+    # These costs intentionally do not change source-level AtomicMorphism
+    # duration_cycles, which remain logical timestamps rather than instruction
+    # occupancy.
+    OperationType.RSP_RF_CONFIG: 13,
+    OperationType.RSP_PID_CONFIG: 39,
+}
+
+
+def static_operation_cost(operation_type: OperationType) -> int:
+    """Return a static compiled-instruction occupancy estimate in cycles."""
+    return STATIC_OPERATION_COSTS.get(operation_type, 0)
 
 
 def estimate_oasm_cost(assembly_lines: List[str]) -> int:
@@ -188,8 +204,164 @@ def is_tcs_write(instr: str) -> bool:
     return instr in ["GLO", "GHI"]
 
 
+def analyze_gap_for_instruction(instruction: str, target_reg: str, history: list[str]) -> int:
+    """Calculate gap cycles for a single instruction given recent history."""
+    if not history:
+        return 0
+
+    prev_instr = history[-1]
+    prev_target = history[-2] if len(history) >= 2 else ""
+
+    if instruction == "CSR" and prev_instr in ("CLO", "AMK") and prev_target == target_reg:
+        return 3
+    if instruction == "CSR" and len(history) >= 2:
+        for hist_instr, hist_target in zip(reversed(history[-2:][::2]), reversed(history[-2:][1::2])):
+            if hist_instr == "SFS":
+                return 5
+            if hist_instr in ("CLO", "AMK") and hist_target in ("NEX", "SCP", "WCL", "WCH"):
+                return 5
+    if instruction == "CSR" and prev_instr in ("GLO", "GHI") and target_reg.startswith("$"):
+        return 1
+    if prev_instr in ("CLO", "AMK") and prev_target == "STK":
+        if instruction in ("GLO", "GHI"):
+            return 1
+        if instruction == "CSR" and target_reg.startswith("$"):
+            return 4
+    if instruction in ("PHI", "PLO") and prev_instr == "OPL":
+        return 7
+    if instruction in ("DIV", "MOD") and prev_instr == "OPL":
+        return 35
+    if instruction == "CSR":
+        if target_reg == "DCD" and prev_instr in ("CLO", "AMK") and prev_target == "DCA":
+            return 9
+        if target_reg == "ICD" and prev_instr in ("CLO", "AMK") and prev_target == "ICA":
+            return 7
+    return 0
+
+
+def _parse_line(line: str) -> tuple[str, str, str]:
+    """Parse one disassembler line into (instruction, flag, target_reg)."""
+    parts = line.strip().split()
+    if not parts:
+        return ("", "", "")
+    instruction = parts[0].upper()
+    flag = parts[1].upper() if len(parts) > 1 else "-"
+    target_reg = parts[2].upper() if len(parts) > 2 else ""
+    return (instruction, flag, target_reg)
+
+
+def _instruction_cost(instruction: str, target_reg: str, flag: str, loop_mult: int = 1) -> int:
+    """Base cost of one RTMQ instruction (no gap cycles)."""
+    cost = RTMQ_INSTRUCTION_COSTS.get(instruction, 1)
+    if instruction in ("AMK", "CLO") and target_reg == "PTR" and flag == "P":
+        return 10 * loop_mult
+    return cost * loop_mult + (6 * loop_mult if flag == "P" else 0)
+
+
+def analyze_batch_costs(
+    all_events: list,
+    adr: OASMAddress,
+    assembler_seq,
+    verbose: bool = False,
+) -> None:
+    """Analyze costs for all events of one board in a single assemble/disassemble.
+
+    Single-pass: accumulate every event's OASM calls, take cumulative snapshots,
+    disassemble once, then assign instructions to events.
+
+    Boards whose address is not backed by a node on ``assembler_seq`` are skipped
+    silently; their events keep the static cost assigned by the caller. This
+    mirrors the previous per-event implementation, which swallowed unsupported
+    boards via its ``try/except`` fallback.
+    """
+    from .execution import OASM_FUNCTION_MAP
+
+    # Collect events that have OASM calls, preserving order
+    costed = [(i, ev) for i, ev in enumerate(all_events) if ev.oasm_calls]
+    if not costed:
+        return
+
+    # The (adr, func, ...) calling convention only works on multi-node
+    # assemblers, and only for nodes that were configured at construction.
+    # Single-node assemblers (multi is None) interpret args[0] as the function
+    # itself, so we cannot route by address; skip such boards entirely.
+    multi = getattr(assembler_seq.asm, "multi", None)
+    if multi is None or adr.value not in multi:
+        if verbose:
+            print(
+                f"      Skipping cost analysis for {adr.value}: "
+                f"not a configured assembler node."
+            )
+        return
+
+    # Single-pass: accumulate calls, snapshot line count after each event
+    assembler_seq.clear()
+    cum_counts: list[int] = []
+    for _idx, event in costed:
+        for call in event.oasm_calls:
+            func = OASM_FUNCTION_MAP.get(call.dsl_func)
+            if func:
+                if call.kwargs:
+                    assembler_seq(call.adr.value, func, *call.args, **call.kwargs)
+                else:
+                    assembler_seq(call.adr.value, func, *call.args)
+        if adr.value in assembler_seq.asm.multi:
+            snap = disassembler(core=C_RWG)(assembler_seq.asm[adr.value])
+            cum_counts.append(len(snap))
+        else:
+            cum_counts.append(0)
+
+    # Single final disassemble
+    if adr.value not in assembler_seq.asm.multi:
+        return
+    asm_lines = disassembler(core=C_RWG)(assembler_seq.asm[adr.value])
+    total_lines = len(asm_lines)
+
+    # Analyze loop structure once on the full assembly
+    loop_info = analyze_loop_structure(asm_lines)
+    loop_body_set = set(loop_info.get("loop_body_instructions", []))
+    jump_set = set(loop_info.get("jump_instructions", []))
+    est_iter = loop_info.get("estimated_iterations", 1)
+
+    # Assign each line to an event
+    n_events = len(costed)
+    line_of_event = [0] * total_lines
+    ev = 0
+    for li in range(total_lines):
+        while ev + 1 < n_events and li >= cum_counts[ev]:
+            ev += 1
+        line_of_event[li] = ev
+
+    # Compute per-event cost preserving cross-boundary gap cycles
+    tail_history: list[str] = []
+    for li in range(total_lines):
+        ev = line_of_event[li]
+        instruction, flag, target_reg = _parse_line(asm_lines[li])
+        if not instruction:
+            continue
+
+        loop_mult = est_iter if li in loop_body_set else 1
+        if li in jump_set and instruction in ("AMK", "CLO") and target_reg == "PTR" and flag == "P":
+            loop_mult = est_iter
+
+        costed[ev][1].cost_cycles += _instruction_cost(instruction, target_reg, flag, loop_mult)
+
+        gap = analyze_gap_for_instruction(instruction, target_reg, tail_history)
+        costed[ev][1].cost_cycles += gap * loop_mult
+
+        tail_history.append(target_reg)
+        tail_history.append(instruction)
+        if len(tail_history) > 6:
+            tail_history = tail_history[-6:]
+
+
 def analyze_operation_cost(event, adr: OASMAddress, assembler_seq, verbose: bool = False) -> int:
-    """Estimate execution cost for one logical event."""
+    """Estimate execution cost for one logical event.
+
+    .. deprecated::
+       Prefer analyze_batch_costs() for bulk analysis. This per-event
+       function is retained for backward compatibility and debugging.
+    """
     try:
         assembler_seq.clear()
         for call in event.oasm_calls:

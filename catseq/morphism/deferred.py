@@ -23,8 +23,11 @@ from ..types.common import (
     OperationType,
     State,
     TimingKind,
+    ChannelType,
 )
 from ..types.rwg import RWGUninitialized
+from ..types.rsp import RSPUninitialized
+from ..types.ttl import TTLState
 from .core import Morphism
 
 
@@ -68,9 +71,18 @@ class MorphismDef:
         *,
         application_breadcrumb: DebugBreadcrumb | None = None,
     ) -> Morphism:
+        def _default_start_state(channel: Channel) -> State:
+            if channel.channel_type == ChannelType.RWG:
+                return RWGUninitialized()
+            if channel.channel_type == ChannelType.RSP:
+                return RSPUninitialized()
+            if channel.channel_type == ChannelType.TTL:
+                return TTLState.OFF
+            raise ValueError(...)
+
         if isinstance(target, Channel):
             if start_state is None:
-                start_state = RWGUninitialized()
+                start_state = _default_start_state(target)
             return self._execute_on_channel(target, start_state)
 
         if not hasattr(target, "lanes"):

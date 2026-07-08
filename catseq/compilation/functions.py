@@ -256,6 +256,7 @@ def rsp_pid_release(config: RSPPIDConfig):
     
     R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", "reg")
 
+# TODO 这里的relink不能成立，分析原因
 def rsp_pid_relink(config: RSPPIDConfig):
     """
     重新连接PID回路，将RF输出设置为保持值。

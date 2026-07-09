@@ -73,35 +73,7 @@ if (Test-Path $activateScript) {
     exit 1
 }
 
-Write-Host "📋 Step 1/4: Installing oasm.dev to enable extension patching..." -ForegroundColor Yellow
-try {
-    uv pip install oasm.dev h5py scipy numpy
-    Write-Host "✅ oasm.dev and dependencies installed" -ForegroundColor Green
-} catch {
-    Write-Host "❌ Failed to install oasm.dev dependencies" -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "📋 Step 2/4: Installing sipyco from GitHub and locking version..." -ForegroundColor Yellow
-# Install from specific git commit hash for reproducible builds
-try {
-    uv pip install git+https://github.com/m-labs/sipyco@96fcefb
-    Write-Host "✅ sipyco installed from locked version" -ForegroundColor Green
-} catch {
-    Write-Host "❌ Failed to install sipyco from GitHub" -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "📋 Step 3/4: Running script to patch oasm.dev with extensions..." -ForegroundColor Yellow
-try {
-    python scripts/post_install.py
-    Write-Host "✅ oasm.dev extensions patched successfully" -ForegroundColor Green
-} catch {
-    Write-Host "❌ Failed to run post-install script" -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "📋 Step 4/4: Installing catseq and all dev dependencies..." -ForegroundColor Yellow
+Write-Host "📋 Installing CatSeq and all dev dependencies..." -ForegroundColor Yellow
 try {
     uv pip install -e .[dev]
     Write-Host "✅ CatSeq and development dependencies installed" -ForegroundColor Green

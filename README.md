@@ -103,18 +103,16 @@ uv pip install -e .[dev]
 To install CatSeq as a dependency from any directory:
 
 ```bash
-# Option 1: Direct installation (requires OASM.dev pre-installed)
-pip install oasm.dev h5py scipy numpy
+# Option 1: Direct installation
 pip install git+https://github.com/hirobumii/catseq.git
 
-# Option 2: Clone and install with environment auto-detection
+# Option 2: Clone and install
 git clone https://github.com/hirobumii/catseq.git
 cd catseq
-python scripts/post_install.py  # Automatically detects your environment
 pip install -e .
 ```
 
-The `post_install.py` script automatically detects your Python environment (virtualenv or system) and installs the required OASM extensions to the correct location.
+CatSeq depends on the lab-maintained OASM package from Gitea, which already includes the RTMQ and device modules used by CatSeq.
 
 ### Basic Usage
 

@@ -27,20 +27,7 @@ uv venv --python 3.12 --seed
 # Activate virtual environment
 source .venv/bin/activate
 
-echo "📋 Step 1/4: Installing oasm.dev to enable extension patching..."
-uv pip install oasm.dev h5py scipy numpy
-
-# --- NEW STEP ADDED HERE ---
-echo "📋 Step 2/4: Installing sipyco from GitHub and locking version..."
-# We install directly from a specific git commit hash to "lock" the version.
-# This ensures that everyone gets the exact same dependency, making builds reproducible.
-uv pip install git+https://github.com/m-labs/sipyco@96fcefb
-# --- END OF NEW STEP ---
-
-echo "📋 Step 3/4: Running script to patch oasm.dev with extensions..."
-python scripts/post_install.py
-
-echo "📋 Step 4/4: Installing catseq and all dev dependencies..."
+echo "📋 Installing CatSeq and all dev dependencies..."
 uv pip install -e .[dev]
 
 echo "✅ Development environment setup complete!"
@@ -66,4 +53,3 @@ echo "   ruff format .   # Format code"
 echo ""
 
 echo "🎯 Environment is ready for CatSeq development!"
-

@@ -2,6 +2,8 @@
 Unit tests for structural morphism provenance tracing.
 """
 
+from pathlib import Path
+
 import pytest
 
 from catseq import us
@@ -9,7 +11,7 @@ from catseq.atomic import rwg_load_coeffs, ttl_off, ttl_on
 from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.compilation.pipeline import LogicalEvent, validate_serial_load_constraints
 from catseq.compilation.types import OASMAddress, OASMCall, OASMFunction
-from catseq.debug import format_atomic_trace, label, trace_index
+from catseq.debug import capture_callsite, format_atomic_trace, label, trace_index
 from catseq.hardware import ttl
 from catseq.morphism import identity
 from catseq.types.common import Board, Channel, ChannelType, OperationType
@@ -45,6 +47,30 @@ def _extract_load_operations(morphism, channel: Channel):
         for op in morphism.lanes[channel].operations
         if op.operation_type == OperationType.RWG_LOAD_COEFFS
     ]
+
+
+def test_capture_callsite_reuses_source_path_resolution(tmp_path, monkeypatch):
+    source_path = tmp_path / "cached_callsite_probe.py"
+    source = "def probe():\n    return capture_callsite()\n"
+    source_path.write_text(source)
+    namespace = {"capture_callsite": capture_callsite}
+    exec(compile(source, str(source_path), "exec"), namespace)
+    original_resolve = Path.resolve
+    resolved_paths = []
+
+    def track_resolve(path, *args, **kwargs):
+        resolved_paths.append(path)
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", track_resolve)
+
+    first_frame = namespace["probe"]()
+    second_frame = namespace["probe"]()
+
+    assert first_frame == second_frame
+    assert first_frame is not None
+    assert first_frame.source_text == "return capture_callsite()"
+    assert len(resolved_paths) == 1
 
 
 def test_trace_distinguishes_different_composition_lines():

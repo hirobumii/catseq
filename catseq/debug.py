@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import inspect
 import linecache
+import os
+from functools import cache
 from itertools import count
 from pathlib import Path
 from types import FrameType
@@ -31,6 +33,18 @@ def _display_path(file_path: Path) -> str:
         return file_path.as_posix()
 
 
+@cache
+def _source_path_details(
+    filename: str,
+    working_directory: str | None,
+) -> tuple[Path, str]:
+    file_path = Path(filename)
+    if working_directory is not None:
+        file_path = Path(working_directory, file_path)
+    resolved_path = file_path.resolve()
+    return resolved_path, _display_path(resolved_path)
+
+
 def capture_callsite(stacklevel: int = 0) -> DebugFrame | None:
     """
     Capture the source frame `stacklevel` frames above the immediate caller.
@@ -47,10 +61,12 @@ def capture_callsite(stacklevel: int = 0) -> DebugFrame | None:
             target = target.f_back
         if target is None:
             return None
-        file_path = Path(target.f_code.co_filename).resolve()
+        filename = target.f_code.co_filename
+        working_directory = None if os.path.isabs(filename) else os.getcwd()
+        file_path, display_path = _source_path_details(filename, working_directory)
         source_text = linecache.getline(str(file_path), target.f_lineno).strip() or None
         return DebugFrame(
-            file_path=_display_path(file_path),
+            file_path=display_path,
             line_number=target.f_lineno,
             function_name=target.f_code.co_name,
             source_text=source_text,

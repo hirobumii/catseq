@@ -306,8 +306,7 @@ def analyze_batch_costs(
                 else:
                     assembler_seq(call.adr.value, func, *call.args)
         if adr.value in assembler_seq.asm.multi:
-            snap = disassembler(core=C_RWG)(assembler_seq.asm[adr.value])
-            cum_counts.append(len(snap))
+            cum_counts.append(len(assembler_seq.asm[adr.value]))
         else:
             cum_counts.append(0)
 

@@ -13,7 +13,6 @@ from catseq.compilation.pipeline import (
     identify_pipeline_pairs,
     schedule_and_optimize,
     validate_serial_load_constraints,
-    validate_rwg_load_play_ownership,
     validate_constraints,
 )
 from catseq.compilation.timing_analysis import estimate_oasm_cost
@@ -254,6 +253,30 @@ def test_pass1_and_pass2_rwg_load_coeffs_cost_analysis():
         f"Compiler cost ({load_event.cost_cycles}) != Golden standard cost ({expected_cost})"
 
     print("\n✅ Test successful: RWG_LOAD_COEFFS cost correctly calculated as exactly 14 cycles.")
+
+
+@pytest.mark.skipif(not OASM_AVAILABLE, reason="OASM library not installed")
+def test_batch_cost_analysis_disassembles_each_board_once(mocker):
+    board = Board("RWG0")
+    channel = Channel(board=board, local_id=0, channel_type=ChannelType.RWG)
+    target = StaticWaveform(sbg_id=1, freq=10.0, amp=0.5)
+    morphism = identity(3 * us) >> rwg.set_state([target])(
+        channel,
+        RWGReady(carrier_freq=100e6),
+    )
+    intf = sim_intf()
+    intf.nod_adr = 0
+    intf.loc_chn = 1
+    test_seq = assembler(run_cfg(intf, [0, 1]), [("rwg0", C_RWG)])
+    disassemble = mocker.patch(
+        "catseq.compilation.timing_analysis.disassembler",
+        wraps=disassembler,
+    )
+
+    events_by_board = extract_and_translate(morphism)
+    analyze_costs_and_epochs(events_by_board, test_seq)
+
+    assert disassemble.call_count == 1
 
 
 @pytest.mark.skipif(not OASM_AVAILABLE, reason="OASM library not installed")

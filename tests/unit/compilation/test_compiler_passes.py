@@ -559,11 +559,20 @@ def test_pass4_multiple_events_timing():
         print(f"    {i+1}: {call.adr.value} -> {call.dsl_func.name} {call.args}")
     
     # Verify the call sequence structure
-    assert len(oasm_calls) == 4, f"Expected 4 calls (WAIT, LOAD, WAIT, PLAY), got {len(oasm_calls)}"
+    assert len(oasm_calls) == 5, (
+        "Expected 5 calls (WAIT, LOAD, WAIT, PLAY, terminal WAIT), "
+        f"got {len(oasm_calls)}"
+    )
 
-    # Expected sequence: WAIT -> LOAD -> WAIT -> PLAY
+    # Expected sequence: WAIT -> LOAD -> WAIT -> PLAY -> terminal WAIT
     call_types = [call.dsl_func for call in oasm_calls]
-    assert call_types == [OASMFunction.WAIT, OASMFunction.RWG_LOAD_WAVEFORM, OASMFunction.WAIT, OASMFunction.RWG_PLAY]
+    assert call_types == [
+        OASMFunction.WAIT,
+        OASMFunction.RWG_LOAD_WAVEFORM,
+        OASMFunction.WAIT,
+        OASMFunction.RWG_PLAY,
+        OASMFunction.WAIT,
+    ]
 
     # Verify the wait time. The first wait should be 5μs (1250 cycles) as originally specified.
     wait_cycles = oasm_calls[0].args[0]

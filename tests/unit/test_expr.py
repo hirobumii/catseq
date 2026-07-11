@@ -3,7 +3,13 @@ import pytest
 from catseq import us
 from catseq.atomic import ttl_on
 from catseq.compilation.compiler import compile_to_oasm_calls
-from catseq.expr import Expr, input_state, realize_morphism, resolve_value, var
+from catseq.expr import (
+    Expr,
+    contains_expr,
+    realize_morphism,
+    resolve_value,
+    var,
+)
 from catseq.hardware import hold, rwg
 from catseq.morphism import identity
 from catseq.types.common import Board, Channel, ChannelType, OperationType, TimingKind
@@ -55,6 +61,17 @@ def test_expr_resolve_nested_containers():
         "a": (4, 8),
         "b": [12, 5],
     }
+
+
+def test_contains_expr_handles_a_cyclic_container_per_call():
+    value = []
+    value.append(value)
+
+    assert contains_expr(value) is False
+
+    value.append(var("x"))
+
+    assert contains_expr(value) is True
 
 
 def test_symbolic_identity_duration_survives_in_source_morphism():

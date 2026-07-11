@@ -11,16 +11,29 @@ from .core import Expr
 
 
 def contains_expr(value: object) -> bool:
+    return _contains_expr(value, set())
+
+
+def _contains_expr(value: object, seen: set[int]) -> bool:
     if isinstance(value, Expr):
         return True
-    if isinstance(value, tuple):
-        return any(contains_expr(item) for item in value)
-    if isinstance(value, list):
-        return any(contains_expr(item) for item in value)
+
+    if not isinstance(value, (tuple, list, dict)) and not is_dataclass(value):
+        return False
+
+    value_id = id(value)
+    if value_id in seen:
+        return False
+    seen.add(value_id)
+
+    if isinstance(value, (tuple, list)):
+        return any(_contains_expr(item, seen) for item in value)
     if isinstance(value, dict):
-        return any(contains_expr(item) for item in value.values())
+        return any(_contains_expr(item, seen) for item in value.values())
     if is_dataclass(value):
-        return any(contains_expr(getattr(value, field.name)) for field in fields(value))
+        return any(
+            _contains_expr(getattr(value, field.name), seen) for field in fields(value)
+        )
     return False
 
 

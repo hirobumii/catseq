@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from typing import Dict
 
 from ..debug import (
-    annotate_morphism,
     auto_generated_breadcrumb,
     compose_breadcrumb,
     dict_apply_breadcrumb,
@@ -104,7 +103,6 @@ class Morphism:
 
         if isinstance(other, Morphism) and not other.lanes and not structurally_equal(other.total_duration_expr, 0):
             compose_id = next_compose_id()
-            lhs_breadcrumb = compose_breadcrumb("serial", "lhs", compose_id, stacklevel=1)
             rhs_breadcrumb = compose_breadcrumb("serial", "rhs", compose_id, stacklevel=1)
             if not self.lanes:
                 if isinstance(self.total_duration_expr, Expr) or isinstance(other.total_duration_expr, Expr):
@@ -112,8 +110,7 @@ class Morphism:
                 return self if self.total_duration_cycles >= other.total_duration_cycles else other
 
             new_lanes = {}
-            lhs = annotate_morphism(self, (lhs_breadcrumb,))
-            for channel, lane in lhs.lanes.items():
+            for channel, lane in self.lanes.items():
                 inferred_state = lane.effective_end_state
                 if inferred_state is None and lane.initial_state is not None:
                     inferred_state = lane.initial_state
@@ -148,12 +145,8 @@ class Morphism:
 
         if isinstance(other, MorphismDef):
             compose_id = next_compose_id()
-            lhs = annotate_morphism(
-                self,
-                (compose_breadcrumb("serial", "lhs", compose_id, stacklevel=1),),
-            )
             return other(
-                lhs,
+                self,
                 application_breadcrumb=compose_breadcrumb(
                     "serial",
                     "rhs",
@@ -170,11 +163,7 @@ class Morphism:
             if not other:
                 return self
             compose_id = next_compose_id()
-            lhs = annotate_morphism(
-                self,
-                (compose_breadcrumb("serial", "lhs", compose_id, stacklevel=1),),
-            )
-            return lhs._apply_channel_operations(
+            return self._apply_channel_operations(
                 other,
                 {
                     channel: (

@@ -740,6 +740,7 @@ class Morphism:
         ]
         | None = None,
     ) -> Morphism:
+        # Delayed to break core -> deferred -> core during module initialization.
         from .deferred import MorphismDef, _record_deferred_operations
 
         return _record_deferred_operations(

@@ -23,20 +23,11 @@ from oasm.dev.rwg import C_RWG
 
 def extract_channel_states_from_morphism(morphism: Morphism) -> dict[Channel, tuple[State, State]]:
     """Extract start and end states for each channel from a Morphism"""
-    channel_states = {}
-
-    for channel, lane in morphism.lanes.items():
-        if lane.operations:
-            # Get the first and last operation states
-            first_op = lane.operations[0]
-            last_op = lane.operations[-1]
-
-            start_state = first_op.start_state
-            end_state = last_op.end_state
-
-            channel_states[channel] = (start_state, end_state)
-
-    return channel_states
+    return {
+        channel: (morphism.initial_state(channel), end_state)
+        for channel in morphism.channels
+        if (end_state := morphism.end_state(channel)) is not None
+    }
 
 
 def compile_morphism_to_board_funcs(
@@ -54,14 +45,15 @@ def compile_morphism_to_board_funcs(
         Dictionary mapping each board to its precompiled executor function
     """
     # Decompose morphism by board
-    lanes_by_board = morphism.lanes_by_board()
+    channels_by_board: dict[Board, list[Channel]] = {}
+    for channel in morphism.channels:
+        channels_by_board.setdefault(channel.board, []).append(channel)
 
     # Create executor function for each board
     board_funcs = {}
 
-    for board, board_lanes in lanes_by_board.items():
-        # Repackage as single-board Morphism
-        sub_morphism = Morphism(lanes=board_lanes)
+    for board, board_channels in channels_by_board.items():
+        sub_morphism = morphism.select_channels(tuple(board_channels))
 
         # Precompile to OASM calls
         precompiled_calls = compile_to_oasm_calls(sub_morphism, assembler_seq)

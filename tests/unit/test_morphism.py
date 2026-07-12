@@ -1,14 +1,11 @@
 import pytest
+from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.morphism import Morphism
-from catseq.lanes import Lane
-from catseq.time_utils import us_to_cycles
 from catseq.types.common import (
-    AtomicMorphism,
     Board,
     Channel,
     ChannelType,
     OperationType,
-    State,
 )
 from catseq.types.ttl import TTLState
 from catseq.types.rwg import RWGActive, StaticWaveform
@@ -127,38 +124,18 @@ def test_complex_composition_scenario_as_specified_by_user():
     # Expected ops: 3 + 1 + 3 = 7
     assert len(m_final.lanes[CH1].operations) == 7
 
-def test_strict_composition_raises_error_on_state_mismatch(mocker):
+def test_strict_composition_defers_state_mismatch_until_compile():
     """
-    Tests that the @ operator raises a ValueError when the end state of the
-    first morphism does not match the start state of the second one.
-    Uses pytest-mock to isolate the composition logic.
+    Strict composition retains its DAG so the compiler can report its node.
     """
     # Arrange
-    # We use real dataclasses for Morphism and Lane, but mock the
-    # AtomicMorphism inside to control the states precisely.
+    m1 = ttl.on()(CH0, start_state=TTLState.OFF)
+    m2 = ttl.on()(CH0, start_state=TTLState.OFF)
 
-    # Morphism 1, ending in state ON
-    mock_op1 = mocker.Mock(spec=AtomicMorphism)
-    mock_op1.operation_type = OperationType.TTL_ON
-    mock_op1.end_state = TTLState.ON
-    mock_op1.duration_cycles = 1
-    # The __post_init__ of Morphism requires lanes to have equal duration.
-    # We create a Lane with a mocked operation, so we must patch the
-    # lane's duration to return a consistent value.
-    lane1 = Lane(operations=(mock_op1,))
-    m1 = Morphism(lanes={CH0: lane1})
+    composed = m1 @ m2
 
-    # Morphism 2, starting in state OFF (which is a mismatch)
-    mock_op2 = mocker.Mock(spec=AtomicMorphism)
-    mock_op2.operation_type = OperationType.TTL_ON  # Type doesn't matter
-    mock_op2.start_state = TTLState.OFF
-    mock_op2.duration_cycles = 1
-    lane2 = Lane(operations=(mock_op2,))
-    m2 = Morphism(lanes={CH0: lane2})
-
-    # Act & Assert
-    with pytest.raises(ValueError, match="State mismatch for channel"):
-        _ = m1 @ m2
+    with pytest.raises(ValueError, match="arena node"):
+        compile_to_oasm_calls(composed)
 
 def test_morphism_sequence_state_propagation():
     """

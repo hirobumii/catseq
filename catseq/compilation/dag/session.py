@@ -7,10 +7,20 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Mapping
 
+from ...debug import annotate_atomic
 from ...expr import Expr
 from ...expr.realize import _realize_atomic
-from ...morphism.arena import ArenaProgram, NodeKind
-from ...types.common import AtomicMorphism, Channel, OperationType, State, TimingKind
+from ...morphism.arena import ArenaOperation, ArenaProgram, NodeKind
+from ...types.common import (
+    AtomicMorphism,
+    Channel,
+    DebugBreadcrumb,
+    OperationType,
+    State,
+    TIMING_CRITICAL_OPERATIONS,
+    TimingKind,
+    TimedRegion,
+)
 from ..pipeline import (
     LogicalEvent,
     _collapse_board_scoped_blackboxes,
@@ -39,14 +49,14 @@ class _DagEvent:
     event_id: int
     source_node_id: int
     timestamp_cycles: int
-    operation: AtomicMorphism
+    operation: ArenaOperation
 
 
 @dataclass(frozen=True, slots=True)
 class _Fragment:
     duration_cycles: int
     states: Mapping[Channel, _BoundaryState]
-    operation: AtomicMorphism | None = None
+    operation: ArenaOperation | None = None
 
 
 def _resolve_duration(value: object, bindings: Mapping[str, object]) -> int:
@@ -60,7 +70,7 @@ def _resolve_duration(value: object, bindings: Mapping[str, object]) -> int:
 
 def _atomic_fragment(
     node_id: int,
-    operation: AtomicMorphism,
+    operation: ArenaOperation,
     bindings: Mapping[str, object],
 ) -> _Fragment:
     concrete = _realize_atomic(operation, bindings)
@@ -147,25 +157,22 @@ def _evaluate(
     program: ArenaProgram,
     bindings: Mapping[str, object],
     reachable_nodes: frozenset[int],
-    cached: tuple[_Fragment | None, ...] | None = None,
+    cached: Mapping[int, _Fragment] | None = None,
     dirty_nodes: frozenset[int] | None = None,
-) -> tuple[_Fragment, tuple[_Fragment | None, ...]]:
-    fragments: list[_Fragment | None] = (
-        [None] * len(program.kinds) if cached is None else list(cached)
-    )
+) -> tuple[_Fragment, dict[int, _Fragment]]:
+    fragments = {} if cached is None else dict(cached)
     dirty = (
         frozenset(range(len(program.kinds)))
         if dirty_nodes is None
         else dirty_nodes
     )
-    for node_id, kind in enumerate(program.kinds):
-        if node_id not in reachable_nodes:
-            continue
-        if node_id not in dirty and fragments[node_id] is not None:
+    for node_id in sorted(reachable_nodes):
+        kind = program.kinds[node_id]
+        if node_id not in dirty and node_id in fragments:
             continue
         if kind == NodeKind.ATOMIC:
             operation = program.payload[node_id]
-            if not isinstance(operation, AtomicMorphism):
+            if not isinstance(operation, (AtomicMorphism, TimedRegion)):
                 raise TypeError(f"Atomic node {node_id} has invalid payload")
             fragment = _atomic_fragment(node_id, operation, bindings)
         elif kind == NodeKind.WAIT:
@@ -174,8 +181,8 @@ def _evaluate(
                 {},
             )
         elif kind in {NodeKind.AUTO_SERIAL, NodeKind.STRICT_SERIAL}:
-            left = fragments[program.left[node_id]]
-            right = fragments[program.right[node_id]]
+            left = fragments.get(program.left[node_id])
+            right = fragments.get(program.right[node_id])
             if left is None or right is None:
                 raise AssertionError("Serial child was not evaluated")
             fragment = _serial_fragment(
@@ -185,21 +192,26 @@ def _evaluate(
                 strict=kind == NodeKind.STRICT_SERIAL,
             )
         elif kind == NodeKind.PARALLEL:
-            left = fragments[program.left[node_id]]
-            right = fragments[program.right[node_id]]
+            left = fragments.get(program.left[node_id])
+            right = fragments.get(program.right[node_id])
             if left is None or right is None:
                 raise AssertionError("Parallel child was not evaluated")
             fragment = _parallel_fragment(
                 left,
                 right,
             )
+        elif kind == NodeKind.ANNOTATE:
+            child = fragments.get(program.left[node_id])
+            if child is None:
+                raise AssertionError("Annotated child was not evaluated")
+            fragment = child
         else:
             raise TypeError(f"Unsupported arena node kind {kind}")
         fragments[node_id] = fragment
-    root = fragments[program.root]
+    root = fragments.get(program.root)
     if root is None:
         raise AssertionError("Arena root was not evaluated")
-    return root, tuple(fragments)
+    return root, fragments
 
 
 def _parameter_names(value: object, seen: set[int]) -> set[str]:
@@ -230,9 +242,13 @@ def _parameter_names(value: object, seen: set[int]) -> set[str]:
     return set()
 
 
-def _node_dependencies(program: ArenaProgram) -> tuple[frozenset[str], ...]:
-    result: list[frozenset[str]] = []
-    for node_id, payload in enumerate(program.payload):
+def _node_dependencies(
+    program: ArenaProgram,
+    reachable_nodes: frozenset[int],
+) -> dict[int, frozenset[str]]:
+    result: dict[int, frozenset[str]] = {}
+    for node_id in sorted(reachable_nodes):
+        payload = program.payload[node_id]
         dependencies = _parameter_names(payload, set())
         left = program.left[node_id]
         right = program.right[node_id]
@@ -240,8 +256,8 @@ def _node_dependencies(program: ArenaProgram) -> tuple[frozenset[str], ...]:
             dependencies.update(result[left])
         if right >= 0:
             dependencies.update(result[right])
-        result.append(frozenset(dependencies))
-    return tuple(result)
+        result[node_id] = frozenset(dependencies)
+    return result
 
 
 def _reachable_nodes(program: ArenaProgram) -> frozenset[int]:
@@ -263,25 +279,28 @@ def _reachable_nodes(program: ArenaProgram) -> frozenset[int]:
 
 def _timeline_events(
     program: ArenaProgram,
-    fragments: tuple[_Fragment | None, ...],
+    fragments: Mapping[int, _Fragment],
 ) -> tuple[_DagEvent, ...]:
     result: list[_DagEvent] = []
-    stack = [(program.root, 0)]
+    stack: list[tuple[int, int, tuple[DebugBreadcrumb, ...]]] = [
+        (program.root, 0, ())
+    ]
     while stack:
-        node_id, timestamp = stack.pop()
+        node_id, timestamp, breadcrumbs = stack.pop()
         kind = program.kinds[node_id]
-        fragment = fragments[node_id]
+        fragment = fragments.get(node_id)
         if fragment is None:
             raise AssertionError(f"Node {node_id} has no compiled fragment")
         if kind == NodeKind.ATOMIC:
             operation = fragment.operation
             if operation is not None:
+                annotated = annotate_atomic(operation, breadcrumbs)
                 result.append(
                     _DagEvent(
                         event_id=len(result),
                         source_node_id=node_id,
                         timestamp_cycles=timestamp,
-                        operation=operation,
+                        operation=annotated,
                     )
                 )
             continue
@@ -290,15 +309,41 @@ def _timeline_events(
         left = program.left[node_id]
         right = program.right[node_id]
         if kind in {NodeKind.AUTO_SERIAL, NodeKind.STRICT_SERIAL}:
-            left_fragment = fragments[left]
+            left_fragment = fragments.get(left)
             if left_fragment is None:
                 raise AssertionError(f"Node {left} has no compiled fragment")
-            stack.append((right, timestamp + left_fragment.duration_cycles))
-            stack.append((left, timestamp))
+            right_breadcrumb = program.payload[node_id]
+            right_breadcrumbs = breadcrumbs
+            if isinstance(right_breadcrumb, DebugBreadcrumb):
+                right_breadcrumbs = (right_breadcrumb,) + breadcrumbs
+            stack.append(
+                (
+                    right,
+                    timestamp + left_fragment.duration_cycles,
+                    right_breadcrumbs,
+                )
+            )
+            stack.append((left, timestamp, breadcrumbs))
             continue
         if kind == NodeKind.PARALLEL:
-            stack.append((right, timestamp))
-            stack.append((left, timestamp))
+            right_breadcrumb = program.payload[node_id]
+            right_breadcrumbs = breadcrumbs
+            if isinstance(right_breadcrumb, DebugBreadcrumb):
+                right_breadcrumbs = (right_breadcrumb,) + breadcrumbs
+            stack.append((right, timestamp, right_breadcrumbs))
+            stack.append((left, timestamp, breadcrumbs))
+            continue
+        if kind == NodeKind.ANNOTATE:
+            node_breadcrumbs = program.payload[node_id]
+            if not isinstance(node_breadcrumbs, tuple):
+                raise TypeError(f"Annotate node {node_id} has invalid payload")
+            stack.append(
+                (
+                    program.left[node_id],
+                    timestamp,
+                    node_breadcrumbs + breadcrumbs,
+                )
+            )
             continue
         raise TypeError(f"Unsupported arena node kind {kind}")
     return tuple(result)
@@ -307,7 +352,7 @@ def _timeline_events(
 def _events_by_board(
     program: ArenaProgram,
     fragment: _Fragment,
-    fragments: tuple[_Fragment | None, ...],
+    fragments: Mapping[int, _Fragment],
 ) -> tuple[
     dict[OASMAddress, list[LogicalEvent]],
     dict[OASMAddress, frozenset[int]],
@@ -322,12 +367,9 @@ def _events_by_board(
                 f"Atomic arena node {event.source_node_id} has no channel"
             )
         try:
-            address = OASMAddress(channel.board.id.lower())
-        except ValueError as error:
-            raise ValueError(
-                f"Unknown OASM board {channel.board.id!r} at arena node "
-                f"{event.source_node_id}"
-            ) from error
+            address = OASMAddress(channel.board.id.lower().replace("_", ""))
+        except ValueError:
+            address = OASMAddress.RWG0
         representative_by_board.setdefault(address, channel)
         result.setdefault(address, [])
         source_nodes_by_board.setdefault(address, set()).add(event.source_node_id)
@@ -336,7 +378,10 @@ def _events_by_board(
                 LogicalEvent(
                     timestamp_cycles=event.timestamp_cycles,
                     operation=event.operation,
-                    is_critical=True,
+                    is_critical=(
+                        event.operation.operation_type
+                        in TIMING_CRITICAL_OPERATIONS
+                    ),
                 )
             )
 
@@ -451,8 +496,8 @@ class CompilerSession:
         self._verbose = verbose
         self._bindings: dict[str, object] = {}
         self._board_signatures: dict[OASMAddress, tuple[object, ...]] = {}
-        self._dependencies = _node_dependencies(program)
         self._reachable_nodes = _reachable_nodes(program)
+        self._dependencies = _node_dependencies(program, self._reachable_nodes)
         reverse: dict[str, set[int]] = {}
         for node_id in self._reachable_nodes:
             parameters = self._dependencies[node_id]
@@ -461,9 +506,7 @@ class CompilerSession:
         self._reverse_parameters = {
             parameter: frozenset(nodes) for parameter, nodes in reverse.items()
         }
-        self._fragments: tuple[_Fragment | None, ...] = tuple(
-            None for _ in program.kinds
-        )
+        self._fragments: dict[int, _Fragment] = {}
         self._last_calls: dict[OASMAddress, tuple] = {}
         self._revision = 0
 

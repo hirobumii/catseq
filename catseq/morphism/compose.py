@@ -1,15 +1,98 @@
-"""
-Morphism composition algorithms.
-"""
+"""Structure-preserving Morphism composition over append-only arenas."""
 
 from __future__ import annotations
 
+from ..debug import auto_generated_breadcrumb
 from ..expr import Expr, structurally_equal
-from ..debug import annotate_morphism, auto_generated_breadcrumb
-from ..lanes import Lane
-from ..types.common import AtomicMorphism, DebugBreadcrumb, OperationType, TimingKind
+from ..types.common import (
+    AtomicMorphism,
+    Channel,
+    DebugBreadcrumb,
+    OperationType,
+    TimingKind,
+)
 from ..types.ttl import TTLState
-from .core import Morphism
+from .core import Morphism, _LaneRef, _concatenate_lane_duration
+
+
+def _max_duration(left: int | Expr, right: int | Expr) -> int | Expr:
+    if structurally_equal(left, right):
+        return left
+    if isinstance(left, Expr) or isinstance(right, Expr):
+        raise TypeError(
+            "Parallel composition requires concrete or structurally equal durations. "
+            "Realize symbolic durations first."
+        )
+    return max(left, right)
+
+
+def _combine_refs(
+    arena,
+    left: _LaneRef,
+    right: _LaneRef,
+    *,
+    strict: bool,
+    right_breadcrumb: DebugBreadcrumb | None,
+) -> _LaneRef:
+    if left.root is None:
+        return right
+    if right.root is None:
+        return left
+    root = arena.serial(
+        left.root,
+        right.root,
+        strict=strict,
+        right_breadcrumb=right_breadcrumb,
+    )
+    return _LaneRef(
+        root=root,
+        duration=_concatenate_lane_duration(arena, left.duration, right),
+        initial_state=left.initial_state,
+        end_state=right.end_state,
+        effective_start_state=(
+            left.effective_start_state
+            if left.has_effective
+            else right.effective_start_state
+        ),
+        effective_end_state=(
+            right.effective_end_state
+            if right.has_effective
+            else left.effective_end_state
+        ),
+        has_effective=left.has_effective or right.has_effective,
+    )
+
+
+def _identity_ref(
+    morphism: Morphism,
+    channel: Channel,
+    state: object,
+    duration: int | Expr,
+    *,
+    breadcrumb: DebugBreadcrumb | None = None,
+    reason: str,
+) -> _LaneRef:
+    trace: tuple[DebugBreadcrumb, ...] = (auto_generated_breadcrumb(reason),)
+    if breadcrumb is not None:
+        trace += (breadcrumb,)
+    operation = AtomicMorphism(
+        channel=channel,
+        start_state=state,
+        end_state=state,
+        duration_cycles=duration,
+        operation_type=OperationType.IDENTITY,
+        timing_kind=TimingKind.DELAY,
+        debug_trace=trace,
+    )
+    return _LaneRef(
+        root=morphism._arena.atomic(operation),
+        duration=duration,
+        initial_state=state,
+        end_state=state,
+        effective_start_state=state,
+        effective_end_state=state,
+        has_effective=False,
+    )
 
 
 def strict_compose_morphisms(
@@ -19,69 +102,55 @@ def strict_compose_morphisms(
     lhs_breadcrumb: DebugBreadcrumb | None = None,
     rhs_breadcrumb: DebugBreadcrumb | None = None,
 ) -> Morphism:
-    """严格状态匹配组合 (@)"""
-    if rhs_breadcrumb is not None:
-        second = annotate_morphism(second, (rhs_breadcrumb,))
-
-    first_end_states = {}
-    for channel, lane in first.lanes.items():
-        if lane.operations and lane.operations[-1].operation_type != OperationType.IDENTITY:
-            first_end_states[channel] = lane.end_state
-
-    second_start_states = {}
-    for channel, lane in second.lanes.items():
-        if lane.operations and lane.operations[0].operation_type != OperationType.IDENTITY:
-            second_start_states[channel] = lane.initial_state
-
-    for channel in first_end_states:
-        if channel in second_start_states and first_end_states[channel] != second_start_states[channel]:
-            raise ValueError(
-                f"State mismatch for channel {channel}: "
-                f"{first_end_states[channel]} → {second_start_states[channel]}"
-            )
-
-    result_lanes = {}
-    all_channels = set(first.lanes.keys()) | set(second.lanes.keys())
-
-    for channel in all_channels:
-        first_ops = first.lanes.get(channel, Lane(())).operations
-        second_ops = second.lanes.get(channel, Lane(())).operations
-
-        if channel not in first.lanes:
-            duration = first.total_duration_expr
-            identity_op = AtomicMorphism(
+    """Record strict serial composition; state continuity is a compiler pass."""
+    second_root, second_refs = second._import_into(first._arena)
+    root = first._arena.serial(
+        first._root,
+        second_root,
+        strict=True,
+        right_breadcrumb=rhs_breadcrumb,
+    )
+    result_refs: dict[Channel, _LaneRef] = {}
+    for channel in first._lane_refs.keys() | second_refs.keys():
+        left = first._lane_refs.get(channel)
+        right = second_refs.get(channel)
+        if left is None and right is not None:
+            left = _identity_ref(
+                first,
                 channel,
-                second_start_states[channel],
-                second_start_states[channel],
-                duration,
-                OperationType.IDENTITY,
-                timing_kind=TimingKind.DELAY,
-                debug_trace=(
-                    auto_generated_breadcrumb("strict_compose_missing_lhs_channel"),
-                )
-                + ((lhs_breadcrumb,) if lhs_breadcrumb is not None else ()),
+                right.effective_start_state,
+                first.total_duration_expr,
+                breadcrumb=lhs_breadcrumb,
+                reason="strict_compose_missing_lhs_channel",
             )
-            first_ops = (identity_op,)
-
-        if channel not in second.lanes:
-            duration = second.total_duration_expr
-            identity_op = AtomicMorphism(
+        if right is None and left is not None:
+            right = _identity_ref(
+                first,
                 channel,
-                first_end_states[channel],
-                first_end_states[channel],
-                duration,
-                OperationType.IDENTITY,
-                timing_kind=TimingKind.DELAY,
-                debug_trace=(
-                    auto_generated_breadcrumb("strict_compose_missing_rhs_channel"),
-                )
-                + ((rhs_breadcrumb,) if rhs_breadcrumb is not None else ()),
+                left.effective_end_state,
+                second.total_duration_expr,
+                reason="strict_compose_missing_rhs_channel",
             )
-            second_ops = (identity_op,)
-
-        result_lanes[channel] = Lane(first_ops + second_ops)
-
-    return Morphism(result_lanes)
+        if left is None or right is None:
+            raise AssertionError("Strict composition lost a channel")
+        result_refs[channel] = _combine_refs(
+            first._arena,
+            left,
+            right,
+            strict=True,
+            right_breadcrumb=rhs_breadcrumb,
+        )
+    result_duration = (
+        next(iter(result_refs.values())).duration
+        if result_refs
+        else first.total_duration_expr + second.total_duration_expr
+    )
+    return Morphism._from_parts(
+        first._arena,
+        root,
+        result_refs,
+        result_duration,
+    )
 
 
 def auto_compose_morphisms(
@@ -91,80 +160,81 @@ def auto_compose_morphisms(
     lhs_breadcrumb: DebugBreadcrumb | None = None,
     rhs_breadcrumb: DebugBreadcrumb | None = None,
 ) -> Morphism:
-    """自动状态推断组合 (>>)"""
-    if rhs_breadcrumb is not None:
-        second = annotate_morphism(second, (rhs_breadcrumb,))
-    if not second.lanes:
+    """Record automatic serial composition and update channel summaries."""
+    if not second._lane_refs and structurally_equal(second.total_duration_expr, 0):
         return first
+    second_root, second_refs = second._import_into(first._arena)
 
-    first_end_states = {}
-    for channel, lane in first.lanes.items():
-        if lane.effective_end_state is not None:
-            first_end_states[channel] = lane.effective_end_state
-        elif lane.initial_state is not None:
-            first_end_states[channel] = lane.initial_state
+    if not first._lane_refs and not second_refs:
+        duration = _max_duration(
+            first.total_duration_expr,
+            second.total_duration_expr,
+        )
+        root = first._arena.parallel(first._root, second_root)
+        return Morphism._from_parts(first._arena, root, {}, duration)
 
-    result_lanes = {}
-    all_channels = set(first.lanes.keys()) | set(second.lanes.keys())
-
-    for channel in all_channels:
-        first_ops = first.lanes.get(channel, Lane(())).operations
-        second_ops = second.lanes.get(channel, Lane(())).operations
-
-        if channel not in first.lanes and channel in second.lanes:
-            first_state = second.lanes[channel].operations[0].start_state
-            duration = first.total_duration_expr
-            identity_op = AtomicMorphism(
+    root = first._arena.serial(
+        first._root,
+        second_root,
+        right_breadcrumb=rhs_breadcrumb,
+    )
+    result_refs: dict[Channel, _LaneRef] = {}
+    for channel in first._lane_refs.keys() | second_refs.keys():
+        left = first._lane_refs.get(channel)
+        right = second_refs.get(channel)
+        if left is None and right is not None:
+            left = _identity_ref(
+                first,
                 channel,
-                first_state,
-                first_state,
-                duration,
-                OperationType.IDENTITY,
-                timing_kind=TimingKind.DELAY,
-                debug_trace=(
-                    auto_generated_breadcrumb("auto_compose_missing_lhs_channel"),
-                )
-                + ((lhs_breadcrumb,) if lhs_breadcrumb is not None else ()),
+                right.effective_start_state,
+                first.total_duration_expr,
+                breadcrumb=lhs_breadcrumb,
+                reason="auto_compose_missing_lhs_channel",
             )
-            first_ops = (identity_op,)
-        elif channel not in second.lanes and channel in first.lanes:
-            end_state = first_end_states[channel]
-            duration = second.total_duration_expr
-            identity_op = AtomicMorphism(
+        if right is None and left is not None:
+            right = _identity_ref(
+                first,
                 channel,
-                end_state,
-                end_state,
-                duration,
-                OperationType.IDENTITY,
-                timing_kind=TimingKind.DELAY,
-                debug_trace=(
-                    auto_generated_breadcrumb("auto_compose_missing_rhs_channel"),
-                )
-                + ((rhs_breadcrumb,) if rhs_breadcrumb is not None else ()),
+                left.effective_end_state,
+                second.total_duration_expr,
+                reason="auto_compose_missing_rhs_channel",
             )
-            second_ops = (identity_op,)
+        if left is None or right is None:
+            raise AssertionError("Automatic composition lost a channel")
 
-        new_second_ops = []
-        ops_iterator = iter(second_ops)
-        for op in ops_iterator:
-            if op.operation_type == OperationType.IDENTITY:
-                inferred_state = first_end_states.get(channel, TTLState.OFF)
-                new_second_ops.append(
-                    op.with_channel_and_states(
-                        op.channel if op.channel is not None else channel,
-                        inferred_state,
-                        inferred_state,
-                    )
+        if not right.has_effective:
+            inferred_state = left.effective_end_state
+            if inferred_state is None:
+                inferred_state = left.initial_state
+            if inferred_state is None:
+                inferred_state = TTLState.OFF
+            if (
+                right.initial_state != inferred_state
+                or right.end_state != inferred_state
+            ):
+                right = _identity_ref(
+                    first,
+                    channel,
+                    inferred_state,
+                    right.duration,
+                    reason="auto_identity_state_inference",
                 )
-            else:
-                new_second_ops.append(op)
-                new_second_ops.extend(ops_iterator)
-                break
-        second_ops = tuple(new_second_ops)
 
-        result_lanes[channel] = Lane(first_ops + second_ops)
+        result_refs[channel] = _combine_refs(
+            first._arena,
+            left,
+            right,
+            strict=False,
+            right_breadcrumb=rhs_breadcrumb,
+        )
 
-    return Morphism(result_lanes)
+    result_duration = next(iter(result_refs.values())).duration
+    return Morphism._from_parts(
+        first._arena,
+        root,
+        result_refs,
+        result_duration,
+    )
 
 
 def parallel_compose_morphisms(
@@ -174,74 +244,65 @@ def parallel_compose_morphisms(
     lhs_breadcrumb: DebugBreadcrumb | None = None,
     rhs_breadcrumb: DebugBreadcrumb | None = None,
 ) -> Morphism:
-    """并行组合操作 (|)"""
-    if rhs_breadcrumb is not None:
-        right = annotate_morphism(right, (rhs_breadcrumb,))
+    """Record parallel composition and pad only the compatibility lane summary."""
+    overlapping = left._lane_refs.keys() & right._lane_refs.keys()
+    if overlapping:
+        names = [channel.global_id for channel in overlapping]
+        raise ValueError(f"Cannot compose: overlapping channels {names}")
+    right_root, right_refs = right._import_into(left._arena)
+    root = left._arena.parallel(
+        left._root,
+        right_root,
+        right_breadcrumb=rhs_breadcrumb,
+    )
+    duration = _max_duration(left.total_duration_expr, right.total_duration_expr)
+    left_refs = dict(left._lane_refs)
 
-    overlapping_channels = set(left.lanes.keys()) & set(right.lanes.keys())
-    if overlapping_channels:
-        channel_names = [ch.global_id for ch in overlapping_channels]
-        raise ValueError(f"Cannot compose: overlapping channels {channel_names}")
+    if not structurally_equal(left.total_duration_expr, duration):
+        if isinstance(duration, Expr):
+            raise TypeError("Parallel padding requires a concrete target duration.")
+        padding = duration - left.total_duration_cycles
+        for channel, lane_ref in tuple(left_refs.items()):
+            identity = _identity_ref(
+                left,
+                channel,
+                lane_ref.effective_end_state,
+                padding,
+                breadcrumb=lhs_breadcrumb,
+                reason="parallel_padding",
+            )
+            left_refs[channel] = _combine_refs(
+                left._arena,
+                lane_ref,
+                identity,
+                strict=False,
+                right_breadcrumb=None,
+            )
 
-    left_duration = left.total_duration_expr
-    right_duration = right.total_duration_expr
+    if not structurally_equal(right.total_duration_expr, duration):
+        if isinstance(duration, Expr):
+            raise TypeError("Parallel padding requires a concrete target duration.")
+        padding = duration - right.total_duration_cycles
+        for channel, lane_ref in tuple(right_refs.items()):
+            identity = _identity_ref(
+                left,
+                channel,
+                lane_ref.effective_end_state,
+                padding,
+                breadcrumb=rhs_breadcrumb,
+                reason="parallel_padding",
+            )
+            right_refs[channel] = _combine_refs(
+                left._arena,
+                lane_ref,
+                identity,
+                strict=False,
+                right_breadcrumb=None,
+            )
 
-    if structurally_equal(left_duration, right_duration):
-        return Morphism({**left.lanes, **right.lanes})
-
-    if isinstance(left_duration, Expr) or isinstance(right_duration, Expr):
-        raise TypeError(
-            "Parallel composition requires concrete or structurally equal durations. "
-            "Realize symbolic durations first."
-        )
-
-    if left_duration < right_duration:
-        left = _pad_parallel_side(
-            left,
-            right_duration,
-            auto_generated_breadcrumb("parallel_padding"),
-            lhs_breadcrumb,
-        )
-    elif right_duration < left_duration:
-        right = _pad_parallel_side(
-            right,
-            left_duration,
-            auto_generated_breadcrumb("parallel_padding"),
-            rhs_breadcrumb,
-        )
-
-    return Morphism({**left.lanes, **right.lanes})
-
-
-def _pad_parallel_side(
-    morphism: Morphism,
-    target_duration_cycles: int | Expr,
-    auto_breadcrumb: DebugBreadcrumb,
-    compose_breadcrumb: DebugBreadcrumb | None,
-) -> Morphism:
-    if not morphism.lanes:
-        return morphism
-
-    if isinstance(target_duration_cycles, Expr):
-        raise TypeError("Parallel padding requires a concrete target duration.")
-    padding_cycles = target_duration_cycles - morphism.total_duration_cycles
-    if padding_cycles <= 0:
-        return morphism
-
-    new_lanes = {}
-    for channel, lane in morphism.lanes.items():
-        end_state = lane.effective_end_state if lane.effective_end_state is not None else lane.initial_state
-        padding_trace = (auto_breadcrumb,) + (
-            (compose_breadcrumb,) if compose_breadcrumb is not None else ()
-        )
-        padding_op = AtomicMorphism(
-            channel=channel,
-            start_state=end_state,
-            end_state=end_state,
-            duration_cycles=padding_cycles,
-            operation_type=OperationType.IDENTITY,
-            timing_kind=TimingKind.DELAY,
-            debug_trace=padding_trace,
-        )
-        new_lanes[channel] = Lane(lane.operations + (padding_op,))
-    return Morphism(new_lanes)
+    return Morphism._from_parts(
+        left._arena,
+        root,
+        {**left_refs, **right_refs},
+        duration,
+    )

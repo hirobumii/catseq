@@ -4,7 +4,6 @@ Compiler orchestration for Morphism -> OASM call translation.
 
 from typing import Mapping
 
-from ..expr import contains_expr
 from ..morphism.arena import ArenaProgram
 from ..morphism.core import Morphism
 from . import execution
@@ -30,26 +29,38 @@ def compile_to_oasm_calls(
     bindings: Mapping[str, object] | None = None,
 ) -> dict[OASMAddress, list[OASMCall]] | dict[OASMAddress, list[LogicalEvent]]:
     """Compile a morphism into scheduled OASM calls."""
-    if isinstance(morphism, ArenaProgram):
+    if isinstance(morphism, ArenaProgram) or (
+        isinstance(morphism, Morphism) and not _return_internal_events
+    ):
         if _return_internal_events:
             raise TypeError(
                 "DAG-native compilation does not expose mutable LogicalEvent internals"
             )
-        result = CompilerSession(
-            morphism,
-            assembler_seq,
-            verbose=verbose,
-        ).bind(bindings or {})
+        program = (
+            morphism.arena_program
+            if isinstance(morphism, Morphism)
+            else morphism
+        )
+        try:
+            result = CompilerSession(
+                program,
+                assembler_seq,
+                verbose=verbose,
+            ).bind(bindings or {})
+        except KeyError as error:
+            if isinstance(morphism, Morphism) and not bindings:
+                raise TypeError(
+                    "compile_to_oasm_calls requires a fully concrete morphism. "
+                    "Pass bindings or call realize_morphism(...) first."
+                ) from error
+            raise
         return {
             address: list(board_calls)
             for address, board_calls in result.calls_by_board.items()
         }
     if bindings:
-        raise TypeError("bindings are only supported for ArenaProgram inputs")
-    if contains_expr(morphism):
         raise TypeError(
-            "compile_to_oasm_calls requires a fully concrete morphism. "
-            "Resolve symbolic expressions first with realize_morphism(...)."
+            "bindings are unavailable when returning mutable internal events"
         )
     events_by_board = extract_and_translate(morphism, verbose=verbose)
     analyze_costs_and_epochs(events_by_board, assembler_seq, verbose=verbose)

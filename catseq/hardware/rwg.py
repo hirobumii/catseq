@@ -27,9 +27,6 @@ from ..types import (
     TimingKind,
 )
 
-from catseq.types.rwg import StaticWaveform
-
-
 def _is_runtime_expr(value) -> bool:
     return isinstance(value, Expr)
 
@@ -95,7 +92,7 @@ def set_state(targets: List[StaticWaveform],phase_reset=True) -> MorphismDef:
             )
 
         load_morphism = rwg_load_coeffs(channel, params, start_state)
-        instruction_state = load_morphism.lanes[channel].operations[-1].end_state
+        instruction_state = load_morphism.end_state(channel)
 
         end_waveforms = targets
         # For set_state, we directly set the snapshot (immediate state change)
@@ -219,7 +216,7 @@ def linear_ramp(targets: List[Optional[StaticWaveform]], duration: float) -> Mor
 
         # Phase 1: Load ramp coefficients (t=0, instantaneous)
         load_ramp_morphism = rwg_load_coeffs(channel, ramp_params, start_state)
-        ramp_instruction_state = load_ramp_morphism.lanes[channel].operations[-1].end_state
+        ramp_instruction_state = load_ramp_morphism.end_state(channel)
 
         # Phase 2: Start ramp execution (atomic, 1 cycle)
         start_ramp_morphism = rwg_update_params(
@@ -231,7 +228,7 @@ def linear_ramp(targets: List[Optional[StaticWaveform]], duration: float) -> Mor
 
         # Phase 4: Load static coefficients to stop ramping (atomic, 1 cycle)
         load_static_morphism = rwg_load_coeffs(channel, static_params, ramp_instruction_state)
-        static_instruction_state = load_static_morphism.lanes[channel].operations[-1].end_state
+        static_instruction_state = load_static_morphism.end_state(channel)
 
         # Phase 5: Execute static update to finalize state (atomic, 1 cycle)
         stop_ramp_morphism = rwg_update_params(
@@ -372,12 +369,12 @@ def cubic_ramp(targets: List[Optional[StaticWaveform]], duration: float, pure_co
 
         # Build morphism sequence
         load_ramp_morphism = rwg_load_coeffs(channel, ramp_params, start_state)
-        ramp_instruction_state = load_ramp_morphism.lanes[channel].operations[-1].end_state
+        ramp_instruction_state = load_ramp_morphism.end_state(channel)
 
         start_ramp_morphism = rwg_update_params(channel, ramp_instruction_state, ramp_instruction_state)
         wait_morphism = identity(duration)
         load_static_morphism = rwg_load_coeffs(channel, static_params, ramp_instruction_state)
-        static_instruction_state = load_static_morphism.lanes[channel].operations[-1].end_state
+        static_instruction_state = load_static_morphism.end_state(channel)
 
         stop_ramp_morphism = rwg_update_params(channel, static_instruction_state, end_state)
 
@@ -549,7 +546,7 @@ def spline_arbi_func_ramp(targets: List[Optional[StaticWaveform]], duration: flo
         )
         
         load_ramp_morphism = rwg_load_coeffs(channel, ramp_params[0], start_state)
-        ramp_instruction_state = load_ramp_morphism.lanes[channel].operations[-1].end_state
+        ramp_instruction_state = load_ramp_morphism.end_state(channel)
         start_ramp_morphism = rwg_update_params(channel, ramp_instruction_state, ramp_instruction_state)
         wait_morphism = identity(durs_us[0]/1e6)
         morphism = (
@@ -560,7 +557,7 @@ def spline_arbi_func_ramp(targets: List[Optional[StaticWaveform]], duration: flo
         for i_stage  in range(1,len(ramp_params)):
             # Build morphism sequence
             load_ramp_morphism = rwg_load_coeffs(channel, ramp_params[i_stage], start_state)
-            ramp_instruction_state = load_ramp_morphism.lanes[channel].operations[-1].end_state
+            ramp_instruction_state = load_ramp_morphism.end_state(channel)
 
             start_ramp_morphism = rwg_update_params(channel, ramp_instruction_state, ramp_instruction_state)
             wait_morphism = identity(durs_us[i_stage]/1e6)
@@ -572,7 +569,7 @@ def spline_arbi_func_ramp(targets: List[Optional[StaticWaveform]], duration: flo
             )
 
         load_static_morphism = rwg_load_coeffs(channel, static_params, ramp_instruction_state)
-        static_instruction_state = load_static_morphism.lanes[channel].operations[-1].end_state
+        static_instruction_state = load_static_morphism.end_state(channel)
 
         stop_ramp_morphism = rwg_update_params(channel, static_instruction_state, end_state)
 
@@ -700,7 +697,7 @@ def constant_jerk_ramp(targets: List[Optional[StaticWaveform]], duration: float 
         )
         
         load_ramp_morphism = rwg_load_coeffs(channel, ramp_params[0], start_state)
-        ramp_instruction_state = load_ramp_morphism.lanes[channel].operations[-1].end_state
+        ramp_instruction_state = load_ramp_morphism.end_state(channel)
         start_ramp_morphism = rwg_update_params(channel, ramp_instruction_state, ramp_instruction_state)
         wait_morphism = identity(durs_us[0]/1e6)
         morphism = (
@@ -711,7 +708,7 @@ def constant_jerk_ramp(targets: List[Optional[StaticWaveform]], duration: float 
         for i_stage  in range(1,len(ramp_params)):
             # Build morphism sequence
             load_ramp_morphism = rwg_load_coeffs(channel, ramp_params[i_stage], start_state)
-            ramp_instruction_state = load_ramp_morphism.lanes[channel].operations[-1].end_state
+            ramp_instruction_state = load_ramp_morphism.end_state(channel)
 
             start_ramp_morphism = rwg_update_params(channel, ramp_instruction_state, ramp_instruction_state)
             wait_morphism = identity(durs_us[i_stage]/1e6)
@@ -723,7 +720,7 @@ def constant_jerk_ramp(targets: List[Optional[StaticWaveform]], duration: float 
             )
 
         load_static_morphism = rwg_load_coeffs(channel, static_params, ramp_instruction_state)
-        static_instruction_state = load_static_morphism.lanes[channel].operations[-1].end_state
+        static_instruction_state = load_static_morphism.end_state(channel)
 
         stop_ramp_morphism = rwg_update_params(channel, static_instruction_state, end_state)
 

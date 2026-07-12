@@ -9,7 +9,7 @@ from .compose import (
     parallel_compose_morphisms,
     strict_compose_morphisms,
 )
-from .core import Morphism, from_atomic, identity
+from .core import Morphism, arena_build, from_atomic, identity
 from .deferred import MorphismDef
 from .arena import ArenaProgram, ProgramArena
 
@@ -20,6 +20,7 @@ __all__ = [
     "ArenaProgram",
     "ProgramArena",
     "State",
+    "arena_build",
     "from_atomic",
     "identity",
     "strict_compose_morphisms",

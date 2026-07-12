@@ -8,13 +8,11 @@ from typing import Callable, Dict, Self
 
 from ..expr import Expr, structurally_equal
 from ..debug import (
-    annotate_atomic,
     annotate_morphism,
     auto_generated_breadcrumb,
     deferred_apply_breadcrumb,
     deferred_definition_breadcrumb,
 )
-from ..lanes import Lane
 from ..types.common import (
     AtomicMorphism,
     Channel,
@@ -28,7 +26,7 @@ from ..types.common import (
 from ..types.rwg import RWGUninitialized
 from ..types.rsp import RSPUninitialized
 from ..types.ttl import TTLState
-from .core import Morphism
+from .core import Morphism, _arena_scope, from_atomic
 
 
 def _last_trace_frame(trace: tuple[DebugBreadcrumb, ...]) -> DebugFrame | None:
@@ -83,18 +81,24 @@ class MorphismDef:
         if isinstance(target, Channel):
             if start_state is None:
                 start_state = _default_start_state(target)
-            return self._execute_on_channel(target, start_state)
+            with _arena_scope():
+                return self._execute_on_channel(target, start_state)
 
-        if not hasattr(target, "lanes"):
+        if not isinstance(target, Morphism):
             raise TypeError(f"Target must be Channel or Morphism, got {type(target)}")
-        return _apply_deferred_operations(
-            target,
-            {channel: self for channel in target.lanes.keys()},
-            application_breadcrumbs={
-                channel: (application_breadcrumb,) if application_breadcrumb is not None else ()
-                for channel in target.lanes.keys()
-            },
-        )
+        with _arena_scope(target._arena):
+            return _apply_deferred_operations(
+                target,
+                {channel: self for channel in target.channels},
+                application_breadcrumbs={
+                    channel: (
+                        (application_breadcrumb,)
+                        if application_breadcrumb is not None
+                        else ()
+                    )
+                    for channel in target.channels
+                },
+            )
 
     def __rshift__(self, other: Self) -> "MorphismDef":
         if not isinstance(other, MorphismDef):
@@ -115,7 +119,7 @@ class MorphismDef:
 
     def _execute_on_channel(self, channel: Channel, start_state: State) -> Morphism:
         current_state = start_state
-        operations: list[AtomicMorphism] = []
+        result: Morphism | None = None
         for generator_index, (generator, generator_trace) in enumerate(
             zip(self._generators, self._generator_traces, strict=True)
         ):
@@ -126,9 +130,9 @@ class MorphismDef:
                 generator_index,
             )
             application_trace = generator_trace + (apply_breadcrumb,)
-            if not morphism_piece.lanes:
+            if not morphism_piece.channels:
                 if morphism_piece.total_duration_cycles > 0:
-                    operations.append(
+                    morphism_piece = from_atomic(
                         AtomicMorphism(
                             channel=channel,
                             start_state=current_state,
@@ -142,29 +146,28 @@ class MorphismDef:
                             + application_trace,
                         )
                     )
+                else:
+                    continue
             else:
-                channel_lane = morphism_piece.lanes.get(channel)
-                if channel_lane is None:
+                if channel not in morphism_piece.channels:
                     raise ValueError(
                         f"Deferred morphism for {channel.global_id} did not contain the target channel"
                     )
-                operations.extend(
-                    annotate_atomic(op, application_trace) for op in channel_lane.operations
+                morphism_piece = annotate_morphism(
+                    morphism_piece,
+                    application_trace,
                 )
-                current_state = channel_lane.effective_end_state or current_state
-        if not operations:
-            return Morphism(lanes={}, _duration_cycles=0)
-        return Morphism({channel: Lane(tuple(operations))})
-
-
-def _inferred_lane_end_state(lane: Lane) -> State:
-    return lane.effective_end_state if lane.effective_end_state is not None else RWGUninitialized()
+                current_state = (
+                    morphism_piece.effective_end_state(channel) or current_state
+                )
+            result = morphism_piece if result is None else result >> morphism_piece
+        return result or Morphism(lanes={}, _duration_cycles=0)
 
 
 def _inferred_morphism_end_state(morphism: Morphism, channel: Channel, fallback: State) -> State:
-    if channel not in morphism.lanes:
+    if channel not in morphism.channels:
         return fallback
-    return _inferred_lane_end_state(morphism.lanes[channel])
+    return morphism.effective_end_state(channel) or fallback
 
 
 def _pad_channel_morphism(
@@ -191,8 +194,7 @@ def _pad_channel_morphism(
         timing_kind=TimingKind.DELAY,
         debug_trace=(auto_generated_breadcrumb("deferred_padding"),) + application_trace,
     )
-    channel_lane = result_morphism.lanes.get(channel, Lane(()))
-    return Morphism({channel: Lane(channel_lane.operations + (padding_op,))})
+    return result_morphism >> from_atomic(padding_op)
 
 def _apply_deferred_operations(
     base_morphism: Morphism,
@@ -200,8 +202,8 @@ def _apply_deferred_operations(
     application_breadcrumbs: Dict[Channel, tuple[DebugBreadcrumb, ...]] | None = None,
 ) -> Morphism:
     for channel in channel_operations.keys():
-        if channel not in base_morphism.lanes:
-            available_channels = [str(ch.global_id) for ch in base_morphism.lanes.keys()]
+        if channel not in base_morphism.channels:
+            available_channels = [str(ch.global_id) for ch in base_morphism.channels]
             raise ValueError(
                 f"Channel {channel.global_id} not found in morphism. "
                 f"Available channels: {available_channels}"
@@ -247,13 +249,16 @@ def _apply_deferred_operations(
         for channel, result_morphism in operation_results.items()
     }
 
-    new_lanes = {}
-    for channel, lane in base_morphism.lanes.items():
+    suffixes: dict[Channel, Morphism] = {}
+    for channel in base_morphism.channels:
         if channel in aligned_results:
-            new_operations = lane.operations + aligned_results[channel].lanes[channel].operations
-            new_lanes[channel] = Lane(new_operations)
+            channel_suffix = aligned_results[channel]
         else:
-            end_state = _inferred_lane_end_state(lane)
+            end_state = _inferred_morphism_end_state(
+                base_morphism,
+                channel,
+                RWGUninitialized(),
+            )
             breadcrumb_trace = ()
             if application_breadcrumbs is not None:
                 breadcrumb_trace = application_breadcrumbs.get(
@@ -270,6 +275,10 @@ def _apply_deferred_operations(
                 debug_trace=(auto_generated_breadcrumb("deferred_idle_alignment"),)
                 + breadcrumb_trace,
             )
-            new_lanes[channel] = Lane(lane.operations + (wait_operation,))
+            channel_suffix = from_atomic(wait_operation)
+        suffixes[channel] = channel_suffix
 
-    return Morphism(new_lanes)
+    return base_morphism._append_channel_suffixes(
+        suffixes,
+        max_duration_cycles,
+    )

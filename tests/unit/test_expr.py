@@ -176,6 +176,7 @@ def test_compile_time_float_exprs_are_allowed_in_rwg_initialize():
 
 def test_compile_rejects_unresolved_expr():
     morphism = ttl_on(TTL_CH0) >> identity(var("t") * us)
+    assert contains_expr(morphism) is True
     with pytest.raises(TypeError, match="fully concrete morphism"):
         compile_to_oasm_calls(morphism)
 

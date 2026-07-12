@@ -3,7 +3,9 @@ import pytest
 from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.compilation.dag import CompilerSession
 from catseq.compilation.types import OASMAddress, OASMFunction
+from catseq.atomic import ttl_off, ttl_on
 from catseq.expr import var
+from catseq.morphism import identity
 from catseq.morphism.arena import ProgramArena
 from catseq.time_utils import mu
 from catseq.types.common import (
@@ -212,10 +214,33 @@ def test_identity_only_atomic_preserves_board_horizon():
     ] == [(OASMFunction.WAIT, (100,))]
 
 
-def test_board_resolution_error_reports_source_arena_node():
+def test_unknown_board_preserves_legacy_rwg0_fallback():
     bad_channel = Channel(Board("unknown"), 0, ChannelType.TTL)
     arena = ProgramArena()
     root = arena.atomic(_ttl_on(bad_channel))
 
-    with pytest.raises(ValueError, match=f"arena node {root}"):
-        CompilerSession(arena.freeze(root)).bind({})
+    result = CompilerSession(arena.freeze(root)).bind({})
+
+    assert OASMAddress.RWG0 in result.calls_by_board
+
+
+def test_existing_morphism_api_compiles_through_dag_with_bindings():
+    morphism = (
+        ttl_on(CH0, start_state=TTLState.OFF)
+        >> identity(var("delay"))
+        >> ttl_off(CH0, start_state=TTLState.ON)
+    )
+
+    calls = compile_to_oasm_calls(
+        morphism,
+        bindings={"delay": 75 * mu},
+    )
+
+    assert [
+        (call.dsl_func, call.args)
+        for call in calls[OASMAddress.RWG0]
+    ] == [
+        (OASMFunction.TTL_SET, (1, 1, "rwg")),
+        (OASMFunction.WAIT, (75,)),
+        (OASMFunction.TTL_SET, (1, 0, "rwg")),
+    ]

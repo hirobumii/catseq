@@ -18,6 +18,10 @@ def _contains_expr(value: object, seen: set[int]) -> bool:
     if isinstance(value, Expr):
         return True
 
+    arena_query = getattr(value, "_contains_expr", None)
+    if callable(arena_query):
+        return bool(arena_query())
+
     if not isinstance(value, (tuple, list, dict)) and not is_dataclass(value):
         return False
 

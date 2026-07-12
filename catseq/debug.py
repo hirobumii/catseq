@@ -165,18 +165,7 @@ def annotate_morphism(
     morphism: Morphism,
     breadcrumbs: tuple[DebugBreadcrumb, ...],
 ) -> Morphism:
-    from .lanes import Lane
-    from .morphism.core import Morphism
-
-    if not breadcrumbs or not morphism.lanes:
-        return morphism
-
-    return Morphism(
-        {
-            channel: Lane(tuple(annotate_atomic(op, breadcrumbs) for op in lane.operations))
-            for channel, lane in morphism.lanes.items()
-        }
-    )
+    return morphism._annotated(breadcrumbs)
 
 
 def _format_frame(frame: DebugFrame | None) -> str:

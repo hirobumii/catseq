@@ -11,12 +11,14 @@ from .compose import (
 )
 from .core import Morphism, from_atomic, identity
 from .deferred import MorphismDef
-from ..types import State
+from .arena import ArenaProgram, ProgramArena
 
 __all__ = [
     "Lane",
     "Morphism",
     "MorphismDef",
+    "ArenaProgram",
+    "ProgramArena",
     "State",
     "from_atomic",
     "identity",

@@ -32,7 +32,7 @@ from .hardware import pulse, initialize, set_high, set_low, hold
 # OASM interface
 from .compilation import compile_to_oasm_calls, execute_oasm_calls, OASMCall
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 
 __all__ = [
     # Core types

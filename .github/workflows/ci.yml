@@ -20,7 +20,21 @@ jobs:
         python-version: '3.12'
 
     - name: Set up CatSeq Environment
+      env:
+        GITEA_USERNAME: ${{ secrets.GITEA_USERNAME }}
+        GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
       run: |
+        if [[ -z "$GITEA_USERNAME" || -z "$GITEA_TOKEN" ]]; then
+          echo "::error::Gitea credentials are not configured"
+          exit 1
+        fi
+
+        umask 077
+        trap 'rm -f "$HOME/.netrc"' EXIT
+        printf 'machine git.opticaltweezer.eu.org\nlogin %s\npassword %s\n' \
+          "$GITEA_USERNAME" "$GITEA_TOKEN" > "$HOME/.netrc"
+        unset GITEA_USERNAME GITEA_TOKEN
+
         # The setup script needs to be executable
         chmod +x ./setup.sh
         # Run the setup script to create venv, install deps, and run post-install

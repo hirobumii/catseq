@@ -301,6 +301,7 @@ class Morphism:
         if self._summaries_resolved:
             return self
         if self._realized_cache is None:
+            # Delayed to break core -> lower -> core during module initialization.
             from .lower import materialize_deferred_program
 
             self._realized_cache = materialize_deferred_program(

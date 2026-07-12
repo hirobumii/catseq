@@ -269,7 +269,11 @@ class ProgramArena:
         base: NodeId,
         application: DeferredApplication,
     ) -> NodeId:
-        """Append an unresolved state-dependent suffix application."""
+        """Append an unresolved state-dependent suffix application.
+
+        Raises:
+            ValueError: If the base is invalid or a selected channel is absent.
+        """
         self._validate_children(base, base)
         available = self._channel_masks[base]
         selected = 0
@@ -291,6 +295,7 @@ class ProgramArena:
         )
 
     def deferred_channel(self, channel: Channel, payload: DeferredChannel) -> NodeId:
+        """Append one channel-bound transition template."""
         return self._append(
             NodeKind.DEFERRED_CHANNEL,
             -1,
@@ -304,6 +309,12 @@ class ProgramArena:
         state_source: NodeId,
         payload: DeferredBatch,
     ) -> NodeId:
+        """Append a batch whose state boundary is another node.
+
+        Raises:
+            ValueError: If ``state_source`` is not a valid existing node.
+            KeyError: If a selected channel is absent from the arena.
+        """
         self._validate_children(state_source, state_source)
         channel_mask = 0
         for channel, _operation in payload.channel_operations:
@@ -320,6 +331,11 @@ class ProgramArena:
         )
 
     def repeat(self, child: NodeId, payload: DeferredRepeat) -> NodeId:
+        """Append a deferred hardware repeat.
+
+        Raises:
+            ValueError: If ``child`` is not a valid existing node.
+        """
         self._validate_children(child, child)
         return self._append(
             NodeKind.REPEAT,

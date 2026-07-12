@@ -3,6 +3,7 @@ import pytest
 from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.compilation.dag import CompilerSession
 from catseq.compilation.types import OASMAddress, OASMFunction
+from catseq.control import repeat_morphism
 from catseq.atomic import ttl_off, ttl_on
 from catseq.expr import var
 from catseq.morphism import (
@@ -422,3 +423,41 @@ def test_symbolic_deferred_channels_align_after_binding():
         (call.dsl_func, call.args)
         for call in longer.calls_by_board[OASMAddress.RWG0]
     ][-1] == (OASMFunction.WAIT, (200,))
+
+
+def test_symbolic_hardware_repeat_specializes_at_bind_time():
+    delay = var("repeat_delay")
+
+    @arena_build
+    def build():
+        body = (
+            ttl_on(CH0, start_state=TTLState.OFF)
+            >> identity(delay)
+            >> ttl_off(CH0, start_state=TTLState.ON)
+        )
+        return repeat_morphism(body, 3, None)
+
+    session = CompilerSession(build().arena_program)
+
+    first = session.bind({"repeat_delay": 100 * mu})
+    updated = session.bind({"repeat_delay": 200 * mu})
+
+    assert first.delta.revision == 1
+    assert updated.delta.revision == 2
+    assert updated.delta.recompiled_boards == frozenset({OASMAddress.RWG0})
+    assert updated.calls_by_board[OASMAddress.RWG0]
+
+
+def test_deferred_batch_error_reports_its_arena_node():
+    source = ttl_on(CH0, start_state=TTLState.OFF)
+
+    def invalid_transition(_channel, _state):
+        raise TypeError("invalid transition")
+
+    batch = deferred_batch_from_state_source(
+        source,
+        {CH0: MorphismDef(invalid_transition)},
+    )
+
+    with pytest.raises(TypeError, match="deferred batch arena node"):
+        compile_to_oasm_calls(source >> batch)

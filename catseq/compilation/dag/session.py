@@ -482,6 +482,7 @@ class CompilerSession:
         "_reachable_nodes",
         "_reverse_parameters",
         "_revision",
+        "_template_program",
         "_verbose",
     )
 
@@ -498,6 +499,14 @@ class CompilerSession:
         self._bindings: dict[str, object] = {}
         self._board_signatures: dict[OASMAddress, tuple[object, ...]] = {}
         self._reachable_nodes = _reachable_nodes(self._program)
+        self._template_program = (
+            self._program
+            if any(
+                self._program.kinds[node_id] == NodeKind.REPEAT
+                for node_id in self._reachable_nodes
+            )
+            else None
+        )
         self._dependencies = _node_dependencies(
             self._program,
             self._reachable_nodes,
@@ -520,6 +529,8 @@ class CompilerSession:
         missing = required - next_bindings.keys()
         if missing:
             raise KeyError(f"Missing bindings: {sorted(missing)}")
+        if self._template_program is not None:
+            return self._bind_symbolic_repeat(next_bindings, bindings)
         changed_parameters = {
             parameter
             for parameter, value in bindings.items()
@@ -631,6 +642,60 @@ class CompilerSession:
                 revision=self._revision,
                 dirty_nodes=dirty_nodes,
                 recompiled_boards=frozenset(recompiled_boards),
+                changed_boards=changed_boards,
+            ),
+        )
+
+    def _bind_symbolic_repeat(
+        self,
+        next_bindings: Mapping[str, object],
+        updates: Mapping[str, object],
+    ) -> CompileResult:
+        """Specialize symbolic repeats without rerunning transition templates."""
+        changed_parameters = {
+            parameter
+            for parameter, value in updates.items()
+            if parameter not in self._bindings
+            or self._bindings[parameter] != value
+        }
+        if self._revision > 0 and not changed_parameters:
+            self._bindings = dict(next_bindings)
+            self._revision += 1
+            return CompileResult(
+                calls_by_board=MappingProxyType(dict(self._last_calls)),
+                delta=CompileDelta(
+                    revision=self._revision,
+                    dirty_nodes=frozenset(),
+                    recompiled_boards=frozenset(),
+                    changed_boards=frozenset(),
+                ),
+            )
+        if self._template_program is None:
+            raise AssertionError("Symbolic repeat template was lost")
+        concrete = lower_deferred_program(
+            self._template_program,
+            bindings=dict(next_bindings),
+        )
+        compiled = CompilerSession(
+            concrete,
+            self._assembler_seq,
+            verbose=self._verbose,
+        ).bind(next_bindings)
+        immutable_calls = dict(compiled.calls_by_board)
+        changed_boards = frozenset(
+            address
+            for address in self._last_calls.keys() | immutable_calls.keys()
+            if self._last_calls.get(address) != immutable_calls.get(address)
+        )
+        self._bindings = dict(next_bindings)
+        self._last_calls = immutable_calls
+        self._revision += 1
+        return CompileResult(
+            calls_by_board=MappingProxyType(dict(immutable_calls)),
+            delta=CompileDelta(
+                revision=self._revision,
+                dirty_nodes=compiled.delta.dirty_nodes,
+                recompiled_boards=changed_boards,
                 changed_boards=changed_boards,
             ),
         )

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import cast
 
 from ..expr import Expr
+from ..expr.realize import realize_morphism
 from ..types.common import AtomicMorphism, Channel, DebugBreadcrumb, TimedRegion
 from .arena import (
     ArenaProgram,
@@ -56,8 +58,18 @@ def _reachable_nodes(program: ArenaProgram) -> frozenset[int]:
     return frozenset(reachable)
 
 
-def materialize_deferred_program(program: ArenaProgram) -> Morphism:
-    """Replay one reachable DAG, specializing deferred nodes topologically."""
+def materialize_deferred_program(
+    program: ArenaProgram,
+    *,
+    bindings: Mapping[str, object] | None = None,
+    preserve_symbolic_repeats: bool = False,
+) -> Morphism:
+    """Replay one reachable DAG, specializing deferred nodes topologically.
+
+    Raises:
+        ValueError: If the program has no deferred nodes or specialization fails.
+        TypeError: If a node payload is invalid or a template cannot be lowered.
+    """
     reachable = _reachable_nodes(program)
     if not any(program.kinds[node_id] in _LOWERED_KINDS for node_id in reachable):
         raise ValueError("Program has no deferred applications to materialize")
@@ -169,34 +181,61 @@ def materialize_deferred_program(program: ArenaProgram) -> Morphism:
                     )
                 source = lowered[program.left[node_id]]
                 result = Morphism._from_wait_cycles(0)
-                for channel, definition in batch.channel_operations:
-                    if not isinstance(definition, MorphismDef):
-                        raise TypeError(
-                            f"Deferred batch node {node_id} contains an invalid template"
+                try:
+                    for channel, definition in batch.channel_operations:
+                        if not isinstance(definition, MorphismDef):
+                            raise TypeError("Batch contains an invalid template")
+                        start_state = (
+                            source.effective_end_state(channel)
+                            or RWGUninitialized()
                         )
-                    start_state = (
-                        source.effective_end_state(channel) or RWGUninitialized()
-                    )
-                    channel_result = definition._execute_on_channel(
-                        channel,
-                        start_state,
-                    )
-                    result = (
-                        channel_result
-                        if not result.channels
-                        else parallel_compose_morphisms(result, channel_result)
-                    )
+                        channel_result = definition._execute_on_channel(
+                            channel,
+                            start_state,
+                        )
+                        result = (
+                            channel_result
+                            if not result.channels
+                            else parallel_compose_morphisms(
+                                result,
+                                channel_result,
+                            )
+                        )
+                except (TypeError, ValueError) as error:
+                    raise type(error)(
+                        f"{error} (deferred batch arena node {node_id})"
+                    ) from error
             elif kind == NodeKind.REPEAT:
                 repeat = program.payload[node_id]
                 if not isinstance(repeat, DeferredRepeat):
                     raise TypeError(f"Repeat node {node_id} has invalid payload")
+                # Delayed to break lower -> control -> compiler -> lower.
                 from ..control import _materialize_repeat_morphism
 
-                result = _materialize_repeat_morphism(
-                    lowered[program.left[node_id]],
-                    repeat.count,
-                    repeat.assembler_sequence,
-                )
+                child = lowered[program.left[node_id]]
+                if child._contains_expr() and bindings is None:
+                    if not preserve_symbolic_repeats:
+                        raise TypeError(
+                            "A symbolic repeat requires compiler bindings "
+                            f"(repeat arena node {node_id})"
+                        )
+                    result = child._deferred_repeat(
+                        repeat.count,
+                        repeat.assembler_sequence,
+                    )
+                else:
+                    if bindings is not None and child._contains_expr():
+                        child = realize_morphism(child, bindings)
+                    try:
+                        result = _materialize_repeat_morphism(
+                            child,
+                            repeat.count,
+                            repeat.assembler_sequence,
+                        )
+                    except (TypeError, ValueError) as error:
+                        raise type(error)(
+                            f"{error} (repeat arena node {node_id})"
+                        ) from error
             else:
                 raise TypeError(
                     f"Unsupported arena node kind {kind.name} during deferred lowering"
@@ -205,9 +244,22 @@ def materialize_deferred_program(program: ArenaProgram) -> Morphism:
     return lowered[program.root]
 
 
-def lower_deferred_program(program: ArenaProgram) -> ArenaProgram:
-    """Return compiler-ready concrete DAG; preserve already-concrete IDs."""
+def lower_deferred_program(
+    program: ArenaProgram,
+    *,
+    bindings: Mapping[str, object] | None = None,
+) -> ArenaProgram:
+    """Return a compiler-ready DAG while preserving concrete programs.
+
+    Raises:
+        ValueError: If deferred state or duration specialization fails.
+        TypeError: If a deferred node or template payload is invalid.
+    """
     reachable = _reachable_nodes(program)
     if not any(program.kinds[node_id] in _LOWERED_KINDS for node_id in reachable):
         return program
-    return materialize_deferred_program(program).arena_program
+    return materialize_deferred_program(
+        program,
+        bindings=bindings,
+        preserve_symbolic_repeats=bindings is None,
+    ).arena_program

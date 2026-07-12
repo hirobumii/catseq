@@ -276,7 +276,11 @@ def deferred_batch_from_state_source(
     state_source: Morphism,
     channel_operations: Dict[Channel, MorphismDef],
 ) -> Morphism:
-    """Build a standalone batch whose incoming states reference another root."""
+    """Build a standalone batch whose incoming states reference another root.
+
+    Raises:
+        KeyError: If an operation selects a channel absent from ``state_source``.
+    """
     for channel in channel_operations:
         if channel not in state_source.channels:
             raise KeyError(channel)

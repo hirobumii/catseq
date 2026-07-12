@@ -8,6 +8,7 @@ that leverage precompiled morphisms for efficient execution.
 from typing import Callable
 
 from catseq.morphism import Morphism
+from catseq.morphism.core import _ACTIVE_ARENA
 from catseq.atomic import oasm_black_box
 from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.compilation.execution import OASM_AVAILABLE, OASM_FUNCTION_MAP, execute_oasm_calls
@@ -276,7 +277,7 @@ def _estimate_morphism_cycles_from_assembly(
 def repeat_morphism(
     morphism: Morphism,
     count: int,
-    assembler_seq
+    assembler_seq: object,
 ) -> Morphism:
     """
     Create a true hardware loop that repeats a morphism execution n times.
@@ -291,11 +292,12 @@ def repeat_morphism(
 
     Returns:
         Blackbox Morphism that repeats the input morphism n times with correct timing
+
+    Raises:
+        ValueError: If ``count`` is not positive.
     """
     if count <= 0:
         raise ValueError("Repeat count must be positive")
-
-    from catseq.morphism.core import _ACTIVE_ARENA
 
     if _ACTIVE_ARENA.get() is morphism._arena:
         return morphism._deferred_repeat(count, assembler_seq)

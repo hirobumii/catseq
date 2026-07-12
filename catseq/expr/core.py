@@ -48,6 +48,10 @@ class Expr:
     def time_to_cycles(duration: ExprOperand) -> Expr:
         return Expr("time_to_cycles", args=(_to_expr(duration),))
 
+    @staticmethod
+    def maximum(left: ExprOperand, right: ExprOperand) -> Expr:
+        return Expr("max", args=(_to_expr(left), _to_expr(right)))
+
     def __getattr__(self, name: str) -> Expr:
         if name.startswith("__"):
             raise AttributeError(name)
@@ -185,6 +189,11 @@ class Expr:
             from ..time_utils import time_to_cycles
 
             return time_to_cycles(self.args[0].resolve(input_value, env))
+        if self.kind == "max":
+            return max(
+                self.args[0].resolve(input_value, env),
+                self.args[1].resolve(input_value, env),
+            )
         if self.kind == "add":
             return self.args[0].resolve(input_value, env) + self.args[1].resolve(input_value, env)
         if self.kind == "sub":

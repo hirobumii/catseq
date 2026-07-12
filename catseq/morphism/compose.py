@@ -9,20 +9,23 @@ from ..types.common import (
     Channel,
     DebugBreadcrumb,
     OperationType,
+    State,
     TimingKind,
 )
 from ..types.ttl import TTLState
-from .core import Morphism, _LaneRef, _concatenate_lane_duration
+from .core import (
+    Morphism,
+    _LaneRef,
+    _concatenate_lane_duration,
+    _unresolved_lane_refs,
+)
 
 
 def _max_duration(left: int | Expr, right: int | Expr) -> int | Expr:
     if structurally_equal(left, right):
         return left
     if isinstance(left, Expr) or isinstance(right, Expr):
-        raise TypeError(
-            "Parallel composition requires concrete or structurally equal durations. "
-            "Realize symbolic durations first."
-        )
+        return Expr.maximum(left, right)
     return max(left, right)
 
 
@@ -66,7 +69,7 @@ def _combine_refs(
 def _identity_ref(
     morphism: Morphism,
     channel: Channel,
-    state: object,
+    state: State | None,
     duration: int | Expr,
     *,
     breadcrumb: DebugBreadcrumb | None = None,
@@ -110,6 +113,16 @@ def strict_compose_morphisms(
         strict=True,
         right_breadcrumb=rhs_breadcrumb,
     )
+    if not first._summaries_resolved or not second._summaries_resolved:
+        return Morphism._from_parts(
+            first._arena,
+            root,
+            _unresolved_lane_refs(
+                first._lane_refs.keys() | second_refs.keys()
+            ),
+            -1,
+            summaries_resolved=False,
+        )
     result_refs: dict[Channel, _LaneRef] = {}
     for channel in first._lane_refs.keys() | second_refs.keys():
         left = first._lane_refs.get(channel)
@@ -161,9 +174,29 @@ def auto_compose_morphisms(
     rhs_breadcrumb: DebugBreadcrumb | None = None,
 ) -> Morphism:
     """Record automatic serial composition and update channel summaries."""
-    if not second._lane_refs and structurally_equal(second.total_duration_expr, 0):
+    if (
+        second._summaries_resolved
+        and not second._lane_refs
+        and structurally_equal(second.total_duration_expr, 0)
+    ):
         return first
     second_root, second_refs = second._import_into(first._arena)
+
+    if not first._summaries_resolved or not second._summaries_resolved:
+        root = first._arena.serial(
+            first._root,
+            second_root,
+            right_breadcrumb=rhs_breadcrumb,
+        )
+        return Morphism._from_parts(
+            first._arena,
+            root,
+            _unresolved_lane_refs(
+                first._lane_refs.keys() | second_refs.keys()
+            ),
+            -1,
+            summaries_resolved=False,
+        )
 
     if not first._lane_refs and not second_refs:
         duration = _max_duration(
@@ -255,13 +288,21 @@ def parallel_compose_morphisms(
         right_root,
         right_breadcrumb=rhs_breadcrumb,
     )
+    if not left._summaries_resolved or not right._summaries_resolved:
+        return Morphism._from_parts(
+            left._arena,
+            root,
+            _unresolved_lane_refs(
+                left._lane_refs.keys() | right_refs.keys()
+            ),
+            -1,
+            summaries_resolved=False,
+        )
     duration = _max_duration(left.total_duration_expr, right.total_duration_expr)
     left_refs = dict(left._lane_refs)
 
     if not structurally_equal(left.total_duration_expr, duration):
-        if isinstance(duration, Expr):
-            raise TypeError("Parallel padding requires a concrete target duration.")
-        padding = duration - left.total_duration_cycles
+        padding = duration - left.total_duration_expr
         for channel, lane_ref in tuple(left_refs.items()):
             identity = _identity_ref(
                 left,
@@ -280,9 +321,7 @@ def parallel_compose_morphisms(
             )
 
     if not structurally_equal(right.total_duration_expr, duration):
-        if isinstance(duration, Expr):
-            raise TypeError("Parallel padding requires a concrete target duration.")
-        padding = duration - right.total_duration_cycles
+        padding = duration - right.total_duration_expr
         for channel, lane_ref in tuple(right_refs.items()):
             identity = _identity_ref(
                 left,

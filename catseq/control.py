@@ -295,6 +295,20 @@ def repeat_morphism(
     if count <= 0:
         raise ValueError("Repeat count must be positive")
 
+    from catseq.morphism.core import _ACTIVE_ARENA
+
+    if _ACTIVE_ARENA.get() is morphism._arena:
+        return morphism._deferred_repeat(count, assembler_seq)
+    return _materialize_repeat_morphism(morphism, count, assembler_seq)
+
+
+def _materialize_repeat_morphism(
+    morphism: Morphism,
+    count: int,
+    assembler_seq,
+) -> Morphism:
+    """Lower a repeat after its child Morphism has concrete boundaries."""
+
     # Get morphism timing and channel states
     # Get morphism timing (from compiled assembly) and channel states
     t_morphism = _estimate_morphism_cycles_from_assembly(morphism, assembler_seq)

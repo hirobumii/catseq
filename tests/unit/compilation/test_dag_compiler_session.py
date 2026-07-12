@@ -5,7 +5,13 @@ from catseq.compilation.dag import CompilerSession
 from catseq.compilation.types import OASMAddress, OASMFunction
 from catseq.atomic import ttl_off, ttl_on
 from catseq.expr import var
-from catseq.morphism import identity
+from catseq.morphism import (
+    MorphismDef,
+    MorphismEndStateView,
+    arena_build,
+    deferred_batch_from_state_source,
+    identity,
+)
 from catseq.morphism.arena import ProgramArena
 from catseq.time_utils import mu
 from catseq.types.common import (
@@ -244,3 +250,175 @@ def test_existing_morphism_api_compiles_through_dag_with_bindings():
         (OASMFunction.WAIT, (75,)),
         (OASMFunction.TTL_SET, (1, 0, "rwg")),
     ]
+
+
+def test_morphism_def_application_is_lazy_until_compilation():
+    observed_states = []
+
+    def turn_off(channel, start_state):
+        observed_states.append(start_state)
+        return identity(100 * mu) >> ttl_off(
+            channel,
+            start_state=start_state,
+        )
+
+    morphism = ttl_on(CH0, start_state=TTLState.OFF) >> MorphismDef(turn_off)
+
+    assert observed_states == []
+
+    calls = compile_to_oasm_calls(morphism)
+
+    assert observed_states == [TTLState.ON]
+    assert [
+        (call.dsl_func, call.args)
+        for call in calls[OASMAddress.RWG0]
+    ] == [
+        (OASMFunction.TTL_SET, (1, 1, "rwg")),
+        (OASMFunction.WAIT, (100,)),
+        (OASMFunction.TTL_SET, (1, 0, "rwg")),
+    ]
+
+
+def test_lazy_definitions_thread_state_across_structural_waits():
+    observed_states = []
+
+    def hold_state(_channel, start_state):
+        observed_states.append(start_state)
+        return identity(100 * mu)
+
+    def turn_off(channel, start_state):
+        observed_states.append(start_state)
+        return ttl_off(channel, start_state=start_state)
+
+    morphism = (
+        ttl_on(CH0, start_state=TTLState.OFF)
+        >> MorphismDef(hold_state)
+        >> identity(25 * mu)
+        >> MorphismDef(turn_off)
+    )
+
+    assert observed_states == []
+
+    calls = compile_to_oasm_calls(morphism)
+
+    assert observed_states == [TTLState.ON, TTLState.ON]
+    assert [
+        (call.dsl_func, call.args)
+        for call in calls[OASMAddress.RWG0]
+    ] == [
+        (OASMFunction.TTL_SET, (1, 1, "rwg")),
+        (OASMFunction.WAIT, (125,)),
+        (OASMFunction.TTL_SET, (1, 0, "rwg")),
+    ]
+
+
+def test_parameter_rebind_reuses_lowered_definition():
+    generator_calls = []
+    delay = var("deferred_delay")
+
+    def parameterized_hold(_channel, start_state):
+        generator_calls.append(start_state)
+        return identity(delay)
+
+    morphism = ttl_on(CH0, start_state=TTLState.OFF) >> MorphismDef(
+        parameterized_hold
+    )
+    session = CompilerSession(morphism.arena_program)
+
+    session.bind({"deferred_delay": 100 * mu})
+    updated = session.bind({"deferred_delay": 200 * mu})
+
+    assert generator_calls == [TTLState.ON]
+    assert updated.delta.recompiled_boards == frozenset({OASMAddress.RWG0})
+    assert [
+        (call.dsl_func, call.args)
+        for call in updated.calls_by_board[OASMAddress.RWG0]
+    ] == [
+        (OASMFunction.TTL_SET, (1, 1, "rwg")),
+        (OASMFunction.WAIT, (200,)),
+    ]
+
+
+def test_arena_builder_records_explicit_channel_definition_lazily():
+    observed_states = []
+
+    def turn_on(channel, start_state):
+        observed_states.append(start_state)
+        return ttl_on(channel, start_state=start_state)
+
+    @arena_build
+    def build():
+        return MorphismDef(turn_on)(CH0, TTLState.OFF)
+
+    morphism = build()
+
+    assert observed_states == []
+
+    compile_to_oasm_calls(morphism)
+
+    assert observed_states == [TTLState.OFF]
+
+
+def test_deferred_batch_reads_state_from_source_root_at_compilation():
+    observed_states = []
+
+    def turn_on(channel, start_state):
+        observed_states.append(start_state)
+        return ttl_on(channel, start_state=start_state)
+
+    def turn_off(channel, start_state):
+        observed_states.append(start_state)
+        return identity(100 * mu) >> ttl_off(
+            channel,
+            start_state=start_state,
+        )
+
+    @arena_build
+    def build():
+        source = MorphismDef(turn_on)(CH0, TTLState.OFF)
+        states = MorphismEndStateView(source)
+        batch = deferred_batch_from_state_source(
+            states.morphism,
+            {CH0: MorphismDef(turn_off)},
+        )
+        return source >> batch
+
+    morphism = build()
+
+    assert observed_states == []
+
+    calls = compile_to_oasm_calls(morphism)
+
+    assert observed_states == [TTLState.OFF, TTLState.ON]
+    assert [
+        (call.dsl_func, call.args)
+        for call in calls[OASMAddress.RWG0]
+    ] == [
+        (OASMFunction.TTL_SET, (1, 1, "rwg")),
+        (OASMFunction.WAIT, (100,)),
+        (OASMFunction.TTL_SET, (1, 0, "rwg")),
+    ]
+
+
+def test_symbolic_deferred_channels_align_after_binding():
+    delay = var("channel_delay")
+    morphism = (
+        ttl_on(CH0, start_state=TTLState.OFF)
+        | ttl_on(CH1, start_state=TTLState.OFF)
+    ) >> {
+        CH0: MorphismDef(lambda _channel, _state: identity(delay)),
+        CH1: MorphismDef(lambda _channel, _state: identity(100 * mu)),
+    }
+    session = CompilerSession(morphism.arena_program)
+
+    shorter = session.bind({"channel_delay": 50 * mu})
+    longer = session.bind({"channel_delay": 200 * mu})
+
+    assert [
+        (call.dsl_func, call.args)
+        for call in shorter.calls_by_board[OASMAddress.RWG0]
+    ][-1] == (OASMFunction.WAIT, (100,))
+    assert [
+        (call.dsl_func, call.args)
+        for call in longer.calls_by_board[OASMAddress.RWG0]
+    ][-1] == (OASMFunction.WAIT, (200,))

@@ -4,6 +4,9 @@ Deferred morphism builders and application helpers.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+from collections.abc import Iterator
 from typing import Callable, Dict, Self
 
 from ..expr import Expr, structurally_equal
@@ -26,7 +29,29 @@ from ..types.common import (
 from ..types.rwg import RWGUninitialized
 from ..types.rsp import RSPUninitialized
 from ..types.ttl import TTLState
-from .core import Morphism, _arena_scope, from_atomic
+from .arena import DeferredApplication, DeferredBatch, DeferredChannel
+from .core import (
+    Morphism,
+    _ACTIVE_ARENA,
+    _arena_scope,
+    _unresolved_lane_refs,
+    from_atomic,
+)
+
+
+_LOWERING_DEFERRED: ContextVar[bool] = ContextVar(
+    "catseq_lowering_deferred",
+    default=False,
+)
+
+
+@contextmanager
+def _deferred_lowering_scope() -> Iterator[None]:
+    token = _LOWERING_DEFERRED.set(True)
+    try:
+        yield
+    finally:
+        _LOWERING_DEFERRED.reset(token)
 
 
 def _last_trace_frame(trace: tuple[DebugBreadcrumb, ...]) -> DebugFrame | None:
@@ -81,24 +106,36 @@ class MorphismDef:
         if isinstance(target, Channel):
             if start_state is None:
                 start_state = _default_start_state(target)
+            active_arena = _ACTIVE_ARENA.get()
+            if active_arena is not None and not _LOWERING_DEFERRED.get():
+                root = active_arena.deferred_channel(
+                    target,
+                    DeferredChannel(self, target, start_state),
+                )
+                return Morphism._from_parts(
+                    active_arena,
+                    root,
+                    _unresolved_lane_refs((target,)),
+                    -1,
+                    summaries_resolved=False,
+                )
             with _arena_scope():
                 return self._execute_on_channel(target, start_state)
 
         if not isinstance(target, Morphism):
             raise TypeError(f"Target must be Channel or Morphism, got {type(target)}")
-        with _arena_scope(target._arena):
-            return _apply_deferred_operations(
-                target,
-                {channel: self for channel in target.channels},
-                application_breadcrumbs={
-                    channel: (
-                        (application_breadcrumb,)
-                        if application_breadcrumb is not None
-                        else ()
-                    )
-                    for channel in target.channels
-                },
-            )
+        return _record_deferred_operations(
+            target,
+            {channel: self for channel in target.channels},
+            application_breadcrumbs={
+                channel: (
+                    (application_breadcrumb,)
+                    if application_breadcrumb is not None
+                    else ()
+                )
+                for channel in target.channels
+            },
+        )
 
     def __rshift__(self, other: Self) -> "MorphismDef":
         if not isinstance(other, MorphismDef):
@@ -131,13 +168,14 @@ class MorphismDef:
             )
             application_trace = generator_trace + (apply_breadcrumb,)
             if not morphism_piece.channels:
-                if morphism_piece.total_duration_cycles > 0:
+                piece_duration = morphism_piece.total_duration_expr
+                if isinstance(piece_duration, Expr) or piece_duration > 0:
                     morphism_piece = from_atomic(
                         AtomicMorphism(
                             channel=channel,
                             start_state=current_state,
                             end_state=current_state,
-                            duration_cycles=morphism_piece.total_duration_expr,
+                            duration_cycles=piece_duration,
                             operation_type=OperationType.IDENTITY,
                             timing_kind=TimingKind.DELAY,
                             debug_trace=(
@@ -179,10 +217,6 @@ def _pad_channel_morphism(
     current_duration = result_morphism.total_duration_expr
     if structurally_equal(current_duration, target_duration_cycles):
         return result_morphism
-    if isinstance(current_duration, Expr) or isinstance(target_duration_cycles, Expr):
-        raise TypeError(
-            "Deferred channel application requires concrete or structurally equal symbolic durations."
-        )
     padding_cycles = target_duration_cycles - current_duration
     end_state = _inferred_morphism_end_state(result_morphism, channel, RWGUninitialized())
     padding_op = AtomicMorphism(
@@ -195,6 +229,68 @@ def _pad_channel_morphism(
         debug_trace=(auto_generated_breadcrumb("deferred_padding"),) + application_trace,
     )
     return result_morphism >> from_atomic(padding_op)
+
+
+def _record_deferred_operations(
+    base_morphism: Morphism,
+    channel_operations: Dict[Channel, MorphismDef],
+    application_breadcrumbs: Dict[
+        Channel, tuple[DebugBreadcrumb, ...]
+    ]
+    | None = None,
+) -> Morphism:
+    """Record template application without inspecting state or duration."""
+    for channel in channel_operations:
+        if channel not in base_morphism.channels:
+            available_channels = [
+                str(available.global_id) for available in base_morphism.channels
+            ]
+            raise ValueError(
+                f"Channel {channel.global_id} not found in morphism. "
+                f"Available channels: {available_channels}"
+            )
+    if not channel_operations:
+        return base_morphism
+    breadcrumbs = application_breadcrumbs or {}
+    application = DeferredApplication(
+        channel_operations=tuple(channel_operations.items()),
+        application_breadcrumbs=tuple(
+            (channel, breadcrumbs.get(channel, ()))
+            for channel in channel_operations
+        ),
+    )
+    root = base_morphism._arena.deferred_apply(
+        base_morphism._root,
+        application,
+    )
+    return Morphism._from_parts(
+        base_morphism._arena,
+        root,
+        _unresolved_lane_refs(base_morphism.channels),
+        -1,
+        summaries_resolved=False,
+    )
+
+
+def deferred_batch_from_state_source(
+    state_source: Morphism,
+    channel_operations: Dict[Channel, MorphismDef],
+) -> Morphism:
+    """Build a standalone batch whose incoming states reference another root."""
+    for channel in channel_operations:
+        if channel not in state_source.channels:
+            raise KeyError(channel)
+    if not channel_operations:
+        return Morphism._from_wait_cycles(0)
+    payload = DeferredBatch(tuple(channel_operations.items()))
+    root = state_source._arena.deferred_batch(state_source._root, payload)
+    return Morphism._from_parts(
+        state_source._arena,
+        root,
+        _unresolved_lane_refs(channel_operations.keys()),
+        -1,
+        summaries_resolved=False,
+    )
 
 def _apply_deferred_operations(
     base_morphism: Morphism,
@@ -213,10 +309,10 @@ def _apply_deferred_operations(
         return base_morphism
 
     operation_results: Dict[Channel, Morphism] = {}
-    max_duration_cycles = 0
+    max_duration_cycles: int | Expr = 0
     for channel, operation_def in channel_operations.items():
         end_state = _inferred_morphism_end_state(base_morphism, channel, RWGUninitialized())
-        result_morphism = operation_def(channel, end_state)
+        result_morphism = operation_def._execute_on_channel(channel, end_state)
         if application_breadcrumbs is not None:
             result_morphism = annotate_morphism(
                 result_morphism,
@@ -224,19 +320,17 @@ def _apply_deferred_operations(
             )
         operation_results[channel] = result_morphism
         result_duration = result_morphism.total_duration_expr
-        if isinstance(result_duration, Expr):
-            if not structurally_equal(max_duration_cycles, 0) and not structurally_equal(max_duration_cycles, result_duration):
-                raise TypeError(
-                    "Deferred channel application requires concrete or structurally equal durations. "
-                    "Realize symbolic durations first."
-                )
-            max_duration_cycles = result_duration
+        if structurally_equal(max_duration_cycles, result_duration):
+            continue
+        if isinstance(result_duration, Expr) or isinstance(
+            max_duration_cycles,
+            Expr,
+        ):
+            max_duration_cycles = Expr.maximum(
+                max_duration_cycles,
+                result_duration,
+            )
         else:
-            if isinstance(max_duration_cycles, Expr):
-                raise TypeError(
-                    "Deferred channel application requires concrete or structurally equal durations. "
-                    "Realize symbolic durations first."
-                )
             max_duration_cycles = max(max_duration_cycles, result_duration)
 
     aligned_results = {
@@ -259,7 +353,7 @@ def _apply_deferred_operations(
                 channel,
                 RWGUninitialized(),
             )
-            breadcrumb_trace = ()
+            breadcrumb_trace: tuple[DebugBreadcrumb, ...] = ()
             if application_breadcrumbs is not None:
                 breadcrumb_trace = application_breadcrumbs.get(
                     channel,

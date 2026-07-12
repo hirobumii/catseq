@@ -11,6 +11,7 @@ from ...debug import annotate_atomic
 from ...expr import Expr
 from ...expr.realize import _realize_atomic
 from ...morphism.arena import ArenaOperation, ArenaProgram, NodeKind
+from ...morphism.lower import lower_deferred_program
 from ...types.common import (
     AtomicMorphism,
     Channel,
@@ -491,13 +492,16 @@ class CompilerSession:
         *,
         verbose: bool = False,
     ) -> None:
-        self._program = program
+        self._program = lower_deferred_program(program)
         self._assembler_seq = assembler_seq
         self._verbose = verbose
         self._bindings: dict[str, object] = {}
         self._board_signatures: dict[OASMAddress, tuple[object, ...]] = {}
-        self._reachable_nodes = _reachable_nodes(program)
-        self._dependencies = _node_dependencies(program, self._reachable_nodes)
+        self._reachable_nodes = _reachable_nodes(self._program)
+        self._dependencies = _node_dependencies(
+            self._program,
+            self._reachable_nodes,
+        )
         reverse: dict[str, set[int]] = {}
         for node_id in self._reachable_nodes:
             parameters = self._dependencies[node_id]

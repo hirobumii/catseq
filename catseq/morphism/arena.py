@@ -9,7 +9,13 @@ from typing import Generic, TypeAlias, TypeVar, overload
 
 from ..expr import Expr
 from ..time_utils import time_to_cycles
-from ..types.common import AtomicMorphism, Channel, DebugBreadcrumb, TimedRegion
+from ..types.common import (
+    AtomicMorphism,
+    Channel,
+    DebugBreadcrumb,
+    State,
+    TimedRegion,
+)
 
 
 NodeId = int
@@ -56,6 +62,44 @@ class NodeKind(IntEnum):
     PARALLEL = 4
     ANNOTATE = 5
     REFERENCE = 6
+    DEFERRED_APPLY = 7
+    DEFERRED_CHANNEL = 8
+    DEFERRED_BATCH = 9
+    REPEAT = 10
+
+
+@dataclass(frozen=True, slots=True)
+class DeferredApplication:
+    """Declarative application of channel-bound transition templates."""
+
+    channel_operations: tuple[tuple[Channel, object], ...]
+    application_breadcrumbs: tuple[
+        tuple[Channel, tuple[DebugBreadcrumb, ...]], ...
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class DeferredChannel:
+    """One transition template with an explicit channel/state binding."""
+
+    definition: object
+    channel: Channel
+    start_state: State
+
+
+@dataclass(frozen=True, slots=True)
+class DeferredBatch:
+    """Parallel templates whose states come from another program boundary."""
+
+    channel_operations: tuple[tuple[Channel, object], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DeferredRepeat:
+    """Hardware-loop lowering request retained until compilation."""
+
+    count: int
+    assembler_sequence: object
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +264,71 @@ class ProgramArena:
             self._channel_masks[child],
         )
 
+    def deferred_apply(
+        self,
+        base: NodeId,
+        application: DeferredApplication,
+    ) -> NodeId:
+        """Append an unresolved state-dependent suffix application."""
+        self._validate_children(base, base)
+        available = self._channel_masks[base]
+        selected = 0
+        for channel, _operation in application.channel_operations:
+            channel_id = self._channel_ids.get(channel)
+            if channel_id is None:
+                raise ValueError(
+                    f"Channel {channel.global_id} not found in morphism"
+                )
+            selected |= 1 << channel_id
+        if selected & ~available:
+            raise ValueError("Deferred application selects unavailable channels")
+        return self._append(
+            NodeKind.DEFERRED_APPLY,
+            base,
+            -1,
+            application,
+            available,
+        )
+
+    def deferred_channel(self, channel: Channel, payload: DeferredChannel) -> NodeId:
+        return self._append(
+            NodeKind.DEFERRED_CHANNEL,
+            -1,
+            -1,
+            payload,
+            self._channel_bit(channel),
+        )
+
+    def deferred_batch(
+        self,
+        state_source: NodeId,
+        payload: DeferredBatch,
+    ) -> NodeId:
+        self._validate_children(state_source, state_source)
+        channel_mask = 0
+        for channel, _operation in payload.channel_operations:
+            channel_id = self._channel_ids.get(channel)
+            if channel_id is None:
+                raise KeyError(channel)
+            channel_mask |= 1 << channel_id
+        return self._append(
+            NodeKind.DEFERRED_BATCH,
+            state_source,
+            -1,
+            payload,
+            channel_mask,
+        )
+
+    def repeat(self, child: NodeId, payload: DeferredRepeat) -> NodeId:
+        self._validate_children(child, child)
+        return self._append(
+            NodeKind.REPEAT,
+            child,
+            -1,
+            payload,
+            self._channel_masks[child],
+        )
+
     def _reference(
         self,
         program: ArenaProgram,
@@ -341,6 +450,46 @@ class ProgramArena:
                 target_id = target._annotate(
                     mapped[(program_id, current.left[node_id])],
                     breadcrumbs,
+                )
+            elif kind == NodeKind.DEFERRED_APPLY:
+                application = current.payload[node_id]
+                if not isinstance(application, DeferredApplication):
+                    raise TypeError(
+                        f"Deferred apply node {node_id} has invalid payload"
+                    )
+                target_id = target.deferred_apply(
+                    mapped[(program_id, current.left[node_id])],
+                    application,
+                )
+            elif kind == NodeKind.DEFERRED_CHANNEL:
+                deferred_channel = current.payload[node_id]
+                if not isinstance(deferred_channel, DeferredChannel):
+                    raise TypeError(
+                        f"Deferred channel node {node_id} has invalid payload"
+                    )
+                target_id = target.deferred_channel(
+                    deferred_channel.channel,
+                    deferred_channel,
+                )
+            elif kind == NodeKind.DEFERRED_BATCH:
+                batch = current.payload[node_id]
+                if not isinstance(batch, DeferredBatch):
+                    raise TypeError(
+                        f"Deferred batch node {node_id} has invalid payload"
+                    )
+                target_id = target.deferred_batch(
+                    mapped[(program_id, current.left[node_id])],
+                    batch,
+                )
+            elif kind == NodeKind.REPEAT:
+                repeat = current.payload[node_id]
+                if not isinstance(repeat, DeferredRepeat):
+                    raise TypeError(
+                        f"Repeat node {node_id} has invalid payload"
+                    )
+                target_id = target.repeat(
+                    mapped[(program_id, current.left[node_id])],
+                    repeat,
                 )
             else:
                 raise TypeError(f"Unsupported arena node kind {kind}")

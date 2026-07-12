@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import wraps
-from typing import Callable, Iterator, Mapping, ParamSpec, TypeVar
+from typing import Callable, Iterator, Mapping, ParamSpec, TypeVar, cast
 
 from ..debug import (
     annotate_atomic,
@@ -26,7 +27,14 @@ from ..types.common import (
     State,
     TimedRegion,
 )
-from .arena import ArenaOperation, ArenaProgram, NodeId, NodeKind, ProgramArena
+from .arena import (
+    ArenaOperation,
+    ArenaProgram,
+    DeferredRepeat,
+    NodeId,
+    NodeKind,
+    ProgramArena,
+)
 from .views import lanes_view as render_lanes_view
 from .views import morphism_str, timeline_view as render_timeline_view
 
@@ -90,6 +98,24 @@ def _lane_ref(root: NodeId | None, lane: Lane) -> _LaneRef:
     )
 
 
+def _unresolved_lane_refs(
+    channels: Iterable[Channel],
+) -> dict[Channel, _LaneRef]:
+    """Keep channel identity without pretending boundary summaries are known."""
+    return {
+        channel: _LaneRef(
+            root=None,
+            duration=0,
+            initial_state=None,
+            end_state=None,
+            effective_start_state=None,
+            effective_end_state=None,
+            has_effective=False,
+        )
+        for channel in channels
+    }
+
+
 def _concatenate_lane_duration(
     arena: ProgramArena,
     left_duration: int | Expr,
@@ -147,7 +173,9 @@ class Morphism:
         "_duration_cycles",
         "_lane_refs",
         "_lanes_cache",
+        "_realized_cache",
         "_root",
+        "_summaries_resolved",
     )
 
     def __init__(
@@ -158,6 +186,7 @@ class Morphism:
         _arena: ProgramArena | None = None,
         _root: NodeId | None = None,
         _lane_refs: Mapping[Channel, _LaneRef] | None = None,
+        _summaries_resolved: bool = True,
     ) -> None:
         if _arena is not None and _root is not None and _lane_refs is not None:
             self._arena = _arena
@@ -165,6 +194,8 @@ class Morphism:
             self._lane_refs = dict(_lane_refs)
             self._duration_cycles = _duration_cycles
             self._lanes_cache: dict[Channel, Lane] | None = None
+            self._summaries_resolved = _summaries_resolved
+            self._realized_cache: Morphism | None = None
             return
 
         source_lanes = {} if lanes is None else dict(lanes)
@@ -211,6 +242,8 @@ class Morphism:
         self._lane_refs = refs
         self._duration_cycles = duration
         self._lanes_cache = source_lanes
+        self._summaries_resolved = True
+        self._realized_cache = None
 
     @staticmethod
     def _validate_lane_durations(
@@ -239,12 +272,15 @@ class Morphism:
         root: NodeId,
         lane_refs: Mapping[Channel, _LaneRef],
         duration: int | Expr,
+        *,
+        summaries_resolved: bool = True,
     ) -> Morphism:
         return cls(
             _arena=arena,
             _root=root,
             _lane_refs=lane_refs,
             _duration_cycles=duration,
+            _summaries_resolved=summaries_resolved,
         )
 
     @classmethod
@@ -256,9 +292,25 @@ class Morphism:
     @property
     def arena_program(self) -> ArenaProgram:
         """Return an immutable-length view used by the DAG-native compiler."""
+        if self._realized_cache is not None:
+            return self._realized_cache.arena_program
         return self._arena._consolidate(self._root)
 
+    def _realized(self) -> Morphism:
+        """Lower deferred nodes only for explicit compatibility inspection."""
+        if self._summaries_resolved:
+            return self
+        if self._realized_cache is None:
+            from .lower import materialize_deferred_program
+
+            self._realized_cache = materialize_deferred_program(
+                self.arena_program
+            )
+        return self._realized_cache
+
     def _contains_expr(self) -> bool:
+        if not self._summaries_resolved:
+            return self._realized()._contains_expr()
         program = self.arena_program
         reachable: set[NodeId] = set()
         stack = [program.root]
@@ -283,23 +335,33 @@ class Morphism:
 
     def state_for(self, channel: Channel) -> _LaneRef | None:
         """Return the cached boundary summary for one channel."""
+        if not self._summaries_resolved:
+            return self._realized().state_for(channel)
         return self._lane_refs.get(channel)
 
     def initial_state(self, channel: Channel) -> State | None:
+        if not self._summaries_resolved:
+            return self._realized().initial_state(channel)
         summary = self._lane_refs.get(channel)
         return None if summary is None else summary.initial_state
 
     def end_state(self, channel: Channel) -> State | None:
+        if not self._summaries_resolved:
+            return self._realized().end_state(channel)
         summary = self._lane_refs.get(channel)
         return None if summary is None else summary.end_state
 
     def effective_end_state(self, channel: Channel) -> State | None:
+        if not self._summaries_resolved:
+            return self._realized().effective_end_state(channel)
         summary = self._lane_refs.get(channel)
         return None if summary is None else summary.effective_end_state
 
     @property
     def lanes(self) -> dict[Channel, Lane]:
         """Materialize the legacy per-channel view on explicit access."""
+        if not self._summaries_resolved:
+            return self._realized().lanes
         if self._lanes_cache is None:
             program = self._arena.freeze(self._root)
             self._lanes_cache = {
@@ -374,6 +436,14 @@ class Morphism:
     ) -> tuple[NodeId, dict[Channel, _LaneRef]]:
         if arena is self._arena:
             return self._root, dict(self._lane_refs)
+        if not self._summaries_resolved:
+            program = self._arena.freeze(self._root)
+            imported_root = arena._reference(
+                program,
+                self._root,
+                channels=self.channels,
+            )
+            return imported_root, dict(self._lane_refs)
         channels_with_roots = [
             (channel, lane_ref)
             for channel, lane_ref in self._lane_refs.items()
@@ -412,6 +482,14 @@ class Morphism:
         if not breadcrumbs or not self._lane_refs:
             return self
         root = self._arena._annotate(self._root, breadcrumbs)
+        if not self._summaries_resolved:
+            return Morphism._from_parts(
+                self._arena,
+                root,
+                self._lane_refs,
+                -1,
+                summaries_resolved=False,
+            )
         refs = {
             channel: _LaneRef(
                 root=(
@@ -438,6 +516,8 @@ class Morphism:
     @property
     def total_duration_cycles(self) -> int:
         """Return total duration in hardware cycles."""
+        if not self._summaries_resolved:
+            return self._realized().total_duration_cycles
         if isinstance(self._duration_cycles, Expr):
             raise TypeError(
                 "Morphism duration is symbolic; realize or bind it before requesting cycles."
@@ -446,6 +526,8 @@ class Morphism:
 
     @property
     def total_duration_expr(self) -> int | Expr:
+        if not self._summaries_resolved:
+            return self._realized().total_duration_expr
         if isinstance(self._duration_cycles, Expr):
             return self._duration_cycles
         return self._duration_cycles if self._duration_cycles >= 0 else 0
@@ -464,6 +546,8 @@ class Morphism:
 
     def select_channels(self, channels: tuple[Channel, ...]) -> Morphism:
         """Create a structure-sharing subprogram for the selected channels."""
+        if not self._summaries_resolved:
+            return self._realized().select_channels(channels)
         refs = {
             channel: self._lane_refs[channel]
             for channel in channels
@@ -655,17 +739,51 @@ class Morphism:
         ]
         | None = None,
     ) -> Morphism:
-        from .deferred import _apply_deferred_operations
+        from .deferred import MorphismDef, _record_deferred_operations
 
-        return _apply_deferred_operations(
+        return _record_deferred_operations(
             self,
-            dict(channel_operations),
+            cast(dict[Channel, MorphismDef], dict(channel_operations)),
             (
                 None
                 if application_breadcrumbs is None
                 else dict(application_breadcrumbs)
             ),
         )
+
+    def _deferred_repeat(self, count: int, assembler_sequence: object) -> Morphism:
+        root = self._arena.repeat(
+            self._root,
+            DeferredRepeat(count, assembler_sequence),
+        )
+        return Morphism._from_parts(
+            self._arena,
+            root,
+            _unresolved_lane_refs(self.channels),
+            -1,
+            summaries_resolved=False,
+        )
+
+
+class MorphismEndStateView(Mapping[Channel, State]):
+    """Lazy mapping that preserves a dependency on a Morphism DAG boundary."""
+
+    __slots__ = ("morphism",)
+
+    def __init__(self, morphism: Morphism) -> None:
+        self.morphism = morphism
+
+    def __getitem__(self, channel: Channel) -> State:
+        state = self.morphism.end_state(channel)
+        if state is None:
+            raise KeyError(channel)
+        return state
+
+    def __iter__(self) -> Iterator[Channel]:
+        return iter(self.morphism.channels)
+
+    def __len__(self) -> int:
+        return len(self.morphism.channels)
 
 
 def from_atomic(op: ArenaOperation) -> Morphism:

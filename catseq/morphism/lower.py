@@ -39,6 +39,7 @@ _LOWERED_KINDS = frozenset(
         NodeKind.REPEAT,
     }
 )
+_LOWERING_ERRORS = (TypeError, ValueError, AttributeError, KeyError)
 
 
 def _reachable_nodes(program: ArenaProgram) -> frozenset[int]:
@@ -151,7 +152,7 @@ def materialize_deferred_program(
                         operations,
                         dict(application.application_breadcrumbs),
                     )
-                except (TypeError, ValueError) as error:
+                except _LOWERING_ERRORS as error:
                     raise type(error)(
                         f"{error} (deferred apply arena node {node_id})"
                     ) from error
@@ -169,7 +170,7 @@ def materialize_deferred_program(
                         deferred_channel.channel,
                         deferred_channel.start_state,
                     )
-                except (TypeError, ValueError) as error:
+                except _LOWERING_ERRORS as error:
                     raise type(error)(
                         f"{error} (deferred channel arena node {node_id})"
                     ) from error
@@ -201,7 +202,7 @@ def materialize_deferred_program(
                                 channel_result,
                             )
                         )
-                except (TypeError, ValueError) as error:
+                except _LOWERING_ERRORS as error:
                     raise type(error)(
                         f"{error} (deferred batch arena node {node_id})"
                     ) from error
@@ -232,7 +233,7 @@ def materialize_deferred_program(
                             repeat.count,
                             repeat.assembler_sequence,
                         )
-                    except (TypeError, ValueError) as error:
+                    except _LOWERING_ERRORS as error:
                         raise type(error)(
                             f"{error} (repeat arena node {node_id})"
                         ) from error

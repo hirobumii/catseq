@@ -452,12 +452,12 @@ def test_deferred_batch_error_reports_its_arena_node():
     source = ttl_on(CH0, start_state=TTLState.OFF)
 
     def invalid_transition(_channel, _state):
-        raise TypeError("invalid transition")
+        return _state.missing_transition
 
     batch = deferred_batch_from_state_source(
         source,
         {CH0: MorphismDef(invalid_transition)},
     )
 
-    with pytest.raises(TypeError, match="deferred batch arena node"):
+    with pytest.raises(AttributeError, match="deferred batch arena node"):
         compile_to_oasm_calls(source >> batch)

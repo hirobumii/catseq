@@ -4,16 +4,14 @@ RTMQ timing and cost-analysis helpers.
 
 from typing import List
 
-from ..types.common import OperationType
+from ..types.common import BlackBoxAtomicMorphism, OperationType, TimedRegion
 from .execution import OASM_FUNCTION_MAP
 from .types import OASMAddress
 
 try:
     from oasm.rtmq2 import disassembler
-    from oasm.dev.rwg import C_RWG
 except ImportError:
     disassembler = None
-    C_RWG = None
 
 
 RTMQ_INSTRUCTION_COSTS = {
@@ -274,11 +272,11 @@ def analyze_batch_costs(
     mirrors the previous per-event implementation, which swallowed unsupported
     boards via its ``try/except`` fallback.
     """
-    from .execution import OASM_FUNCTION_MAP
-
-    # Collect events that have OASM calls, preserving order
-    costed = [(i, ev) for i, ev in enumerate(all_events) if ev.oasm_calls]
-    if not costed:
+    # Collect events that have OASM calls, preserving order. Opaque operations
+    # remain in the instruction stream so their boundary hazards are visible,
+    # but their authoritative declared duration is not replaced below.
+    costed_events = [event for event in all_events if event.oasm_calls]
+    if not costed_events:
         return
 
     # The (adr, func, ...) calling convention only works on multi-node
@@ -297,7 +295,7 @@ def analyze_batch_costs(
     # Single-pass: accumulate calls, snapshot line count after each event
     assembler_seq.clear()
     cum_counts: list[int] = []
-    for _idx, event in costed:
+    for event in costed_events:
         for call in event.oasm_calls:
             func = OASM_FUNCTION_MAP.get(call.dsl_func)
             if func:
@@ -313,7 +311,8 @@ def analyze_batch_costs(
     # Single final disassemble
     if adr.value not in assembler_seq.asm.multi:
         return
-    asm_lines = disassembler(core=C_RWG)(assembler_seq.asm[adr.value])
+    binary_asm = assembler_seq.asm[adr.value]
+    asm_lines = disassembler(core=binary_asm.core)(binary_asm)
     total_lines = len(asm_lines)
 
     # Analyze loop structure once on the full assembly
@@ -323,7 +322,7 @@ def analyze_batch_costs(
     est_iter = loop_info.get("estimated_iterations", 1)
 
     # Assign each line to an event
-    n_events = len(costed)
+    n_events = len(costed_events)
     line_of_event = [0] * total_lines
     ev = 0
     for li in range(total_lines):
@@ -331,7 +330,11 @@ def analyze_batch_costs(
             ev += 1
         line_of_event[li] = ev
 
-    # Compute per-event cost preserving cross-boundary gap cycles
+    # Compute per-event cost preserving cross-boundary gap cycles. Keep the
+    # measurement separate so a successful analysis replaces (rather than adds
+    # to) the static fallback, and a missing/empty measurement leaves fallback
+    # behavior unchanged.
+    measured_costs = [0] * n_events
     tail_history: list[str] = []
     for li in range(total_lines):
         ev = line_of_event[li]
@@ -343,15 +346,28 @@ def analyze_batch_costs(
         if li in jump_set and instruction in ("AMK", "CLO") and target_reg == "PTR" and flag == "P":
             loop_mult = est_iter
 
-        costed[ev][1].cost_cycles += _instruction_cost(instruction, target_reg, flag, loop_mult)
+        measured_costs[ev] += _instruction_cost(
+            instruction,
+            target_reg,
+            flag,
+            loop_mult,
+        )
 
         gap = analyze_gap_for_instruction(instruction, target_reg, tail_history)
-        costed[ev][1].cost_cycles += gap * loop_mult
+        measured_costs[ev] += gap * loop_mult
 
         tail_history.append(target_reg)
         tail_history.append(instruction)
         if len(tail_history) > 6:
             tail_history = tail_history[-6:]
+
+    for event_index, measured_cost in enumerate(measured_costs):
+        event = costed_events[event_index]
+        if measured_cost and not isinstance(
+            event.operation,
+            (BlackBoxAtomicMorphism, TimedRegion),
+        ):
+            event.cost_cycles = measured_cost
 
 
 def analyze_operation_cost(event, adr: OASMAddress, assembler_seq, verbose: bool = False) -> int:
@@ -373,7 +389,7 @@ def analyze_operation_cost(event, adr: OASMAddress, assembler_seq, verbose: bool
 
         if adr.value in assembler_seq.asm.multi:
             binary_asm = assembler_seq.asm[adr.value]
-            asm_lines = disassembler(core=C_RWG)(binary_asm)
+            asm_lines = disassembler(core=binary_asm.core)(binary_asm)
             return estimate_oasm_cost(asm_lines)
         return 0
     except Exception as e:

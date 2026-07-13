@@ -197,7 +197,7 @@ def rsp_rf_config(config: RSPWaveformParams):
     R.mua_cpl = mua_cpl(-1.0)
     R.mua_cph = mua_cph(-1.0+2*config.output_max)
     
-    R.rfg_inp[config.rf_out] = mod_inp("mua0", "reg")
+    R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", "reg")
 
 def rsp_pid_config(config: RSPPIDConfig):
     """

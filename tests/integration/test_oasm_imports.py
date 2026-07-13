@@ -1,15 +1,13 @@
 import pytest
 
-# These imports are expected to work after setup.sh is run
+# These imports are provided by the lab-maintained OASM package.
 from oasm.rtmq2.intf import sim_intf
 from oasm.rtmq2 import assembler, disassembler
 from oasm.dev.main import C_MAIN, run_cfg
 from oasm.dev.rwg import C_RWG, rwg
 
 """
-Tests that necessary oasm modules can be imported and objects instantiated.
-This test assumes that 'setup.sh' has been run to make 'oasm.dev.main'
-and 'oasm.dev.rwg' importable.
+Tests that necessary OASM modules can be imported and objects instantiated.
 """
 
 print("\n🧪 Testing OASM imports and instantiation...")

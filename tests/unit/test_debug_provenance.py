@@ -2,13 +2,16 @@
 Unit tests for structural morphism provenance tracing.
 """
 
+from pathlib import Path
+
 import pytest
 
 from catseq import us
-from catseq.atomic import rwg_load_coeffs
+from catseq.atomic import rwg_load_coeffs, ttl_off, ttl_on
+from catseq.compilation.compiler import compile_to_oasm_calls
 from catseq.compilation.pipeline import LogicalEvent, validate_serial_load_constraints
-from catseq.compilation.types import OASMAddress
-from catseq.debug import format_atomic_trace, trace_index
+from catseq.compilation.types import OASMAddress, OASMCall, OASMFunction
+from catseq.debug import capture_callsite, format_atomic_trace, label, trace_index
 from catseq.hardware import ttl
 from catseq.morphism import identity
 from catseq.types.common import Board, Channel, ChannelType, OperationType
@@ -44,6 +47,30 @@ def _extract_load_operations(morphism, channel: Channel):
         for op in morphism.lanes[channel].operations
         if op.operation_type == OperationType.RWG_LOAD_COEFFS
     ]
+
+
+def test_capture_callsite_reuses_source_path_resolution(tmp_path, monkeypatch):
+    source_path = tmp_path / "cached_callsite_probe.py"
+    source = "def probe():\n    return capture_callsite()\n"
+    source_path.write_text(source)
+    namespace = {"capture_callsite": capture_callsite}
+    exec(compile(source, str(source_path), "exec"), namespace)
+    original_resolve = Path.resolve
+    resolved_paths = []
+
+    def track_resolve(path, *args, **kwargs):
+        resolved_paths.append(path)
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", track_resolve)
+
+    first_frame = namespace["probe"]()
+    second_frame = namespace["probe"]()
+
+    assert first_frame == second_frame
+    assert first_frame is not None
+    assert first_frame.source_text == "return capture_callsite()"
+    assert len(resolved_paths) == 1
 
 
 def test_trace_distinguishes_different_composition_lines():
@@ -84,6 +111,114 @@ def test_trace_distinguishes_same_line_loop_iterations_by_compose_id():
     }
 
     assert len(compose_ids) == 2
+
+
+def _append_identities(morphism, _channel):
+    for _ in range(100):
+        morphism = morphism >> identity(1 * us)
+    return morphism
+
+
+def _append_serial_operations(morphism, channel):
+    for _ in range(50):
+        morphism = morphism >> ttl_off(channel)
+        morphism = morphism >> ttl_on(channel)
+    return morphism
+
+
+def _append_deferred_operations(morphism, _channel):
+    for _ in range(50):
+        morphism = morphism >> ttl.off()
+        morphism = morphism >> ttl.on()
+    return morphism
+
+
+def _append_dict_operations(morphism, channel):
+    for _ in range(50):
+        morphism = morphism >> {channel: ttl.off()}
+        morphism = morphism >> {channel: ttl.on()}
+    return morphism
+
+
+def _append_strict_operations(morphism, channel):
+    for _ in range(50):
+        morphism = morphism @ ttl_off(channel)
+        morphism = morphism @ ttl_on(channel)
+    return morphism
+
+
+def _append_parallel_operations(morphism, channel):
+    for local_id in range(1, 101):
+        parallel_channel = Channel(channel.board, local_id, ChannelType.TTL)
+        morphism = morphism | ttl_on(parallel_channel)
+    return morphism
+
+
+@pytest.mark.parametrize(
+    "extend_morphism",
+    [
+        _append_identities,
+        _append_serial_operations,
+        _append_deferred_operations,
+        _append_dict_operations,
+        _append_strict_operations,
+        _append_parallel_operations,
+    ],
+)
+def test_composition_keeps_existing_operation_trace_bounded(extend_morphism):
+    board = Board("main")
+    channel = Channel(board, 0, ChannelType.TTL)
+    initial_morphism = ttl_on(channel)
+    first_operation = initial_morphism.lanes[channel].operations[0]
+
+    final_morphism = extend_morphism(initial_morphism, channel)
+    final_first_operation = final_morphism.lanes[channel].operations[0]
+
+    assert final_first_operation.debug_id == first_operation.debug_id
+    assert final_first_operation.debug_trace == first_operation.debug_trace
+
+
+def test_provenance_does_not_change_golden_compiled_oasm_calls():
+    board = Board("main")
+    first_channel = Channel(board, 0, ChannelType.TTL)
+    second_channel = Channel(board, 1, ChannelType.TTL)
+    morphism = (
+        ttl_on(first_channel)
+        >> identity(1 * us)
+        >> ttl_off(first_channel)
+    ) | (
+        ttl_on(second_channel)
+        >> identity(2 * us)
+        >> ttl_off(second_channel)
+    )
+
+    expected_calls = {
+        OASMAddress.MAIN: [
+            OASMCall(
+                OASMAddress.MAIN,
+                OASMFunction.TTL_SET,
+                (3, 3, "main"),
+            ),
+            OASMCall(OASMAddress.MAIN, OASMFunction.WAIT, (250,)),
+            OASMCall(
+                OASMAddress.MAIN,
+                OASMFunction.TTL_SET,
+                (1, 0, "main"),
+            ),
+            OASMCall(OASMAddress.MAIN, OASMFunction.WAIT, (250,)),
+            OASMCall(
+                OASMAddress.MAIN,
+                OASMFunction.TTL_SET,
+                (2, 0, "main"),
+            ),
+        ]
+    }
+
+    assert compile_to_oasm_calls(morphism) == expected_calls
+    assert (
+        compile_to_oasm_calls(label(morphism, "rydberg-transfer"))
+        == expected_calls
+    )
 
 
 def test_dict_apply_trace_includes_channel_and_source_line():

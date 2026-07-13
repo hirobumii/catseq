@@ -2,14 +2,15 @@
 
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Version](https://img.shields.io/badge/version-0.2.3-orange.svg)
-![Tests](https://img.shields.io/badge/tests-136%20passed-brightgreen.svg)
+![Version](https://img.shields.io/badge/version-0.2.4-orange.svg)
+![Tests](https://img.shields.io/badge/tests-166%20passed-brightgreen.svg)
 
 > **A Category Theory-based framework for quantum experiment sequencing** - A mathematically rigorous abstraction for hardware timing in quantum physics experiments.
 
 <p align="center">
   <a href="docs/user/01_quickstart.md"><strong>Quickstart</strong></a> ·
   <a href="docs/user/02_core_concepts.md"><strong>Core Concepts</strong></a> ·
+  <a href="CHANGELOG.md"><strong>Changelog</strong></a> ·
   <a href="docs/dev/compiler_notes.md">Developer Docs</a> ·
   <a href="https://github.com/hirobumii/catseq/issues">Report a Bug</a>
 </p>
@@ -103,18 +104,16 @@ uv pip install -e .[dev]
 To install CatSeq as a dependency from any directory:
 
 ```bash
-# Option 1: Direct installation (requires OASM.dev pre-installed)
-pip install oasm.dev h5py scipy numpy
+# Option 1: Direct installation
 pip install git+https://github.com/hirobumii/catseq.git
 
-# Option 2: Clone and install with environment auto-detection
+# Option 2: Clone and install
 git clone https://github.com/hirobumii/catseq.git
 cd catseq
-python scripts/post_install.py  # Automatically detects your environment
 pip install -e .
 ```
 
-The `post_install.py` script automatically detects your Python environment (virtualenv or system) and installs the required OASM extensions to the correct location.
+CatSeq depends on the lab-maintained OASM package from Gitea, which already includes the RTMQ and device modules used by CatSeq.
 
 ### Basic Usage
 

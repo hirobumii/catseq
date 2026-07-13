@@ -104,10 +104,7 @@ def print_manual_instructions():
     print("  1. Install uv: https://docs.astral.sh/uv/getting-started/installation/")
     print("  2. uv venv --python 3.12")
     print("  3. Activate virtual environment")
-    print("  4. uv pip install oasm.dev h5py scipy numpy")
-    print("  5. uv pip install sipyco")
-    print("  6. python scripts/post_install.py")
-    print("  7. uv pip install -e .[dev]")
+    print("  4. uv pip install -e .[dev]")
 
 
 def main():

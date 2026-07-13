@@ -20,8 +20,6 @@ def strict_compose_morphisms(
     rhs_breadcrumb: DebugBreadcrumb | None = None,
 ) -> Morphism:
     """严格状态匹配组合 (@)"""
-    if lhs_breadcrumb is not None:
-        first = annotate_morphism(first, (lhs_breadcrumb,))
     if rhs_breadcrumb is not None:
         second = annotate_morphism(second, (rhs_breadcrumb,))
 
@@ -94,8 +92,6 @@ def auto_compose_morphisms(
     rhs_breadcrumb: DebugBreadcrumb | None = None,
 ) -> Morphism:
     """自动状态推断组合 (>>)"""
-    if lhs_breadcrumb is not None:
-        first = annotate_morphism(first, (lhs_breadcrumb,))
     if rhs_breadcrumb is not None:
         second = annotate_morphism(second, (rhs_breadcrumb,))
     if not second.lanes:
@@ -179,8 +175,6 @@ def parallel_compose_morphisms(
     rhs_breadcrumb: DebugBreadcrumb | None = None,
 ) -> Morphism:
     """并行组合操作 (|)"""
-    if lhs_breadcrumb is not None:
-        left = annotate_morphism(left, (lhs_breadcrumb,))
     if rhs_breadcrumb is not None:
         right = annotate_morphism(right, (rhs_breadcrumb,))
 

@@ -1,9 +1,9 @@
-import pytest
 from catseq.compilation.compiler import compile_to_oasm_calls
+from catseq.compilation.types import OASMFunction
 from catseq.types.common import ChannelType, Board, Channel
 from catseq.atomic import ttl_on, ttl_off
 from catseq.morphism import identity
-from catseq.morphism import Morphism
+from catseq.time_utils import us
 
 # Define boards and channels for testing
 BOARD0 = Board("RWG0")
@@ -80,3 +80,18 @@ def test_compile_multi_board_morphism():
     board_addresses = {adr.value for adr in oasm_calls_by_board.keys()}
     assert "rwg0" in board_addresses
     assert "rwg1" in board_addresses
+
+
+def test_compile_preserves_terminal_identity_horizon_on_each_board():
+    morphism = (
+        ttl_on(CH0) >> identity(10 * us)
+    ) | (
+        ttl_on(CH2) >> identity(10 * us)
+    )
+
+    calls_by_board = compile_to_oasm_calls(morphism)
+
+    assert set(address.value for address in calls_by_board) == {"rwg0", "rwg1"}
+    for calls in calls_by_board.values():
+        assert calls[-1].dsl_func == OASMFunction.WAIT
+        assert calls[-1].args == (2500,)

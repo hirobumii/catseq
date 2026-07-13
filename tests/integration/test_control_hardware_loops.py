@@ -330,6 +330,28 @@ def test_repeat_morphism_rejects_immediate_same_board_tail_morphism():
         compile_morphism_to_board_funcs(combined, seq)
 
 
+def test_repeat_morphism_preserves_trailing_identity_duration():
+    rwg_board = Board("RWG0")
+    laser = Channel(rwg_board, 0, ChannelType.TTL)
+    seq = assembler(None, [("rwg0", C_RWG)])
+    count = 3
+    loop_fixed_overhead_cycles = 15
+    loop_per_iteration_overhead_cycles = 24
+
+    body = ttl_on(laser) @ identity(1e-6) @ ttl_off(laser)
+    body_with_trailing_delay = body >> identity(10e-6)
+
+    repeated_with_trailing_delay = repeat_morphism(
+        body_with_trailing_delay, count, seq
+    )
+    expected_cycles = loop_fixed_overhead_cycles + count * (
+        loop_per_iteration_overhead_cycles
+        + body_with_trailing_delay.total_duration_cycles
+    )
+
+    assert repeated_with_trailing_delay.total_duration_cycles == expected_cycles
+
+
 if __name__ == "__main__":
     print("🚀 Running Control Hardware Loop Integration Tests")
     print("=" * 60)

@@ -18,7 +18,7 @@ from ..types.common import (
 from ..types.rwg import RWGActive
 from ..types.timing import LogicalTimestamp
 from .execution import OASM_AVAILABLE
-from .timing_analysis import analyze_batch_costs, analyze_operation_cost, static_operation_cost
+from .timing_analysis import analyze_batch_costs, static_operation_cost
 from .types import OASMAddress, OASMCall, OASMFunction
 
 
@@ -363,14 +363,33 @@ def extract_and_translate(morphism, verbose: bool = False) -> Dict[OASMAddress, 
             adr = OASMAddress.RWG0
         events_by_board.setdefault(adr, [])
         physical_lane = merge_board_lanes(board, board_lanes)
+        terminal_identity = None
+        board_end_cycles = max(
+            (lane.total_duration_cycles for lane in board_lanes.values()),
+            default=0,
+        )
+        for lane in board_lanes.values():
+            if (
+                lane.total_duration_cycles == board_end_cycles
+                and lane.operations
+                and lane.operations[-1].operation_type == OperationType.IDENTITY
+            ):
+                terminal_identity = lane.operations[-1]
+                break
         for pop in physical_lane.operations:
-            if pop.operation.operation_type == OperationType.IDENTITY:
-                continue
             events_by_board[adr].append(
                 LogicalEvent(
                     timestamp_cycles=pop.timestamp_cycles,
                     operation=pop.operation,
                     is_critical=pop.operation.operation_type in TIMING_CRITICAL_OPERATIONS,
+                )
+            )
+        if terminal_identity is not None:
+            events_by_board[adr].append(
+                LogicalEvent(
+                    timestamp_cycles=board_end_cycles,
+                    operation=terminal_identity,
+                    is_critical=True,
                 )
             )
 
@@ -727,7 +746,12 @@ def validate_blackbox_group_coherence(
 
 def validate_black_box_exclusivity(adr, events: List[LogicalEvent], verbose: bool = False):
     opaque_events = [e for e in events if isinstance(e.operation, (BlackBoxAtomicMorphism, TimedRegion))]
-    other_events = [e for e in events if not isinstance(e.operation, (BlackBoxAtomicMorphism, TimedRegion))]
+    other_events = [
+        event
+        for event in events
+        if not isinstance(event.operation, (BlackBoxAtomicMorphism, TimedRegion))
+        and event.operation.operation_type != OperationType.IDENTITY
+    ]
     if not opaque_events:
         return
     black_box_windows = {}

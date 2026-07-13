@@ -1,0 +1,14 @@
+[package]
+name = "catseqc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "catseqc"
+path = "src/main.rs"
+
+[dependencies]
+catseq-core.workspace = true
+catseq-frontend.workspace = true
+catseq-rtmq.workspace = true

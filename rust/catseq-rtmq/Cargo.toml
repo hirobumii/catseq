@@ -1,0 +1,11 @@
+[package]
+name = "catseq-rtmq"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "catseq_rtmq"
+
+[dependencies]
+catseq-core.workspace = true

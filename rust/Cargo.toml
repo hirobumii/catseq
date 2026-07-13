@@ -1,0 +1,16 @@
+[workspace]
+members = ["catseq-core", "catseq-frontend", "catseq-python", "catseq-rtmq", "catseqc"]
+resolver = "3"
+
+[workspace.package]
+version = "0.3.0-dev.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.dependencies]
+catseq-core = { path = "catseq-core" }
+catseq-frontend = { path = "catseq-frontend" }
+catseq-rtmq = { path = "catseq-rtmq" }
+pyo3 = { version = "0.28.2" }
+tree-sitter = "0.25.10"
+tree-sitter-python = "0.25.0"

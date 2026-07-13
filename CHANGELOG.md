@@ -7,6 +7,15 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Started the 0.3 `catseqc` DAG-native compiler development line.
+- Added a restricted-Python source frontend that discovers sequence entry
+  points without importing or executing experiment modules.
+- Added a shared segmented arena with zero-copy template instantiation.
+- Preserved the Python timing-composition syntax while moving compiler-owned
+  storage to Rust.
+
 ## [0.2.4] - 2026-07-12
 
 ### Added

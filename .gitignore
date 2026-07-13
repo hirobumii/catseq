@@ -39,6 +39,8 @@ __pycache__/
 /build/
 /dist/
 /*.egg-info/
+/rust/target/
+/catseq/_native*.so
 
 # 测试产物
 .pytest_cache/

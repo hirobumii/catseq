@@ -1,0 +1,13 @@
+[package]
+name = "catseq-frontend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "catseq_frontend"
+
+[dependencies]
+catseq-core.workspace = true
+tree-sitter.workspace = true
+tree-sitter-python.workspace = true

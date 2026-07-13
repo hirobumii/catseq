@@ -1,8 +1,9 @@
 //! Stable template definitions and demand-driven specialization caching.
 //!
-//! Python executes the CatSeq DSL and resolves Python objects into stable IDs.
-//! This module starts after that boundary: it contains no Python or backend
-//! types, and its cache keys deliberately exclude runtime scan values.
+//! `catseq-frontend` parses restricted Python source and resolves names into
+//! stable IDs. This module starts after that boundary: it contains no Python
+//! runtime or backend types, and its cache keys deliberately exclude runtime
+//! scan values.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -63,7 +64,7 @@ impl TemplateSignature {
     }
 }
 
-/// One immutable template registered by the Python frontend.
+/// One immutable template registered by the restricted-source frontend.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TemplateDefinition {
     template: TemplateId,

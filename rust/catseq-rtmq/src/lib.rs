@@ -21,14 +21,21 @@ pub struct RelativeBoardFragment {
     pub board: BoardId,
     pub duration_cycles: u64,
     pub events: Vec<RelativeEvent>,
-    /// Late-bound event offsets evaluated from scan-dependent expressions.
+    /// Late-bound timing values evaluated from scan-dependent expressions.
     pub time_relocations: Vec<TimeRelocation>,
 }
 
-/// Replace one event's relative timestamp with a runtime-evaluated value.
+/// Timing field replaced by a runtime-evaluated value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TimeRelocationTarget {
+    EventOffset(usize),
+    Duration,
+}
+
+/// Replace one timing field with a runtime-evaluated value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TimeRelocation {
-    pub event_index: usize,
+    pub target: TimeRelocationTarget,
     pub runtime_value: RuntimeValueId,
 }
 
@@ -40,6 +47,14 @@ pub type RuntimeValues = BTreeMap<RuntimeValueId, u64>;
 pub struct LinkedEvent {
     pub timestamp_cycles: u64,
     pub operation_id: u32,
+}
+
+/// One board-local artifact after scan binding and absolute relocation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinkedBoardFragment {
+    pub board: BoardId,
+    pub duration_cycles: u64,
+    pub events: Vec<LinkedEvent>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,7 +75,7 @@ pub enum LinkError {
 }
 
 impl RelativeBoardFragment {
-    /// Bind scan-dependent offsets and relocate one precompiled fragment.
+    /// Bind scan-dependent timing values and relocate one precompiled fragment.
     ///
     /// The fragment and its source template DAG remain immutable, so another
     /// scan point can reuse both without template recompilation.
@@ -68,31 +83,38 @@ impl RelativeBoardFragment {
         &self,
         base_cycles: u64,
         runtime_values: &RuntimeValues,
-    ) -> Result<Vec<LinkedEvent>, LinkError> {
+    ) -> Result<LinkedBoardFragment, LinkError> {
         let mut offsets: Vec<u64> = self
             .events
             .iter()
             .map(|event| event.offset_cycles)
             .collect();
+        let mut duration_cycles = self.duration_cycles;
         for relocation in &self.time_relocations {
-            let offset = runtime_values
+            let value = runtime_values
                 .get(&relocation.runtime_value)
                 .copied()
                 .ok_or(LinkError::MissingRuntimeValue {
                     board: self.board,
                     runtime_value: relocation.runtime_value,
                 })?;
-            let target =
-                offsets
-                    .get_mut(relocation.event_index)
-                    .ok_or(LinkError::InvalidEventIndex {
-                        board: self.board,
-                        event_index: relocation.event_index,
-                    })?;
-            *target = offset;
+            match relocation.target {
+                TimeRelocationTarget::EventOffset(event_index) => {
+                    let target =
+                        offsets
+                            .get_mut(event_index)
+                            .ok_or(LinkError::InvalidEventIndex {
+                                board: self.board,
+                                event_index,
+                            })?;
+                    *target = value;
+                }
+                TimeRelocationTarget::Duration => duration_cycles = value,
+            }
         }
 
-        self.events
+        let events = self
+            .events
             .iter()
             .zip(offsets)
             .map(|(event, offset_cycles)| {
@@ -108,7 +130,12 @@ impl RelativeBoardFragment {
                         offset_cycles,
                     })
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(LinkedBoardFragment {
+            board: self.board,
+            duration_cycles,
+            events,
+        })
     }
 }
 

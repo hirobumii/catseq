@@ -12,15 +12,22 @@ use std::ops::Range;
 
 use tree_sitter::{Node, Parser, Point, Tree};
 
+mod arena_lowering;
 mod hir;
 mod names;
+mod session;
 mod validate;
 
+pub use arena_lowering::{ArenaLoweringError, SourceArenaProgram, lower_sequence_hir};
 pub use hir::{
     BinaryOperator, CompositionKind, ExpressionId, HirExpression, HirKind, KeywordArgument,
     Literal, LoweringError, SequenceHir, SourceSpan, UnaryOperator,
 };
 pub use names::{PathRoot, ResolvedPath, ScanSlotUse};
+pub use session::{
+    CacheStatus, CompiledSourceSequence, SourceCompileError, SourceCompileOutcome,
+    SourceCompilerSession,
+};
 pub use validate::{TopologyContext, ValidationError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]

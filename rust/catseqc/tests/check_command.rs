@@ -35,7 +35,9 @@ fn binary_discovers_requested_sequence_entry_from_source() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Experiment.sequence"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Experiment.sequence"));
+    assert!(stdout.contains("1 arena nodes"), "{stdout}");
 }
 
 #[test]

@@ -61,6 +61,8 @@ pub enum NodeKind {
     DeferredBatch = 9,
     Repeat = 10,
     Instantiate = 11,
+    /// A restricted-Python call retained for source-HIR specialization.
+    SourceCall = 12,
 }
 
 impl TryFrom<u8> for NodeKind {
@@ -80,6 +82,7 @@ impl TryFrom<u8> for NodeKind {
             9 => Ok(Self::DeferredBatch),
             10 => Ok(Self::Repeat),
             11 => Ok(Self::Instantiate),
+            12 => Ok(Self::SourceCall),
             _ => Err(ArenaError::new(format!("unknown node kind {value}"))),
         }
     }
@@ -251,6 +254,28 @@ impl ArenaStore {
                 payload_id: expression_id,
                 channel_mask: 0,
                 provenance_id,
+            },
+        )
+    }
+
+    /// Append an unresolved Morphism-producing call from source HIR.
+    ///
+    /// The payload and provenance IDs both refer to the owning `SequenceHir`.
+    /// A zero channel mask means that service resolution has not run yet.
+    pub fn source_call(
+        &self,
+        segment: SegmentId,
+        expression_id: u32,
+    ) -> Result<NodeRef, ArenaError> {
+        self.append(
+            segment,
+            Node {
+                kind: NodeKind::SourceCall,
+                left: None,
+                right: None,
+                payload_id: expression_id,
+                channel_mask: 0,
+                provenance_id: expression_id,
             },
         )
     }
@@ -555,9 +580,11 @@ impl ArenaStore {
         right: Option<NodeRef>,
     ) -> Result<(), ArenaError> {
         let valid = match kind {
-            NodeKind::Atomic | NodeKind::Wait | NodeKind::Reference | NodeKind::DeferredChannel => {
-                left.is_none() && right.is_none()
-            }
+            NodeKind::Atomic
+            | NodeKind::Wait
+            | NodeKind::Reference
+            | NodeKind::DeferredChannel
+            | NodeKind::SourceCall => left.is_none() && right.is_none(),
             NodeKind::AutoSerial | NodeKind::StrictSerial | NodeKind::Parallel => {
                 left.is_some() && right.is_some()
             }

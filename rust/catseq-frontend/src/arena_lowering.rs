@@ -13,6 +13,7 @@ use crate::{CompositionKind, ExpressionId, HirKind, SequenceHir, SourceSpan};
 #[derive(Clone, Debug)]
 pub struct SourceArenaProgram {
     hir: Arc<SequenceHir>,
+    store: ArenaStore,
     frozen: FrozenProgram,
     segment: SegmentId,
 }
@@ -36,6 +37,20 @@ impl SourceArenaProgram {
 
     pub const fn segment(&self) -> SegmentId {
         self.segment
+    }
+
+    pub(crate) fn rebind_hir(&self, hir: Arc<SequenceHir>) -> Self {
+        debug_assert!(self.hir.structurally_eq_ignoring_spans(&hir));
+        let frozen = self
+            .store
+            .freeze_with_owner(self.root(), Arc::clone(&hir))
+            .expect("an append-only arena cannot invalidate a frozen root");
+        Self {
+            hir,
+            store: self.store.clone(),
+            frozen,
+            segment: self.segment,
+        }
     }
 }
 
@@ -179,9 +194,10 @@ pub fn lower_sequence_hir(
     }
 
     let root = lowered[&hir.root()];
-    let frozen = store.freeze(root)?;
+    let frozen = store.freeze_with_owner(root, Arc::clone(&hir))?;
     Ok(SourceArenaProgram {
         hir,
+        store: store.clone(),
         frozen,
         segment,
     })

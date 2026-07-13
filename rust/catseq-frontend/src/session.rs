@@ -24,6 +24,11 @@ pub struct CompiledSourceSequence {
     entry: String,
     program: SourceArenaProgram,
     template: TemplateId,
+    resolution: ResolutionSnapshot,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ResolutionSnapshot {
     scan_slots: Vec<ScanSlotUse>,
     resolved_paths: Vec<ResolvedPath>,
     call_targets: Vec<ResolvedPath>,
@@ -43,15 +48,15 @@ impl CompiledSourceSequence {
     }
 
     pub fn scan_slots(&self) -> &[ScanSlotUse] {
-        &self.scan_slots
+        &self.resolution.scan_slots
     }
 
     pub fn call_targets(&self) -> &[ResolvedPath] {
-        &self.call_targets
+        &self.resolution.call_targets
     }
 
     pub fn resolved_paths(&self) -> &[ResolvedPath] {
-        &self.resolved_paths
+        &self.resolution.resolved_paths
     }
 }
 
@@ -116,49 +121,73 @@ impl SourceCompilerSession {
         source: &str,
         entry: &str,
     ) -> Result<SourceCompileOutcome, SourceCompileError> {
+        if let Some(reused) = self.reuse_exact_source(file_name, source, entry) {
+            return Ok(reused);
+        }
+
+        let module = self.source_module(file_name, source)?;
+        self.compile_module_entry(&module, entry)
+    }
+
+    /// Compile an entry from an already parsed module, sharing this session's
+    /// arena and caches. This is the multi-entry `catseqc` path.
+    pub fn compile_module_entry(
+        &mut self,
+        module: &SourceModule,
+        entry: &str,
+    ) -> Result<SourceCompileOutcome, SourceCompileError> {
+        let file_name = module.file_name();
+        let source = &module.source;
+        if let Some(reused) = self.reuse_exact_source(file_name, source, entry) {
+            return Ok(reused);
+        }
         let key = DefinitionCacheKey {
             file_name: file_name.to_owned(),
             entry: entry.to_owned(),
         };
-        if let Some(cached) = self.cache.get(&key) {
-            if cached.source == source {
-                return Ok(SourceCompileOutcome {
-                    status: CacheStatus::SourceReused,
-                    artifact: Arc::clone(&cached.artifact),
-                });
-            }
-        }
-
-        let module = self.source_module(file_name, source)?;
         let hir = Arc::new(module.lower_sequence(entry)?);
         module.validate_sequence_hir(&hir)?;
-        let scan_slots = module.scan_slots(&hir);
-        let resolved_paths = module.resolved_paths(&hir);
-        let call_targets = module.resolved_call_targets(&hir);
+        let resolution = ResolutionSnapshot {
+            scan_slots: module.scan_slots(&hir),
+            resolved_paths: module.resolved_paths(&hir),
+            call_targets: module.resolved_call_targets(&hir),
+        };
         if let Some(cached) = self.cache.get_mut(&key) {
-            let hir_matches = cached.artifact.program.hir() == hir.as_ref()
-                && cached.artifact.scan_slots == scan_slots
-                && cached.artifact.resolved_paths == resolved_paths
-                && cached.artifact.call_targets == call_targets;
+            let hir_matches = cached
+                .artifact
+                .program
+                .hir()
+                .structurally_eq_ignoring_spans(&hir)
+                && cached.artifact.resolution == resolution;
             if hir_matches {
+                let program = cached.artifact.program.rebind_hir(hir);
+                let artifact = Arc::new(CompiledSourceSequence {
+                    entry: entry.to_owned(),
+                    program,
+                    template: cached.artifact.template,
+                    resolution,
+                });
                 cached.source = source.to_owned();
+                cached.artifact = Arc::clone(&artifact);
                 return Ok(SourceCompileOutcome {
                     status: CacheStatus::HirReused,
-                    artifact: Arc::clone(&cached.artifact),
+                    artifact,
                 });
             }
         }
 
         let segment = self.arena.create_segment(SegmentKind::Template);
         let program = lower_sequence_hir(hir, &self.arena, segment)?;
-        let template = self.arena.publish_template(program.root(), 0)?;
+        let template = self.arena.publish_template_with_owner(
+            program.root(),
+            0,
+            Arc::clone(program.hir_arc()),
+        )?;
         let artifact = Arc::new(CompiledSourceSequence {
             entry: entry.to_owned(),
             program,
             template,
-            scan_slots,
-            resolved_paths,
-            call_targets,
+            resolution,
         });
         self.cache.insert(
             key,
@@ -175,6 +204,23 @@ impl SourceCompilerSession {
 
     pub fn cached_artifact_count(&self) -> usize {
         self.cache.len()
+    }
+
+    fn reuse_exact_source(
+        &self,
+        file_name: &str,
+        source: &str,
+        entry: &str,
+    ) -> Option<SourceCompileOutcome> {
+        let key = DefinitionCacheKey {
+            file_name: file_name.to_owned(),
+            entry: entry.to_owned(),
+        };
+        let cached = self.cache.get(&key)?;
+        (cached.source == source).then(|| SourceCompileOutcome {
+            status: CacheStatus::SourceReused,
+            artifact: Arc::clone(&cached.artifact),
+        })
     }
 
     fn source_module(

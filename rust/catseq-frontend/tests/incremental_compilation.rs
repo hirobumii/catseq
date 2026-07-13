@@ -58,14 +58,40 @@ fn source_hir_reuses_the_arena_when_only_host_source_changes() {
         .compile_source("experiment.py", SCAN_SOURCE, "sequence")
         .unwrap();
     let node_count = session.arena().total_node_count();
-    let source_with_host_change = format!("{SCAN_SOURCE}\n# host-side analysis changed\n");
+    let old_root_span = first
+        .artifact()
+        .program()
+        .hir()
+        .expression(first.artifact().program().hir().root())
+        .span();
+    let source_with_host_change = format!("# host-side analysis changed\n{SCAN_SOURCE}");
 
     let second = session
         .compile_source("experiment.py", &source_with_host_change, "sequence")
         .unwrap();
 
     assert_eq!(second.status(), CacheStatus::HirReused);
-    assert!(Arc::ptr_eq(first.artifact(), second.artifact()));
+    assert_eq!(
+        second.artifact().program().root(),
+        first.artifact().program().root()
+    );
+    let new_root_span = second
+        .artifact()
+        .program()
+        .hir()
+        .expression(second.artifact().program().hir().root())
+        .span();
+    assert_eq!(new_root_span.start_line, old_root_span.start_line + 1);
+    let frozen_hir = second
+        .artifact()
+        .program()
+        .frozen()
+        .owner::<catseq_frontend::SequenceHir>()
+        .expect("rebound frozen program should pin the new HIR");
+    assert_eq!(
+        frozen_hir.expression(frozen_hir.root()).span().start_line,
+        new_root_span.start_line
+    );
     assert_eq!(session.arena().total_node_count(), node_count);
 }
 
@@ -87,4 +113,34 @@ fn changed_name_resolution_invalidates_an_identical_hir() {
     assert_eq!(first.status(), CacheStatus::Compiled);
     assert_eq!(second.status(), CacheStatus::Compiled);
     assert!(!Arc::ptr_eq(first.artifact(), second.artifact()));
+}
+
+#[test]
+fn published_template_pins_the_hir_that_interprets_source_payloads() {
+    let mut session = SourceCompilerSession::new();
+    let template = {
+        let first = session
+            .compile_source(
+                "experiment.py",
+                "@arena_build\ndef sequence():\n    return pulse(1)\n",
+                "sequence",
+            )
+            .unwrap();
+        first.artifact().template()
+    };
+    session
+        .compile_source(
+            "experiment.py",
+            "@arena_build\ndef sequence():\n    return pulse(2)\n",
+            "sequence",
+        )
+        .unwrap();
+
+    let pinned = session
+        .arena()
+        .template_owner::<catseq_frontend::SequenceHir>(template)
+        .unwrap()
+        .expect("source template should retain its HIR owner");
+
+    assert_eq!(pinned.call_count(), 1);
 }

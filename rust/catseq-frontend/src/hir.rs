@@ -165,6 +165,18 @@ impl SequenceHir {
         self.root
     }
 
+    pub(crate) fn structurally_eq_ignoring_spans(&self, other: &Self) -> bool {
+        self.parameters == other.parameters
+            && self.parameter_types == other.parameter_types
+            && self.root == other.root
+            && self.expressions.len() == other.expressions.len()
+            && self
+                .expressions
+                .iter()
+                .zip(&other.expressions)
+                .all(|(left, right)| left.kind == right.kind)
+    }
+
     pub fn call_count(&self) -> usize {
         let reachable = self.reachable_mask();
         self.expressions

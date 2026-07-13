@@ -2,10 +2,8 @@ use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::process::ExitCode;
-use std::sync::Arc;
 
-use catseq_core::arena::{ArenaStore, SegmentKind};
-use catseq_frontend::{SourceModule, lower_sequence_hir};
+use catseq_frontend::{SourceCompilerSession, SourceModule};
 
 fn main() -> ExitCode {
     match run(env::args().skip(1)) {
@@ -35,41 +33,37 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     let source =
         fs::read_to_string(&path).map_err(|error| format!("cannot read {path}: {error}"))?;
     let module = SourceModule::parse(&path, &source).map_err(|error| error.to_string())?;
-    let arena = ArenaStore::new();
+    let mut compiler = SourceCompilerSession::new();
     if let Some(requested) = requested_entry {
         let entry = module
             .sequence_entry(&requested)
             .ok_or_else(|| format!("sequence entry {requested:?} not found in {path}"))?;
-        check_entry(&module, &arena, entry.qualified_name())?;
+        check_entry(&module, &mut compiler, entry.qualified_name())?;
         return Ok(());
     }
     for entry in module.sequence_entries() {
-        check_entry(&module, &arena, entry.qualified_name())?;
+        check_entry(&module, &mut compiler, entry.qualified_name())?;
     }
     Ok(())
 }
 
-fn check_entry(module: &SourceModule, arena: &ArenaStore, name: &str) -> Result<(), String> {
-    let hir = Arc::new(
-        module
-            .lower_sequence(name)
-            .map_err(|error| error.to_string())?,
-    );
-    module
-        .validate_sequence_hir(&hir)
+fn check_entry(
+    module: &SourceModule,
+    compiler: &mut SourceCompilerSession,
+    name: &str,
+) -> Result<(), String> {
+    let result = compiler
+        .compile_module_entry(module, name)
         .map_err(|error| error.to_string())?;
-    let unique_scan_slots: HashSet<_> = module
-        .scan_slots(&hir)
-        .into_iter()
+    let artifact = result.artifact();
+    let hir = artifact.program().hir();
+    let unique_scan_slots: HashSet<_> = artifact
+        .scan_slots()
+        .iter()
         .map(|slot| slot.runtime_value())
         .collect();
-    let segment = arena.create_segment(SegmentKind::Template);
-    let program =
-        lower_sequence_hir(Arc::clone(&hir), arena, segment).map_err(|error| error.to_string())?;
-    arena
-        .publish_template(program.root(), 0)
-        .map_err(|error| error.to_string())?;
-    let arena_nodes = program
+    let arena_nodes = artifact
+        .program()
         .frozen()
         .reachable_storage_node_count()
         .map_err(|error| error.to_string())?;

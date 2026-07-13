@@ -1,5 +1,6 @@
 //! Shared segmented storage for program and service-template DAGs.
 
+use std::any::Any;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -147,11 +148,31 @@ impl Display for ArenaError {
 
 impl Error for ArenaError {}
 
+#[derive(Clone)]
+struct PinnedOwner(Arc<dyn Any + Send + Sync>);
+
+impl PinnedOwner {
+    fn new<T: Any + Send + Sync>(owner: Arc<T>) -> Self {
+        Self(owner)
+    }
+
+    fn downcast<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        Arc::clone(&self.0).downcast().ok()
+    }
+}
+
+impl std::fmt::Debug for PinnedOwner {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PinnedOwner(..)")
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Template {
     root: NodeRef,
     #[allow(dead_code)]
     schema_id: u32,
+    owner: PinnedOwner,
 }
 
 #[derive(Clone, Debug)]
@@ -368,6 +389,17 @@ impl ArenaStore {
         root: NodeRef,
         schema_id: u32,
     ) -> Result<TemplateId, ArenaError> {
+        self.publish_template_with_owner(root, schema_id, Arc::new(()))
+    }
+
+    /// Publish a template while pinning the typed IR that interprets its
+    /// payload IDs for as long as the template remains in this store.
+    pub fn publish_template_with_owner<T: Any + Send + Sync>(
+        &self,
+        root: NodeRef,
+        schema_id: u32,
+        owner: Arc<T>,
+    ) -> Result<TemplateId, ArenaError> {
         let mut inner = self.write();
         self.node_from(&inner, root)?;
         let segment = self.segment_mut_from(&mut inner, root.segment())?;
@@ -381,8 +413,20 @@ impl ArenaStore {
             store: self.id,
             index: inner.templates.len() as u32,
         };
-        inner.templates.push(Template { root, schema_id });
+        inner.templates.push(Template {
+            root,
+            schema_id,
+            owner: PinnedOwner::new(owner),
+        });
         Ok(template)
+    }
+
+    pub fn template_owner<T: Any + Send + Sync>(
+        &self,
+        template: TemplateId,
+    ) -> Result<Option<Arc<T>>, ArenaError> {
+        let inner = self.read();
+        Ok(self.template_from(&inner, template)?.owner.downcast())
     }
 
     pub fn instantiate(
@@ -420,10 +464,20 @@ impl ArenaStore {
     }
 
     pub fn freeze(&self, root: NodeRef) -> Result<FrozenProgram, ArenaError> {
+        self.freeze_with_owner(root, Arc::new(()))
+    }
+
+    /// Freeze a root while pinning the typed IR that interprets its payloads.
+    pub fn freeze_with_owner<T: Any + Send + Sync>(
+        &self,
+        root: NodeRef,
+        owner: Arc<T>,
+    ) -> Result<FrozenProgram, ArenaError> {
         self.node(root)?;
         Ok(FrozenProgram {
             store: self.clone(),
             root,
+            owner: PinnedOwner::new(owner),
         })
     }
 
@@ -608,11 +662,16 @@ impl ArenaStore {
 pub struct FrozenProgram {
     store: ArenaStore,
     root: NodeRef,
+    owner: PinnedOwner,
 }
 
 impl FrozenProgram {
     pub fn root(&self) -> NodeRef {
         self.root
+    }
+
+    pub fn owner<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.owner.downcast()
     }
 
     pub fn reachable_storage_node_count(&self) -> Result<usize, ArenaError> {

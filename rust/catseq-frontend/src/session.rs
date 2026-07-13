@@ -161,10 +161,15 @@ impl SourceCompilerSession {
                 && cached.artifact.resolution == resolution;
             if hir_matches {
                 let program = cached.artifact.program.rebind_hir(hir);
+                let template = self.arena.publish_template_with_owner(
+                    program.root(),
+                    0,
+                    Arc::clone(program.hir_arc()),
+                )?;
                 let artifact = Arc::new(CompiledSourceSequence {
                     entry: entry.to_owned(),
                     program,
-                    template: cached.artifact.template,
+                    template,
                     resolution,
                 });
                 cached.source = source.to_owned();

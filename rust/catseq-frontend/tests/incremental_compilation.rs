@@ -75,6 +75,7 @@ fn source_hir_reuses_the_arena_when_only_host_source_changes() {
         second.artifact().program().root(),
         first.artifact().program().root()
     );
+    assert_ne!(second.artifact().template(), first.artifact().template());
     let new_root_span = second
         .artifact()
         .program()
@@ -90,6 +91,18 @@ fn source_hir_reuses_the_arena_when_only_host_source_changes() {
         .expect("rebound frozen program should pin the new HIR");
     assert_eq!(
         frozen_hir.expression(frozen_hir.root()).span().start_line,
+        new_root_span.start_line
+    );
+    let template_hir = session
+        .arena()
+        .template_owner::<catseq_frontend::SequenceHir>(second.artifact().template())
+        .unwrap()
+        .expect("rebound template should pin the new HIR");
+    assert_eq!(
+        template_hir
+            .expression(template_hir.root())
+            .span()
+            .start_line,
         new_root_span.start_line
     );
     assert_eq!(session.arena().total_node_count(), node_count);

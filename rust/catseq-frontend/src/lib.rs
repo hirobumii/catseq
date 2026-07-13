@@ -5,17 +5,28 @@
 //! experiment module keep host-side setup and analysis code without granting
 //! that code execution privileges inside the sequence compiler.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::ops::Range;
 
 use tree_sitter::{Node, Parser, Point};
 
+mod hir;
+mod names;
+
+pub use hir::{
+    BinaryOperator, CompositionKind, ExpressionId, HirExpression, HirKind, KeywordArgument,
+    Literal, LoweringError, SequenceHir, SourceSpan, UnaryOperator,
+};
+pub use names::{PathRoot, ResolvedPath, ScanSlotUse};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SequenceEntry {
     qualified_name: String,
     source: String,
     byte_range: Range<usize>,
+    source_start_line: usize,
 }
 
 impl SequenceEntry {
@@ -35,6 +46,7 @@ impl SequenceEntry {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceModule {
     file_name: String,
+    imports: HashMap<String, String>,
     sequence_entries: Vec<SequenceEntry>,
 }
 
@@ -58,9 +70,11 @@ impl SourceModule {
             });
         }
 
+        let imports = names::discover_imports(root, source);
         let sequence_entries = discover_sequence_entries(root, source);
         Ok(Self {
             file_name,
+            imports,
             sequence_entries,
         })
     }
@@ -77,6 +91,42 @@ impl SourceModule {
         self.sequence_entries
             .iter()
             .find(|entry| entry.qualified_name == qualified_name)
+    }
+
+    pub fn lower_sequence(&self, qualified_name: &str) -> Result<SequenceHir, LoweringError> {
+        let entry =
+            self.sequence_entry(qualified_name)
+                .ok_or_else(|| LoweringError::EntryNotFound {
+                    file_name: self.file_name.clone(),
+                    entry: qualified_name.to_owned(),
+                })?;
+        hir::lower_entry(&self.file_name, entry)
+    }
+
+    pub fn resolved_paths(&self, hir: &SequenceHir) -> Vec<ResolvedPath> {
+        hir.expressions()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, _expression)| {
+                names::resolve_path(&self.imports, hir, ExpressionId::from_index(index as u32))
+            })
+            .collect()
+    }
+
+    pub fn resolved_call_targets(&self, hir: &SequenceHir) -> Vec<ResolvedPath> {
+        hir.expressions()
+            .iter()
+            .filter_map(|expression| match expression.kind() {
+                HirKind::Call { function, .. } => {
+                    names::resolve_path(&self.imports, hir, *function)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn scan_slots(&self, hir: &SequenceHir) -> Vec<ScanSlotUse> {
+        names::discover_scan_slots(&self.imports, hir)
     }
 }
 
@@ -208,5 +258,6 @@ fn sequence_entry(function: Node<'_>, scope_names: &[String], source: &str) -> S
         qualified_name: qualified.join("."),
         source: source[byte_range.clone()].to_owned(),
         byte_range,
+        source_start_line: function.start_position().row + 1,
     }
 }

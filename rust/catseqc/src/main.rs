@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::process::ExitCode;
@@ -36,13 +37,33 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         let entry = module
             .sequence_entry(&requested)
             .ok_or_else(|| format!("sequence entry {requested:?} not found in {path}"))?;
-        println!("{}", entry.qualified_name());
+        let hir = module
+            .lower_sequence(&requested)
+            .map_err(|error| error.to_string())?;
+        print_summary(&module, entry.qualified_name(), &hir);
         return Ok(());
     }
     for entry in module.sequence_entries() {
-        println!("{}", entry.qualified_name());
+        let hir = module
+            .lower_sequence(entry.qualified_name())
+            .map_err(|error| error.to_string())?;
+        print_summary(&module, entry.qualified_name(), &hir);
     }
     Ok(())
+}
+
+fn print_summary(module: &SourceModule, name: &str, hir: &catseq_frontend::SequenceHir) {
+    let unique_scan_slots: HashSet<_> = module
+        .scan_slots(hir)
+        .into_iter()
+        .map(|slot| slot.runtime_value())
+        .collect();
+    println!(
+        "{name} ({} HIR nodes, {} calls, {} scan slots)",
+        hir.expressions().len(),
+        hir.call_count(),
+        unique_scan_slots.len()
+    );
 }
 
 fn usage() -> String {

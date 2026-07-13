@@ -16,6 +16,8 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   literals, containers, arithmetic, and timing-composition operators.
 - Added import-aware call-target resolution and stable runtime slots for scan
   parameter uses.
+- Enforced typed `ExpParams` scan discovery, lexical parameter shadowing,
+  root-reachable analysis, and rejection of scan-dependent topology.
 - Added a shared segmented arena with zero-copy template instantiation.
 - Preserved the Python timing-composition syntax while moving compiler-owned
   storage to Rust.

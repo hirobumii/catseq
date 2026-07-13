@@ -73,3 +73,21 @@ fn binary_rejects_python_outside_the_restricted_sequence_language() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("while_statement"));
 }
+
+#[test]
+fn binary_rejects_scan_values_that_change_channel_topology() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "@arena_build\ndef sequence(self, params: ExpParams):\n    return {params[self.channel]: identity(1)}\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("topology"));
+}

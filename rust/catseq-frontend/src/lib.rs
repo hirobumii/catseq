@@ -10,23 +10,24 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::ops::Range;
 
-use tree_sitter::{Node, Parser, Point};
+use tree_sitter::{Node, Parser, Point, Tree};
 
 mod hir;
 mod names;
+mod validate;
 
 pub use hir::{
     BinaryOperator, CompositionKind, ExpressionId, HirExpression, HirKind, KeywordArgument,
     Literal, LoweringError, SequenceHir, SourceSpan, UnaryOperator,
 };
 pub use names::{PathRoot, ResolvedPath, ScanSlotUse};
+pub use validate::{TopologyContext, ValidationError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SequenceEntry {
     qualified_name: String,
     source: String,
     byte_range: Range<usize>,
-    source_start_line: usize,
 }
 
 impl SequenceEntry {
@@ -43,11 +44,13 @@ impl SequenceEntry {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct SourceModule {
     file_name: String,
     imports: HashMap<String, String>,
     sequence_entries: Vec<SequenceEntry>,
+    source: String,
+    tree: Tree,
 }
 
 impl SourceModule {
@@ -76,6 +79,8 @@ impl SourceModule {
             file_name,
             imports,
             sequence_entries,
+            source: source.to_owned(),
+            tree,
         })
     }
 
@@ -100,23 +105,29 @@ impl SourceModule {
                     file_name: self.file_name.clone(),
                     entry: qualified_name.to_owned(),
                 })?;
-        hir::lower_entry(&self.file_name, entry)
+        hir::lower_entry(&self.file_name, entry, &self.tree, &self.source)
     }
 
     pub fn resolved_paths(&self, hir: &SequenceHir) -> Vec<ResolvedPath> {
+        let reachable = hir.reachable_mask();
         hir.expressions()
             .iter()
             .enumerate()
             .filter_map(|(index, _expression)| {
-                names::resolve_path(&self.imports, hir, ExpressionId::from_index(index as u32))
+                reachable[index].then(|| {
+                    names::resolve_path(&self.imports, hir, ExpressionId::from_index(index as u32))
+                })?
             })
             .collect()
     }
 
     pub fn resolved_call_targets(&self, hir: &SequenceHir) -> Vec<ResolvedPath> {
+        let reachable = hir.reachable_mask();
         hir.expressions()
             .iter()
-            .filter_map(|expression| match expression.kind() {
+            .enumerate()
+            .filter_map(|(index, expression)| match expression.kind() {
+                _ if !reachable[index] => None,
                 HirKind::Call { function, .. } => {
                     names::resolve_path(&self.imports, hir, *function)
                 }
@@ -127,6 +138,10 @@ impl SourceModule {
 
     pub fn scan_slots(&self, hir: &SequenceHir) -> Vec<ScanSlotUse> {
         names::discover_scan_slots(&self.imports, hir)
+    }
+
+    pub fn validate_sequence_hir(&self, hir: &SequenceHir) -> Result<(), ValidationError> {
+        validate::validate_scan_topology(&self.file_name, hir, &self.scan_slots(hir))
     }
 }
 
@@ -258,6 +273,5 @@ fn sequence_entry(function: Node<'_>, scope_names: &[String], source: &str) -> S
         qualified_name: qualified.join("."),
         source: source[byte_range.clone()].to_owned(),
         byte_range,
-        source_start_line: function.start_position().row + 1,
     }
 }

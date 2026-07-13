@@ -40,12 +40,18 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         let hir = module
             .lower_sequence(&requested)
             .map_err(|error| error.to_string())?;
+        module
+            .validate_sequence_hir(&hir)
+            .map_err(|error| error.to_string())?;
         print_summary(&module, entry.qualified_name(), &hir);
         return Ok(());
     }
     for entry in module.sequence_entries() {
         let hir = module
             .lower_sequence(entry.qualified_name())
+            .map_err(|error| error.to_string())?;
+        module
+            .validate_sequence_hir(&hir)
             .map_err(|error| error.to_string())?;
         print_summary(&module, entry.qualified_name(), &hir);
     }

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-use tree_sitter::{Node, Parser};
+use tree_sitter::{Node, Tree};
 
 use crate::SequenceEntry;
 
@@ -57,7 +57,7 @@ pub enum Literal {
     Float(f64),
     Boolean(bool),
     None,
-    String(String),
+    RawStringSource(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -139,6 +139,7 @@ impl HirExpression {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SequenceHir {
     parameters: Vec<String>,
+    parameter_types: HashMap<String, String>,
     expressions: Vec<HirExpression>,
     root: ExpressionId,
 }
@@ -146,6 +147,10 @@ pub struct SequenceHir {
 impl SequenceHir {
     pub fn parameters(&self) -> &[String] {
         &self.parameters
+    }
+
+    pub fn parameter_type(&self, parameter: &str) -> Option<&str> {
+        self.parameter_types.get(parameter).map(String::as_str)
     }
 
     pub fn expressions(&self) -> &[HirExpression] {
@@ -161,22 +166,75 @@ impl SequenceHir {
     }
 
     pub fn call_count(&self) -> usize {
+        let reachable = self.reachable_mask();
         self.expressions
             .iter()
-            .filter(|expression| matches!(expression.kind, HirKind::Call { .. }))
+            .enumerate()
+            .filter(|(index, expression)| {
+                reachable[*index] && matches!(expression.kind, HirKind::Call { .. })
+            })
             .count()
     }
 
     pub fn composition_count(&self, selected: CompositionKind) -> usize {
+        let reachable = self.reachable_mask();
         self.expressions
             .iter()
-            .filter(|expression| {
-                matches!(
-                    expression.kind,
-                    HirKind::Compose { kind, .. } if kind == selected
-                )
+            .enumerate()
+            .filter(|(index, expression)| {
+                reachable[*index]
+                    && matches!(
+                        expression.kind,
+                        HirKind::Compose { kind, .. } if kind == selected
+                    )
             })
             .count()
+    }
+
+    pub(crate) fn reachable_mask(&self) -> Vec<bool> {
+        let mut reachable = vec![false; self.expressions.len()];
+        let mut stack = vec![self.root];
+        while let Some(expression) = stack.pop() {
+            let index = expression.0 as usize;
+            if reachable[index] {
+                continue;
+            }
+            reachable[index] = true;
+            push_children(self.expression(expression).kind(), &mut stack);
+        }
+        reachable
+    }
+}
+
+pub(crate) fn push_children(kind: &HirKind, target: &mut Vec<ExpressionId>) {
+    match kind {
+        HirKind::Symbol(_) | HirKind::Literal(_) => {}
+        HirKind::Attribute { object, .. } => target.push(*object),
+        HirKind::Subscript { value, index } => {
+            target.push(*value);
+            target.push(*index);
+        }
+        HirKind::Call {
+            function,
+            arguments,
+            keywords,
+        } => {
+            target.push(*function);
+            target.extend(arguments.iter().copied());
+            target.extend(keywords.iter().map(KeywordArgument::value));
+        }
+        HirKind::Compose { left, right, .. } | HirKind::Binary { left, right, .. } => {
+            target.push(*left);
+            target.push(*right);
+        }
+        HirKind::Unary { argument, .. } => target.push(*argument),
+        HirKind::Dictionary(entries) => {
+            for (key, value) in entries {
+                target.push(*key);
+                target.push(*value);
+            }
+        }
+        HirKind::List(items) | HirKind::Tuple(items) => target.extend(items.iter().copied()),
     }
 }
 
@@ -269,31 +327,21 @@ impl Error for LoweringError {}
 pub(crate) fn lower_entry(
     file_name: &str,
     entry: &SequenceEntry,
+    tree: &Tree,
+    source: &str,
 ) -> Result<SequenceHir, LoweringError> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&tree_sitter_python::LANGUAGE.into())
-        .map_err(|_| invalid_source(file_name, entry))?;
-    let tree = parser
-        .parse(entry.source(), None)
+    let function = find_function(tree.root_node(), entry.byte_range())
         .ok_or_else(|| invalid_source(file_name, entry))?;
-    let mut cursor = tree.root_node().walk();
-    let function = tree
-        .root_node()
-        .named_children(&mut cursor)
-        .find(|node| node.kind() == "function_definition")
-        .ok_or_else(|| invalid_source(file_name, entry))?;
-    let parameters = function
+    let (parameters, parameter_types) = function
         .child_by_field_name("parameters")
-        .map(|node| parameter_names(node, entry.source()))
+        .map(|node| parameters(node, source))
         .unwrap_or_default();
     let body = function
         .child_by_field_name("body")
         .ok_or_else(|| invalid_source(file_name, entry))?;
     let mut lowerer = Lowerer {
         file_name,
-        entry,
-        source: entry.source(),
+        source,
         expressions: Vec::new(),
         locals: HashMap::new(),
     };
@@ -305,9 +353,25 @@ pub(crate) fn lower_entry(
         })?;
     Ok(SequenceHir {
         parameters,
+        parameter_types,
         expressions: lowerer.expressions,
         root,
     })
+}
+
+fn find_function(root: Node<'_>, byte_range: std::ops::Range<usize>) -> Option<Node<'_>> {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "function_definition" && node.byte_range() == byte_range {
+            return Some(node);
+        }
+        if node.end_byte() < byte_range.start || node.start_byte() > byte_range.end {
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    None
 }
 
 fn invalid_source(file_name: &str, entry: &SequenceEntry) -> LoweringError {
@@ -317,11 +381,12 @@ fn invalid_source(file_name: &str, entry: &SequenceEntry) -> LoweringError {
     }
 }
 
-fn parameter_names(parameters: Node<'_>, source: &str) -> Vec<String> {
+fn parameters(parameters: Node<'_>, source: &str) -> (Vec<String>, HashMap<String, String>) {
+    let mut names = Vec::new();
+    let mut types = HashMap::new();
     let mut cursor = parameters.walk();
-    parameters
-        .named_children(&mut cursor)
-        .filter_map(|parameter| match parameter.kind() {
+    for parameter in parameters.named_children(&mut cursor) {
+        let name = match parameter.kind() {
             "identifier" => text(parameter, source).map(str::to_owned),
             "typed_parameter" => first_named_child(parameter)
                 .filter(|name| name.kind() == "identifier")
@@ -332,13 +397,23 @@ fn parameter_names(parameters: Node<'_>, source: &str) -> Vec<String> {
                 .and_then(|name| text(name, source))
                 .map(str::to_owned),
             _ => None,
-        })
-        .collect()
+        };
+        let Some(name) = name else {
+            continue;
+        };
+        if let Some(annotation) = parameter
+            .child_by_field_name("type")
+            .and_then(|annotation| text(annotation, source))
+        {
+            types.insert(name.clone(), annotation.to_owned());
+        }
+        names.push(name);
+    }
+    (names, types)
 }
 
 struct Lowerer<'source> {
     file_name: &'source str,
-    entry: &'source SequenceEntry,
     source: &'source str,
     expressions: Vec<HirExpression>,
     locals: HashMap<String, ExpressionId>,
@@ -419,7 +494,7 @@ impl Lowerer<'_> {
             "true" => HirKind::Literal(Literal::Boolean(true)),
             "false" => HirKind::Literal(Literal::Boolean(false)),
             "none" => HirKind::Literal(Literal::None),
-            "string" | "concatenated_string" => HirKind::Literal(Literal::String(
+            "string" | "concatenated_string" => HirKind::Literal(Literal::RawStringSource(
                 text(node, self.source)
                     .ok_or_else(|| self.unsupported(node))?
                     .to_owned(),
@@ -620,9 +695,9 @@ impl Lowerer<'_> {
         self.expressions.push(HirExpression {
             kind,
             span: SourceSpan {
-                start_byte: self.entry.byte_range().start + node.start_byte(),
-                end_byte: self.entry.byte_range().start + node.end_byte(),
-                start_line: self.entry.source_start_line + point.row,
+                start_byte: node.start_byte(),
+                end_byte: node.end_byte(),
+                start_line: point.row + 1,
                 start_column: point.column + 1,
             },
         });
@@ -651,7 +726,7 @@ impl Lowerer<'_> {
 
     fn location(&self, node: Node<'_>) -> (usize, usize) {
         let point = node.start_position();
-        (self.entry.source_start_line + point.row, point.column + 1)
+        (point.row + 1, point.column + 1)
     }
 }
 

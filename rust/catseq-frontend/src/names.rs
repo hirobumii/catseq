@@ -86,6 +86,12 @@ pub(crate) fn resolve_path(
     }
     segments.reverse();
     let first = segments.first().copied()?;
+    if hir.parameters().iter().any(|parameter| parameter == first) {
+        return Some(ResolvedPath {
+            root: PathRoot::Parameter,
+            qualified_name: segments.join("."),
+        });
+    }
     if let Some(imported) = imports.get(first) {
         let mut qualified_name = imported.clone();
         for segment in &segments[1..] {
@@ -97,13 +103,8 @@ pub(crate) fn resolve_path(
             qualified_name,
         });
     }
-    let root = if hir.parameters().iter().any(|parameter| parameter == first) {
-        PathRoot::Parameter
-    } else {
-        PathRoot::ModuleGlobal
-    };
     Some(ResolvedPath {
-        root,
+        root: PathRoot::ModuleGlobal,
         qualified_name: segments.join("."),
     })
 }
@@ -114,14 +115,22 @@ pub(crate) fn discover_scan_slots(
 ) -> Vec<ScanSlotUse> {
     let mut runtime_values = HashMap::<String, RuntimeValueId>::new();
     let mut uses = Vec::new();
+    let reachable = hir.reachable_mask();
     for (index, expression) in hir.expressions().iter().enumerate() {
+        if !reachable[index] {
+            continue;
+        }
         let HirKind::Subscript { value, index: key } = expression.kind() else {
             continue;
         };
         let Some(container) = resolve_path(imports, hir, *value) else {
             continue;
         };
-        if container.root != PathRoot::Parameter || container.qualified_name != "params" {
+        if container.root != PathRoot::Parameter
+            || !hir
+                .parameter_type(&container.qualified_name)
+                .is_some_and(is_scan_parameter_type)
+        {
             continue;
         }
         let Some(key) = resolve_path(imports, hir, *key) else {
@@ -138,6 +147,13 @@ pub(crate) fn discover_scan_slots(
         });
     }
     uses
+}
+
+fn is_scan_parameter_type(annotation: &str) -> bool {
+    annotation
+        .rsplit('.')
+        .next()
+        .is_some_and(|name| name == "ExpParams")
 }
 
 fn discover_direct_imports(

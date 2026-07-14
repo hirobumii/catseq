@@ -1575,6 +1575,108 @@ fn real_rydberg_transfer_emits_a_definition_linked_morphism_arena() {
 }
 
 #[test]
+fn real_rydberg_transfer_compiles_to_a_complete_oasm_call_plan() {
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../rb1-next")
+        .canonicalize();
+    let Ok(source_root) = source_root else {
+        return;
+    };
+    let entry_path = source_root.join("experiments/computing/rydberg_transfer.py");
+    if !entry_path.exists() {
+        return;
+    }
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let bindings_path = fixture_root.join("rydberg_bindings.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "compile",
+            entry_path.to_str().unwrap(),
+            "--source-root",
+            source_root.to_str().unwrap(),
+            "--entry",
+            "RydbergTransferExp.build_sequence",
+            "--compile-environment",
+            fixture_root
+                .join("rydberg_environment.json")
+                .to_str()
+                .unwrap(),
+            "--target-profile",
+            fixture_root.join("rydberg_target.json").to_str().unwrap(),
+            "--link-bindings",
+            bindings_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["stage"], "oasm_call_plan");
+    let plan = &response["oasm_call_plan"];
+    let epochs = plan["epochs"].as_array().unwrap();
+    assert_eq!(epochs.len(), 2);
+    assert_eq!(epochs[0]["origin_cycles"], 0);
+    assert_eq!(epochs[1]["origin_cycles"], 90_000);
+    let calls = plan["epochs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|epoch| epoch["boards"].as_array().unwrap())
+        .flat_map(|board| board["calls"].as_array().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 789, "real-program call inventory changed");
+    for required in [
+        "loop_begin",
+        "loop_end",
+        "ttl_config",
+        "ttl_set",
+        "rwg_set_carrier",
+        "rwg_load_waveform",
+        "rwg_play",
+        "rwg_rf_switch",
+        "rsp_pid_config",
+        "rsp_pid_release",
+        "rsp_rf_config",
+        "wait_master",
+        "trig_slave",
+        "user_defined_func",
+    ] {
+        assert!(
+            calls.iter().any(|call| call["function"] == required),
+            "complete plan is missing {required}"
+        );
+    }
+    let opaque_calls = calls
+        .iter()
+        .filter(|call| call["function"] == "user_defined_func")
+        .collect::<Vec<_>>();
+    assert_eq!(opaque_calls.len(), 2);
+    assert!(opaque_calls.iter().all(|call| {
+        let args = call["args"].as_array().unwrap();
+        args.len() == 3 && args[0].is_string() && args[1].is_array() && args[2].is_object()
+    }));
+    let encoded = serde_json::to_string(plan).unwrap();
+    for leaked_source_token in ["name:", "path:", "bin:", "constant:"] {
+        assert!(
+            !encoded.contains(leaked_source_token),
+            "Python normalization token leaked into OASMCallPlan: {leaked_source_token}"
+        );
+    }
+    assert!(calls.iter().any(|call| {
+        call["function"] == "rwg_load_waveform"
+            && call["args"][0]["amp_coeffs"][1]
+                .as_f64()
+                .is_some_and(|coefficient| coefficient != 0.0)
+    }));
+}
+
+#[test]
 fn compile_emits_a_linked_oasm_call_plan_for_a_ttl_pulse() {
     let path = source_file();
     fs::write(
@@ -1633,6 +1735,63 @@ fn compile_emits_a_linked_oasm_call_plan_for_a_ttl_pulse() {
     assert_eq!(board["address"], "rwg0");
     assert_eq!(
         board["calls"],
+        serde_json::json!([
+            {"offset_cycles": 0, "function": "ttl_set", "args": [1, 1, "rwg"]},
+            {"offset_cycles": 1, "function": "wait", "args": [9]},
+            {"offset_cycles": 10, "function": "ttl_set", "args": [1, 0, "rwg"]}
+        ])
+    );
+}
+
+#[test]
+fn compile_specializes_reachable_morphism_definitions_before_oasm_lowering() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns\n\ndef service(duration: float) -> Morphism:\n    return identity(0) >> {ttl0: pulse(duration)}\n\ndef sequence() -> Morphism:\n    return service(40 * ns)\n",
+    )
+    .unwrap();
+    let environment_path = path.with_extension("environment.json");
+    let channel_key = format!("{}::ttl0", path.display());
+    fs::write(
+        &environment_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "channels": {
+                channel_key: {"board": "rwg0", "local_id": 0, "kind": "ttl"}
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let target_profile_path = ttl_target_profile(&path);
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "compile",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--compile-environment",
+            environment_path.to_str().unwrap(),
+            "--target-profile",
+            target_profile_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    fs::remove_file(environment_path).unwrap();
+    fs::remove_file(target_profile_path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"],
         serde_json::json!([
             {"offset_cycles": 0, "function": "ttl_set", "args": [1, 1, "rwg"]},
             {"offset_cycles": 1, "function": "wait", "args": [9]},

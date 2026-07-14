@@ -76,6 +76,9 @@ pub enum MorphismPayload {
         argument_start: u32,
         argument_count: u32,
     },
+    Loop {
+        count: ValueExprId,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -298,6 +301,12 @@ impl MorphismArena {
                     )));
                 }
                 MorphismNodeKind::Parallel => {}
+                MorphismNodeKind::Loop if children.len() != 1 => {
+                    return Err(MorphismArenaError::new(format!(
+                        "Loop node {index} must have exactly one body"
+                    )));
+                }
+                MorphismNodeKind::Loop => {}
                 _ if !children.is_empty() => {
                     return Err(MorphismArenaError::new(format!(
                         "leaf node {index} unexpectedly has children"
@@ -330,10 +339,10 @@ impl MorphismArena {
                     | (
                         MorphismNodeKind::Serial
                             | MorphismNodeKind::Parallel
-                            | MorphismNodeKind::Loop
                             | MorphismNodeKind::SyncPhi,
                         None
                     )
+                    | (MorphismNodeKind::Loop, Some(MorphismPayload::Loop { .. }))
             );
             if !payload_matches_kind {
                 return Err(MorphismArenaError::new(format!(
@@ -540,6 +549,26 @@ impl MorphismArenaBuilder {
             }
         }
         self.push_composition(MorphismNodeKind::Parallel, &flattened, &[], provenance)
+    }
+
+    pub fn loop_region(
+        &mut self,
+        body: MorphismNodeId,
+        count: ValueExprId,
+        provenance: ProvenanceId,
+    ) -> MorphismNodeId {
+        let edge_start = self.edges.len() as u32;
+        self.edges.push(body);
+        let payload = self.push_payload(MorphismPayload::Loop { count });
+        self.nodes.push(MorphismNode {
+            kind: MorphismNodeKind::Loop,
+            edge_start,
+            edge_count: 1,
+            boundary_start: self.boundaries.len() as u32,
+            payload: Some(payload),
+            provenance,
+        });
+        MorphismNodeId((self.nodes.len() - 1) as u32)
     }
 
     pub fn finish(self, root: MorphismNodeId) -> Result<MorphismArena, MorphismArenaError> {

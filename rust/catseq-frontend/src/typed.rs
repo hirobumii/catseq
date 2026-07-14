@@ -65,6 +65,8 @@ impl Display for SourceType {
 pub struct TypedParameter {
     name: String,
     source_type: SourceType,
+    #[serde(default)]
+    default_value: Option<String>,
 }
 
 impl TypedParameter {
@@ -74,6 +76,10 @@ impl TypedParameter {
 
     pub fn source_type(&self) -> &SourceType {
         &self.source_type
+    }
+
+    pub fn default_value(&self) -> Option<&str> {
+        self.default_value.as_deref()
     }
 }
 
@@ -645,6 +651,9 @@ where
         definitions.push(analysis.definition);
     }
 
+    load_referenced_compile_modules(&definitions, &mut sources, &mut parsed, loader)?;
+    resolve_bundle_compile_attributes(&parsed, &mut definitions);
+
     for _ in 0..=definitions.len() {
         let return_types: HashMap<_, _> = definitions
             .iter()
@@ -698,6 +707,231 @@ where
         diagnostics: Vec::new(),
         queried_modules,
     })
+}
+
+fn load_referenced_compile_modules<F>(
+    definitions: &[TypedDefinition],
+    sources: &mut HashMap<String, String>,
+    parsed: &mut HashMap<String, Vec<Stmt>>,
+    loader: &mut F,
+) -> Result<(), TypedCheckError>
+where
+    F: FnMut(&str) -> Result<Option<String>, String>,
+{
+    let mut references = Vec::new();
+    for definition in definitions {
+        let Some(statements) = parsed.get(definition.module()) else {
+            continue;
+        };
+        let imports = module_imports(definition.module(), statements);
+        for node in definition.hir().nodes() {
+            if node.kind() != &crate::SourceHirKind::Name {
+                continue;
+            }
+            let Some(imported) = node.symbol().and_then(|name| imports.get(name)) else {
+                continue;
+            };
+            if !references.contains(imported) {
+                references.push(imported.clone());
+            }
+        }
+    }
+    for reference in references {
+        let Some((module, _name)) = locate_source_definition(&reference, sources, loader)? else {
+            continue;
+        };
+        if !parsed.contains_key(&module) {
+            let source = &sources[&module];
+            parsed.insert(module.clone(), parse_module(&module, source)?);
+        }
+    }
+    Ok(())
+}
+
+fn resolve_bundle_compile_attributes(
+    parsed: &HashMap<String, Vec<Stmt>>,
+    definitions: &mut [TypedDefinition],
+) {
+    let mut singleton_classes = HashMap::<String, String>::new();
+    let mut global_symbols = HashMap::<String, SourceType>::new();
+    let mut global_attributes = HashMap::<String, (SourceType, String)>::new();
+    for (module, statements) in parsed {
+        let imports = module_imports(module, statements);
+        for statement in statements {
+            let StmtKind::Assign { targets, value, .. } = &statement.node else {
+                continue;
+            };
+            let [target] = targets.as_slice() else {
+                continue;
+            };
+            let ExprKind::Name { id, .. } = &target.node else {
+                continue;
+            };
+            if let (Some(source_type), Some(normalized)) = (
+                inferred_compile_value_type(value),
+                normalized_compile_expression(value),
+            ) {
+                global_attributes.insert(format!("{module}.{id}"), (source_type, normalized));
+            }
+            let ExprKind::Call { func, .. } = &value.node else {
+                continue;
+            };
+            let Some(class) = expression_path(func) else {
+                continue;
+            };
+            match class.rsplit('.').next() {
+                Some("Channel") => {
+                    let canonical = format!("{module}.{id}");
+                    global_symbols.insert(canonical.clone(), SourceType::Channel);
+                    if let Some(local_id) = channel_local_id(value) {
+                        global_attributes.insert(
+                            format!("{canonical}.local_id"),
+                            (SourceType::Int64, local_id),
+                        );
+                    }
+                }
+                Some("Board") => {
+                    global_symbols.insert(format!("{module}.{id}"), SourceType::Board);
+                }
+                _ => {}
+            }
+            singleton_classes.insert(
+                format!("{module}.{id}"),
+                resolve_call_path(module, &imports, &class),
+            );
+        }
+    }
+    let mut class_values = HashMap::<String, HashMap<String, (SourceType, String)>>::new();
+    for (module, statements) in parsed {
+        let imports = module_imports(module, statements);
+        let module_attributes = visible_global_attributes(module, &imports, &global_attributes);
+        for statement in statements {
+            let StmtKind::ClassDef { name, body, .. } = &statement.node else {
+                continue;
+            };
+            let fields = class_fields(body);
+            let mut normalized_fields = fields.values.clone();
+            for _ in 0..=normalized_fields.len() {
+                let previous = normalized_fields.clone();
+                for value in normalized_fields.values_mut() {
+                    *value =
+                        substitute_normalized_compile_names(value, &previous, &module_attributes);
+                }
+                if normalized_fields == previous {
+                    break;
+                }
+            }
+            let values = normalized_fields
+                .into_iter()
+                .filter_map(|(field, value)| {
+                    fields
+                        .types
+                        .get(&field)
+                        .cloned()
+                        .map(|source_type| (field, (source_type, value)))
+                })
+                .collect();
+            class_values.insert(format!("{module}.{name}"), values);
+        }
+    }
+    for definition in definitions {
+        let Some(statements) = parsed.get(definition.module()) else {
+            continue;
+        };
+        let imports = module_imports(definition.module(), statements);
+        let mut attributes =
+            visible_global_attributes(definition.module(), &imports, &global_attributes);
+        if let Some((owner, _method)) = definition.qualified_name().rsplit_once('.')
+            && let Some(fields) = class_values.get(owner)
+        {
+            for (field, value) in fields {
+                attributes.insert(format!("self.{field}"), value.clone());
+            }
+        }
+        let mut symbols = HashMap::new();
+        for (canonical, source_type) in &global_symbols {
+            if let Some(local) = canonical.strip_prefix(&format!("{}.", definition.module()))
+                && !local.contains('.')
+            {
+                symbols.insert(local.to_owned(), (source_type.clone(), canonical.clone()));
+            }
+        }
+        for (local, imported) in imports {
+            if let Some(source_type) = global_symbols.get(&imported) {
+                symbols.insert(local.clone(), (source_type.clone(), imported.clone()));
+            }
+            let Some(class) = singleton_classes.get(&imported) else {
+                continue;
+            };
+            let Some(fields) = class_values.get(class) else {
+                continue;
+            };
+            for (field, value) in fields {
+                attributes.insert(format!("{local}.{field}"), value.clone());
+            }
+        }
+        definition.hir.resolve_compile_attributes(&attributes);
+        definition.hir.resolve_global_symbols(&symbols);
+    }
+}
+
+fn channel_local_id(expression: &Expr) -> Option<String> {
+    let ExprKind::Call { args, keywords, .. } = &expression.node else {
+        return None;
+    };
+    let value = keywords
+        .iter()
+        .find(|keyword| {
+            keyword
+                .node
+                .arg
+                .is_some_and(|name| name.to_string() == "local_id")
+        })
+        .map(|keyword| keyword.node.value.as_ref())
+        .or_else(|| args.get(1))?;
+    normalized_compile_expression(value)
+}
+
+fn visible_global_attributes(
+    module: &str,
+    imports: &HashMap<String, String>,
+    attributes: &HashMap<String, (SourceType, String)>,
+) -> HashMap<String, (SourceType, String)> {
+    let mut visible = HashMap::new();
+    let prefix = format!("{module}.");
+    for (canonical, value) in attributes {
+        if let Some(local) = canonical.strip_prefix(&prefix) {
+            visible.insert(local.to_owned(), value.clone());
+        }
+        for (alias, imported) in imports {
+            if canonical == imported {
+                visible.insert(alias.clone(), value.clone());
+            }
+            if let Some(suffix) = canonical.strip_prefix(&format!("{imported}.")) {
+                visible.insert(format!("{alias}.{suffix}"), value.clone());
+            }
+        }
+    }
+    visible
+}
+
+fn substitute_normalized_compile_names(
+    value: &str,
+    fields: &HashMap<String, String>,
+    attributes: &HashMap<String, (SourceType, String)>,
+) -> String {
+    let mut resolved = value.to_owned();
+    let mut names = fields.iter().collect::<Vec<_>>();
+    names.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
+    for (name, replacement) in names {
+        resolved = resolved.replace(&format!("name:{name}"), replacement);
+    }
+    let mut paths = attributes.iter().collect::<Vec<_>>();
+    paths.sort_by_key(|(path, _)| std::cmp::Reverse(path.len()));
+    for (path, (_, replacement)) in paths {
+        resolved = resolved.replace(&format!("path:{path}"), replacement);
+    }
+    resolved
 }
 
 fn definition_exists(statements: &[Stmt], requested: &str) -> bool {
@@ -1890,13 +2124,31 @@ fn signature(
     returns: Option<&Expr>,
 ) -> Result<TypeSignature, TypedCheckError> {
     let mut parameters = Vec::new();
-    for argument in arguments
+    let positional = arguments
         .posonlyargs
         .iter()
         .chain(&arguments.args)
-        .chain(&arguments.kwonlyargs)
-    {
-        if let Some(parameter) = parameter(file_name, definition, class_name, argument, body)? {
+        .collect::<Vec<_>>();
+    let default_start = positional.len().saturating_sub(arguments.defaults.len());
+    for (index, argument) in positional.into_iter().enumerate() {
+        let default = index
+            .checked_sub(default_start)
+            .and_then(|index| arguments.defaults.get(index));
+        if let Some(parameter) =
+            parameter(file_name, definition, class_name, argument, body, default)?
+        {
+            parameters.push(parameter);
+        }
+    }
+    for (argument, default) in arguments.kwonlyargs.iter().zip(&arguments.kw_defaults) {
+        if let Some(parameter) = parameter(
+            file_name,
+            definition,
+            class_name,
+            argument,
+            body,
+            default.as_deref(),
+        )? {
             parameters.push(parameter);
         }
     }
@@ -1916,6 +2168,7 @@ fn parameter(
     class_name: Option<&str>,
     argument: &Arg,
     body: &[Stmt],
+    default: Option<&Expr>,
 ) -> Result<Option<TypedParameter>, TypedCheckError> {
     let name = argument.node.arg.to_string();
     let source_type = match argument.node.annotation.as_deref() {
@@ -1940,7 +2193,11 @@ fn parameter(
             });
         }
     };
-    Ok(Some(TypedParameter { name, source_type }))
+    Ok(Some(TypedParameter {
+        name,
+        source_type,
+        default_value: default.and_then(normalized_compile_expression),
+    }))
 }
 
 fn infer_unannotated_parameter(name: &str, body: &[Stmt]) -> Option<SourceType> {

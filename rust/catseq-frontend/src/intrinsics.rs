@@ -2,7 +2,7 @@
 
 use crate::typed::SourceType;
 
-pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 2;
+pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 3;
 
 #[derive(Clone, Copy)]
 enum ResultRule {

@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use nac3ast::{Constant, Expr, ExprKind, Operator, Stmt, StmtKind};
+use nac3ast::{Cmpop, Constant, Expr, ExprKind, Operator, Stmt, StmtKind};
 use serde::{Deserialize, Serialize};
 
 use crate::intrinsics;
@@ -82,8 +82,41 @@ pub enum ValueOperation {
     FloorDivide,
     Modulo,
     Power,
+    LeftShift,
     Negate,
     Positive,
+    LogicalNot,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ComparisonOperation {
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    Is,
+    IsNot,
+    In,
+    NotIn,
+}
+
+impl ComparisonOperation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Equal => "equal",
+            Self::NotEqual => "not_equal",
+            Self::Less => "less",
+            Self::LessEqual => "less_equal",
+            Self::Greater => "greater",
+            Self::GreaterEqual => "greater_equal",
+            Self::Is => "is",
+            Self::IsNot => "is_not",
+            Self::In => "in",
+            Self::NotIn => "not_in",
+        }
+    }
 }
 
 impl ValueOperation {
@@ -96,8 +129,10 @@ impl ValueOperation {
             Self::FloorDivide => "floor_divide",
             Self::Modulo => "modulo",
             Self::Power => "power",
+            Self::LeftShift => "left_shift",
             Self::Negate => "negate",
             Self::Positive => "positive",
+            Self::LogicalNot => "logical_not",
         }
     }
 }
@@ -146,6 +181,16 @@ pub struct SourceHirNode {
     morphism_composition: Option<MorphismComposition>,
     literal: Option<SourceLiteral>,
     value_operation: Option<ValueOperation>,
+    #[serde(default)]
+    comparison_operations: Vec<ComparisonOperation>,
+    #[serde(default)]
+    call_positional_count: u32,
+    #[serde(default)]
+    call_keyword_names: Vec<String>,
+    #[serde(default)]
+    control_body_count: u32,
+    #[serde(default)]
+    control_else_count: u32,
     edge_start: u32,
     edge_count: u32,
     anchor: SourceAnchor,
@@ -170,6 +215,30 @@ impl SourceHirNode {
 
     pub const fn value_operation(&self) -> Option<ValueOperation> {
         self.value_operation
+    }
+
+    pub fn comparison_operations(&self) -> &[ComparisonOperation] {
+        &self.comparison_operations
+    }
+
+    pub const fn call_positional_count(&self) -> u32 {
+        self.call_positional_count
+    }
+
+    pub fn call_keyword_names(&self) -> &[String] {
+        &self.call_keyword_names
+    }
+
+    /// Number of statement children in the primary body of an `if`, `while`,
+    /// or `for` node.  Expression children (the condition, target, and
+    /// iterable) precede the statement children in the edge slice.
+    pub const fn control_body_count(&self) -> u32 {
+        self.control_body_count
+    }
+
+    /// Number of statement children in the `else` body of a control-flow node.
+    pub const fn control_else_count(&self) -> u32 {
+        self.control_else_count
     }
 
     pub const fn edge_start(&self) -> u32 {
@@ -298,6 +367,41 @@ impl TypedSourceHir {
 
     pub fn facts(&self) -> &[SemanticFact] {
         &self.facts
+    }
+
+    pub(crate) fn resolve_compile_attributes(
+        &mut self,
+        attributes: &HashMap<String, (SourceType, String)>,
+    ) {
+        for (node, fact) in self.nodes.iter().zip(&mut self.facts) {
+            let Some(symbol) = node.symbol.as_deref() else {
+                continue;
+            };
+            let Some((source_type, value)) = attributes.get(symbol) else {
+                continue;
+            };
+            fact.source_type = Some(source_type.clone());
+            fact.compile_value = Some(value.clone());
+        }
+    }
+
+    pub(crate) fn resolve_global_symbols(
+        &mut self,
+        symbols: &HashMap<String, (SourceType, String)>,
+    ) {
+        for (node, fact) in self.nodes.iter().zip(&mut self.facts) {
+            if node.kind != SourceHirKind::Name {
+                continue;
+            }
+            let Some(symbol) = node.symbol.as_deref() else {
+                continue;
+            };
+            let Some((source_type, definition)) = symbols.get(symbol) else {
+                continue;
+            };
+            fact.source_type = Some(source_type.clone());
+            record_resolution(fact, definition);
+        }
     }
 
     pub(crate) fn referenced_attributes<'a>(
@@ -590,6 +694,11 @@ pub(crate) fn lower_definition_hir(
                     morphism_composition: expression_morphism_composition(expression),
                     literal: expression_literal(expression),
                     value_operation: expression_value_operation(expression),
+                    comparison_operations: expression_comparison_operations(expression),
+                    call_positional_count: call_shape(expression, erased_state_names).0,
+                    call_keyword_names: call_shape(expression, erased_state_names).1,
+                    control_body_count: 0,
+                    control_else_count: 0,
                     edge_start,
                     edge_count: child_ids.len() as u32,
                     anchor: anchor(module, expression.location.row, expression.location.column),
@@ -606,12 +715,19 @@ pub(crate) fn lower_definition_hir(
                 edges.extend_from_slice(&child_ids);
                 let fact = statement_fact(statement, &child_ids, &facts, &mut locals);
                 let id = nodes.len() as u32;
+                let (control_body_count, control_else_count) =
+                    control_shape(statement, erased_state_names);
                 nodes.push(SourceHirNode {
                     kind: statement_kind(statement),
                     symbol: None,
                     morphism_composition: None,
                     literal: None,
                     value_operation: None,
+                    comparison_operations: Vec::new(),
+                    call_positional_count: 0,
+                    call_keyword_names: Vec::new(),
+                    control_body_count,
+                    control_else_count,
                     edge_start,
                     edge_count: child_ids.len() as u32,
                     anchor: anchor(module, statement.location.row, statement.location.column),
@@ -633,6 +749,45 @@ pub(crate) fn lower_definition_hir(
         roots,
         facts,
     }
+}
+
+fn control_shape(statement: &Stmt, erased_state_names: &HashSet<String>) -> (u32, u32) {
+    let counts = |body: &[Stmt], orelse: &[Stmt]| {
+        let retained = |statements: &[Stmt]| {
+            statements
+                .iter()
+                .filter(|statement| !is_erased_state_assignment(statement, erased_state_names))
+                .count() as u32
+        };
+        (retained(body), retained(orelse))
+    };
+    match &statement.node {
+        StmtKind::If { body, orelse, .. }
+        | StmtKind::While { body, orelse, .. }
+        | StmtKind::For { body, orelse, .. } => counts(body, orelse),
+        _ => (0, 0),
+    }
+}
+
+fn call_shape(expression: &Expr, erased_state_names: &HashSet<String>) -> (u32, Vec<String>) {
+    let ExprKind::Call { args, keywords, .. } = &expression.node else {
+        return (0, Vec::new());
+    };
+    let positional_count = args
+        .iter()
+        .filter(|argument| !is_erased_state_expression(argument, erased_state_names))
+        .count() as u32;
+    let keyword_names = keywords
+        .iter()
+        .filter(|keyword| !is_erased_state_expression(&keyword.node.value, erased_state_names))
+        .map(|keyword| {
+            keyword
+                .node
+                .arg
+                .map_or_else(|| "**".to_owned(), |name| name.to_string())
+        })
+        .collect();
+    (positional_count, keyword_names)
 }
 
 fn anchor(module: &str, line: usize, column: usize) -> SourceAnchor {
@@ -1264,13 +1419,35 @@ fn expression_value_operation(expression: &Expr) -> Option<ValueOperation> {
             Operator::FloorDiv => Some(ValueOperation::FloorDivide),
             Operator::Mod => Some(ValueOperation::Modulo),
             Operator::Pow => Some(ValueOperation::Power),
+            Operator::LShift => Some(ValueOperation::LeftShift),
             _ => None,
         },
         ExprKind::UnaryOp { op, .. } => match op {
             nac3ast::Unaryop::USub => Some(ValueOperation::Negate),
             nac3ast::Unaryop::UAdd => Some(ValueOperation::Positive),
+            nac3ast::Unaryop::Not => Some(ValueOperation::LogicalNot),
             _ => None,
         },
         _ => None,
     }
+}
+
+fn expression_comparison_operations(expression: &Expr) -> Vec<ComparisonOperation> {
+    let ExprKind::Compare { ops, .. } = &expression.node else {
+        return Vec::new();
+    };
+    ops.iter()
+        .map(|operation| match operation {
+            Cmpop::Eq => ComparisonOperation::Equal,
+            Cmpop::NotEq => ComparisonOperation::NotEqual,
+            Cmpop::Lt => ComparisonOperation::Less,
+            Cmpop::LtE => ComparisonOperation::LessEqual,
+            Cmpop::Gt => ComparisonOperation::Greater,
+            Cmpop::GtE => ComparisonOperation::GreaterEqual,
+            Cmpop::Is => ComparisonOperation::Is,
+            Cmpop::IsNot => ComparisonOperation::IsNot,
+            Cmpop::In => ComparisonOperation::In,
+            Cmpop::NotIn => ComparisonOperation::NotIn,
+        })
+        .collect()
 }

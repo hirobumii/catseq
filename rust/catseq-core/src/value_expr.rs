@@ -27,6 +27,7 @@ pub enum ValueExprType {
     Float64,
     Duration,
     String,
+    Json,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -39,6 +40,7 @@ pub enum ValueExprKind {
     Subtract,
     Multiply,
     Divide,
+    Modulo,
     Maximum,
     Negate,
 }
@@ -51,6 +53,7 @@ pub enum ValueExprPayload {
     Float64(f64),
     DurationCycles(u64),
     String(String),
+    Json(serde_json::Value),
     RuntimeSlot(String),
     EnvironmentSlot(String),
 }
@@ -152,6 +155,7 @@ impl ValueExprArena {
                 ValueExprPayload::Float64(_) => Some(ValueExprType::Float64),
                 ValueExprPayload::DurationCycles(_) => Some(ValueExprType::Duration),
                 ValueExprPayload::String(_) => Some(ValueExprType::String),
+                ValueExprPayload::Json(_) => Some(ValueExprType::Json),
                 ValueExprPayload::RuntimeSlot(_) | ValueExprPayload::EnvironmentSlot(_) => None,
             });
             match node.kind {
@@ -187,6 +191,7 @@ impl ValueExprArena {
                 | ValueExprKind::Subtract
                 | ValueExprKind::Multiply
                 | ValueExprKind::Divide
+                | ValueExprKind::Modulo
                 | ValueExprKind::Maximum
                     if children.len() != 2 || payload.is_some() =>
                 {
@@ -237,6 +242,7 @@ impl ValueExprArenaBuilder {
             ValueExprPayload::Float64(_) => ValueExprType::Float64,
             ValueExprPayload::DurationCycles(_) => ValueExprType::Duration,
             ValueExprPayload::String(_) => ValueExprType::String,
+            ValueExprPayload::Json(_) => ValueExprType::Json,
             ValueExprPayload::RuntimeSlot(_) | ValueExprPayload::EnvironmentSlot(_) => {
                 panic!("slot payload requires a declared type")
             }

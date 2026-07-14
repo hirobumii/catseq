@@ -30,7 +30,12 @@ from .expr import Expr, input_state, realize_morphism, var
 from .hardware import pulse, initialize, set_high, set_low, hold
 
 # OASM interface
-from .compilation import compile_to_oasm_calls, execute_oasm_calls, OASMCall
+from .compilation import (
+    OASMCall,
+    compile_to_oasm_calls,
+    execute_oasm_calls,
+    oasm_call_plan_to_calls,
+)
 
 __version__ = "0.3.0.dev0"
 
@@ -66,6 +71,7 @@ __all__ = [
     
     # Hardware abstraction
     'pulse',
+    'initialize',
     'set_high',
     'set_low', 
     'hold',
@@ -73,5 +79,6 @@ __all__ = [
     # OASM interface
     'compile_to_oasm_calls',
     'execute_oasm_calls',
+    'oasm_call_plan_to_calls',
     'OASMCall',
 ]

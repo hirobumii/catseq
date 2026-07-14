@@ -74,6 +74,7 @@ name = "catseq-core"
 version = "0.3.0-dev.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -104,6 +105,7 @@ version = "0.3.0-dev.0"
 dependencies = [
  "catseq-core",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

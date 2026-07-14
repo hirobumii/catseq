@@ -40,6 +40,10 @@ class OASMFunction(Enum):
     WAIT_US = auto()
     WAIT = auto()
 
+    # Native hardware loop delimiters
+    LOOP_BEGIN = auto()
+    LOOP_END = auto()
+
     # RWG 函数
     RWG_INIT = auto()               # 板卡级初始化
     RWG_SET_CARRIER = auto()        # 通道级载波设置

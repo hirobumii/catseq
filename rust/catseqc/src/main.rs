@@ -13,7 +13,7 @@ use catseq_frontend::{
     check_typed_bundle_entry_incremental_with_loader,
     check_typed_bundle_entry_summary_incremental_with_loader, check_typed_bundle_entry_with_loader,
     check_typed_entry, check_typed_entry_incremental, check_typed_entry_summary_incremental,
-    lower_typed_report_to_native_arenas,
+    lower_typed_report_to_native_arenas, specialize_typed_report_to_native_arenas,
 };
 use catseq_rtmq::{
     CompileEnvironment, LinkBindings, OasmCallPlan, TargetProfile, compile_oasm_call_plan,
@@ -239,7 +239,7 @@ fn compile_output(
     link_bindings: &LinkBindings,
 ) -> Result<CheckedOutput, String> {
     let start = Instant::now();
-    let program = lower_typed_report_to_native_arenas(&report, target.clock_hz())
+    let program = specialize_typed_report_to_native_arenas(&report, target.clock_hz())
         .map_err(|error| error.to_string())?;
     let plan = compile_oasm_call_plan(&program, environment, target, link_bindings)
         .map_err(|error| error.to_string())?;
@@ -710,7 +710,7 @@ impl Serialize for NodeJson<'_> {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SourceHirNode", 9)?;
+        let mut state = serializer.serialize_struct("SourceHirNode", 12)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("kind", self.node.kind().as_str())?;
         state.serialize_field("symbol", &self.node.symbol())?;
@@ -729,8 +729,19 @@ impl Serialize for NodeJson<'_> {
                 .value_operation()
                 .map(|operation| operation.as_str()),
         )?;
+        state.serialize_field(
+            "comparison_operations",
+            &self
+                .node
+                .comparison_operations()
+                .iter()
+                .map(|operation| operation.as_str())
+                .collect::<Vec<_>>(),
+        )?;
         state.serialize_field("edge_start", &self.node.edge_start())?;
         state.serialize_field("edge_count", &self.node.edge_count())?;
+        state.serialize_field("control_body_count", &self.node.control_body_count())?;
+        state.serialize_field("control_else_count", &self.node.control_else_count())?;
         state.serialize_field("anchor", &AnchorJson(self.node))?;
         state.end()
     }

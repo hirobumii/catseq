@@ -2,7 +2,8 @@
 Execution helpers for OASM call streams.
 """
 
-from typing import Callable, Dict, List, Optional, Tuple
+from collections.abc import Mapping
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .functions import (
     rwg_init,
@@ -24,11 +25,15 @@ from .functions import (
     rsp_pid_release,
     rsp_pid_relink,
     rsp_rf_config,
+    loop_begin,
+    loop_end,
 )
 from .types import OASMAddress, OASMCall, OASMFunction
+from ..types.rwg import WaveformParams
+from ..types.rsp import RSPPIDConfig, RSPWaveformParams
 
 try:
-    from oasm.rtmq2 import disassembler, assembler, asm
+    from oasm.rtmq2 import disassembler, assembler
     from oasm.dev.rwg import C_RWG
 
     OASM_AVAILABLE = True
@@ -42,6 +47,8 @@ OASM_FUNCTION_MAP: Dict[OASMFunction, Callable] = {
     OASMFunction.TTL_SET: ttl_set,
     OASMFunction.WAIT_US: wait_us,
     OASMFunction.WAIT: wait_mu,
+    OASMFunction.LOOP_BEGIN: loop_begin,
+    OASMFunction.LOOP_END: loop_end,
     OASMFunction.WAIT_MASTER: wait_master,
     OASMFunction.TRIG_SLAVE: trig_slave,
     OASMFunction.RWG_INIT: rwg_init,
@@ -58,6 +65,111 @@ OASM_FUNCTION_MAP: Dict[OASMFunction, Callable] = {
     OASMFunction.RSP_PID_RELINK: rsp_pid_relink,
     OASMFunction.RSP_RF_CONFIG: rsp_rf_config,
 }
+
+
+_PLAN_FUNCTIONS = {
+    "loop_begin": OASMFunction.LOOP_BEGIN,
+    "loop_end": OASMFunction.LOOP_END,
+    "ttl_config": OASMFunction.TTL_CONFIG,
+    "ttl_set": OASMFunction.TTL_SET,
+    "wait": OASMFunction.WAIT,
+    "rwg_init": OASMFunction.RWG_INIT,
+    "rwg_set_carrier": OASMFunction.RWG_SET_CARRIER,
+    "rwg_rf_switch": OASMFunction.RWG_RF_SWITCH,
+    "rwg_load_waveform": OASMFunction.RWG_LOAD_WAVEFORM,
+    "rwg_play": OASMFunction.RWG_PLAY,
+    "wait_master": OASMFunction.WAIT_MASTER,
+    "trig_slave": OASMFunction.TRIG_SLAVE,
+    "rsp_init": OASMFunction.RSP_INIT,
+    "rsp_set_carrier": OASMFunction.RSP_SET_CARRIER,
+    "rsp_pid_config": OASMFunction.RSP_PID_CONFIG,
+    "rsp_pid_start": OASMFunction.RSP_PID_START,
+    "rsp_pid_hold": OASMFunction.RSP_PID_HOLD,
+    "rsp_pid_release": OASMFunction.RSP_PID_RELEASE,
+    "rsp_pid_relink": OASMFunction.RSP_PID_RELINK,
+    "rsp_rf_config": OASMFunction.RSP_RF_CONFIG,
+    "user_defined_func": OASMFunction.USER_DEFINED_FUNC,
+}
+
+
+def _decode_plan_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return tuple(_decode_plan_value(item) for item in value)
+    if not isinstance(value, dict):
+        return value
+    record_type = value.get("$type")
+    fields = {
+        name: _decode_plan_value(field)
+        for name, field in value.items()
+        if name != "$type"
+    }
+    if record_type == "WaveformParams":
+        return WaveformParams(**fields)
+    if record_type == "RSPPIDConfig":
+        for name in ("adc_in", "rf_out", "dgt_source"):
+            fields[name] = int(fields[name])
+        return RSPPIDConfig(**fields)
+    if record_type == "RSPWaveformParams":
+        fields["rf_out"] = int(fields["rf_out"])
+        return RSPWaveformParams(**fields)
+    return fields
+
+
+def oasm_call_plan_to_calls(
+    plan: Mapping[str, Any],
+    opaque_callables: Mapping[str, Callable[..., Any]] | None = None,
+) -> Dict[OASMAddress, List[OASMCall]]:
+    """Convert the Rust compiler's JSON OASMCallPlan into executable calls.
+
+    Epochs are concatenated in ID order.  Each board stream already contains
+    the waits needed to realize the call offsets relative to its epoch origin.
+    Opaque calls use stable string keys and must be resolved explicitly by the
+    host application; no Python object is serialized into the native plan.
+    """
+    if plan.get("schema_version") != 1:
+        raise ValueError(f"Unsupported OASMCallPlan schema: {plan.get('schema_version')!r}")
+    opaque_callables = opaque_callables or {}
+    calls_by_board: Dict[OASMAddress, List[OASMCall]] = {}
+    epochs = sorted(plan.get("epochs", ()), key=lambda epoch: epoch["id"])
+    for expected_id, epoch in enumerate(epochs):
+        if epoch.get("id") != expected_id:
+            raise ValueError("OASMCallPlan epoch IDs must be contiguous and start at zero")
+        for board in epoch.get("boards", ()):
+            try:
+                address = OASMAddress(board["address"])
+            except ValueError as error:
+                raise ValueError(f"Unknown OASM board address {board['address']!r}") from error
+            board_calls = calls_by_board.setdefault(address, [])
+            previous_offset = 0
+            for raw_call in board.get("calls", ()):
+                offset = raw_call["offset_cycles"]
+                if offset < previous_offset:
+                    raise ValueError(
+                        f"OASM calls for {address.value} are not ordered within epoch {expected_id}"
+                    )
+                previous_offset = offset
+                try:
+                    function = _PLAN_FUNCTIONS[raw_call["function"]]
+                except KeyError as error:
+                    raise ValueError(
+                        f"Unknown OASM plan function {raw_call['function']!r}"
+                    ) from error
+                args = tuple(_decode_plan_value(arg) for arg in raw_call.get("args", ()))
+                if function == OASMFunction.USER_DEFINED_FUNC:
+                    if len(args) != 3 or not isinstance(args[0], str):
+                        raise ValueError("Opaque OASM calls require [callable_key, args, kwargs]")
+                    callable_key, user_args, user_kwargs = args
+                    try:
+                        user_func = opaque_callables[callable_key]
+                    except KeyError as error:
+                        raise ValueError(
+                            f"No host callable is registered for opaque key {callable_key!r}"
+                        ) from error
+                    if not isinstance(user_args, tuple) or not isinstance(user_kwargs, dict):
+                        raise ValueError("Opaque OASM call arguments have invalid native shapes")
+                    args = (user_func, user_args, user_kwargs)
+                board_calls.append(OASMCall(adr=address, dsl_func=function, args=args))
+    return calls_by_board
 
 
 def execute_oasm_calls(
@@ -153,6 +265,10 @@ def _execute_oasm_calls_mock(calls_by_board: Dict[OASMAddress, List[OASMCall]]) 
             print(f"\n📋 Mock execution for board '{board_adr.value}' ({len(board_calls)} calls):")
             for call in board_calls:
                 call_counter += 1
+                if call.dsl_func == OASMFunction.USER_DEFINED_FUNC:
+                    user_func, user_args, user_kwargs = call.args
+                    user_func(*user_args, **user_kwargs)
+                    continue
                 func = OASM_FUNCTION_MAP.get(call.dsl_func)
                 if func is None:
                     print(f"Error: OASM function '{call.dsl_func.name}' not found in map.")

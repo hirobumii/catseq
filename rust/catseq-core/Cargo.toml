@@ -9,3 +9,4 @@ name = "catseq_core"
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true

@@ -33,6 +33,9 @@ impl NativeArenas {
                     }
                 }
                 MorphismPayload::Instantiate { .. } => {}
+                MorphismPayload::Loop { count } => {
+                    values.node(*count)?;
+                }
             }
         }
         Ok(Self { morphisms, values })

@@ -92,6 +92,13 @@ impl ExactDecimal {
         )
     }
 
+    pub fn checked_rem(self, other: Self) -> Option<Self> {
+        if other.numerator == 0 {
+            return None;
+        }
+        Self::from_f64_shortest(self.to_f64().rem_euclid(other.to_f64()))
+    }
+
     pub fn checked_neg(self) -> Option<Self> {
         Self::new(self.numerator.checked_neg()?, self.denominator)
     }
@@ -106,11 +113,34 @@ impl ExactDecimal {
         })
     }
 
+    pub fn checked_cmp(self, other: Self) -> Option<Ordering> {
+        let left = self.numerator.checked_mul(other.denominator)?;
+        let right = other.numerator.checked_mul(self.denominator)?;
+        Some(left.cmp(&right))
+    }
+
     pub fn to_cycle_count(self) -> Option<u64> {
         if self.numerator < 0 || self.numerator % self.denominator != 0 {
             return None;
         }
         u64::try_from(self.numerator / self.denominator).ok()
+    }
+
+    pub fn to_cycle_count_rounded(self) -> Option<u64> {
+        if self.numerator < 0 {
+            return None;
+        }
+        let quotient = self.numerator / self.denominator;
+        let remainder = self.numerator % self.denominator;
+        let twice_remainder = remainder.checked_mul(2)?;
+        let rounded = if twice_remainder > self.denominator
+            || (twice_remainder == self.denominator && quotient % 2 != 0)
+        {
+            quotient.checked_add(1)?
+        } else {
+            quotient
+        };
+        u64::try_from(rounded).ok()
     }
 
     pub fn to_f64(self) -> f64 {

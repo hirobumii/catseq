@@ -5,7 +5,7 @@ This module contains the actual OASM DSL functions that will be called
 when executing compiled sequences on the hardware.
 """
 # Import actual OASM functions
-from oasm.rtmq2 import sfs, amk, wait, send_trig_code, wait_rtlk_trig, asm, nop, P
+from oasm.rtmq2 import sfs, amk, wait, send_trig_code, wait_rtlk_trig, asm, nop, P, for_, end, R as RTMQ_R
 from oasm.dev.rwg import fte, rwg, sbg
 from oasm.dev.rsp import (
     dds_prof, dds_carrier, dds_signal, R, rsp_signal,
@@ -123,6 +123,16 @@ def wait_master(cod=None):
 def trig_slave(wait_time, cod=None):
     wait(wait_time)
     send_trig_code('ib', 0, 0, cod or id(asm.intf))
+
+
+def loop_begin(register, count):
+    """Open a native RTMQ counted loop."""
+    for_(RTMQ_R[register], count)
+
+
+def loop_end():
+    """Close the innermost native RTMQ loop."""
+    end()
 
 # --- RWG Placeholder Functions ---
 def rwg_init(sca=(0,0,0,0), mux=(32,32,32,32)):
@@ -270,4 +280,3 @@ def rsp_pid_relink(config: RSPPIDConfig):
     R.mua_cph = mua_cph(-1.0+2*config.output_max)
     
     R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", f"dgt{config.dgt_source}")
-

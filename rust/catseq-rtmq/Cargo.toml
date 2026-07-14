@@ -10,3 +10,4 @@ name = "catseq_rtmq"
 [dependencies]
 catseq-core.workspace = true
 serde.workspace = true
+serde_json.workspace = true

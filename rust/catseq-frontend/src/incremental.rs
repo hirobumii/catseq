@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
+use std::fmt::Write as _;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,11 +14,11 @@ use sha3::{Digest, Sha3_256};
 use crate::intrinsics::REGISTRY_SEMANTIC_VERSION;
 use crate::typed::IncrementalStatsSnapshot;
 use crate::{
-    IncrementalStats, TypedCheckError, TypedCheckReport, TypedDefinition,
-    check_typed_bundle_entry_with_loader, check_typed_entry,
+    IncrementalStats, TypeSignature, TypedCheckError, TypedCheckReport, TypedCheckSummary,
+    TypedDefinition, check_typed_bundle_entry_with_loader, check_typed_entry,
 };
 
-const CACHE_FORMAT_VERSION: u32 = 4;
+const CACHE_FORMAT_VERSION: u32 = 5;
 const FRONTEND_SEMANTIC_VERSION: u32 = 3;
 const DEP_GRAPH_FILE: &str = "dep-graph.json";
 const CURRENT_FILE: &str = "CURRENT";
@@ -43,6 +44,14 @@ impl Fingerprint {
         let mut fingerprint = [0; 16];
         fingerprint.copy_from_slice(&digest[..16]);
         Self(fingerprint)
+    }
+
+    fn hex(self) -> String {
+        let mut encoded = String::with_capacity(32);
+        for byte in self.0 {
+            write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        encoded
     }
 }
 
@@ -100,6 +109,57 @@ struct CachedReport {
     queried_modules: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CachedSummary {
+    node_key: Fingerprint,
+    result_fingerprint: Fingerprint,
+    entry: String,
+    entry_signature: TypeSignature,
+    definition_count: usize,
+    hir_node_count: usize,
+    diagnostics: Vec<String>,
+    queried_modules: Vec<String>,
+}
+
+impl CachedSummary {
+    fn from_report(
+        node_key: Fingerprint,
+        result_fingerprint: Fingerprint,
+        report: &TypedCheckReport,
+    ) -> Self {
+        let summary = report.summary();
+        Self {
+            node_key,
+            result_fingerprint,
+            entry: summary.entry().to_owned(),
+            entry_signature: summary.entry_signature().clone(),
+            definition_count: summary.definition_count(),
+            hir_node_count: summary.hir_node_count(),
+            diagnostics: summary.diagnostics().to_vec(),
+            queried_modules: summary.queried_modules().to_vec(),
+        }
+    }
+
+    fn into_summary(self, incremental: IncrementalStats) -> TypedCheckSummary {
+        TypedCheckSummary::from_cached(
+            self.entry,
+            self.entry_signature,
+            self.definition_count,
+            self.hir_node_count,
+            self.diagnostics,
+            self.queried_modules,
+            incremental,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CachedReportRef {
+    node_key: Fingerprint,
+    result_fingerprint: Fingerprint,
+    file_name: String,
+}
+
 impl CachedReport {
     fn from_report(
         node_key: Fingerprint,
@@ -133,7 +193,8 @@ struct PersistedSession {
     compiler_version: String,
     nodes: Vec<StoredNode>,
     edges: Vec<u32>,
-    reports: Vec<CachedReport>,
+    summaries: Vec<CachedSummary>,
+    reports: Vec<CachedReportRef>,
 }
 
 impl PersistedSession {
@@ -143,6 +204,7 @@ impl PersistedSession {
             compiler_version: compiler_cache_version(),
             nodes: Vec::new(),
             edges: Vec::new(),
+            summaries: Vec::new(),
             reports: Vec::new(),
         }
     }
@@ -152,17 +214,24 @@ impl PersistedSession {
             && self.compiler_version == compiler_cache_version()
     }
 
-    fn cached_report(&self, key: Fingerprint, result: Fingerprint) -> Option<CachedReport> {
-        self.reports
+    fn cached_summary(&self, key: Fingerprint, result: Fingerprint) -> Option<CachedSummary> {
+        self.summaries
             .iter()
-            .find(|report| report.node_key == key && report.result_fingerprint == result)
+            .find(|summary| summary.node_key == key && summary.result_fingerprint == result)
             .cloned()
     }
 
-    fn latest_cached_report(&self, key: Fingerprint) -> Option<CachedReport> {
+    fn latest_cached_summary(&self, key: Fingerprint) -> Option<CachedSummary> {
+        self.summaries
+            .iter()
+            .find(|summary| summary.node_key == key)
+            .cloned()
+    }
+
+    fn cached_report_ref(&self, key: Fingerprint, result: Fingerprint) -> Option<CachedReportRef> {
         self.reports
             .iter()
-            .find(|report| report.node_key == key)
+            .find(|report| report.node_key == key && report.result_fingerprint == result)
             .cloned()
     }
 }
@@ -177,8 +246,10 @@ fn compiler_cache_version() -> String {
 #[derive(Debug)]
 struct QuerySession {
     previous: PersistedSession,
+    previous_dir: Option<PathBuf>,
     previous_lookup: HashMap<(DepKind, Fingerprint), u32>,
     current: PersistedSession,
+    current_reports: Vec<(String, CachedReport)>,
     current_lookup: HashMap<(DepKind, Fingerprint), u32>,
     executed: u64,
     green: u64,
@@ -191,8 +262,8 @@ struct QuerySession {
 
 impl QuerySession {
     fn open(cache_dir: &Path) -> Self {
-        let (previous, bytes_read) =
-            load_previous(cache_dir).unwrap_or_else(|| (PersistedSession::empty(), 0));
+        let (previous, bytes_read, previous_dir) =
+            load_previous(cache_dir).unwrap_or_else(|| (PersistedSession::empty(), 0, None));
         let previous_lookup = previous
             .nodes
             .iter()
@@ -201,8 +272,10 @@ impl QuerySession {
             .collect();
         Self {
             previous,
+            previous_dir,
             previous_lookup,
             current: PersistedSession::empty(),
+            current_reports: Vec::new(),
             current_lookup: HashMap::new(),
             executed: 0,
             green: 0,
@@ -272,16 +345,22 @@ impl QuerySession {
     }
 
     fn stats(&self) -> IncrementalStats {
-        let bytes_written = serde_json::to_vec(&self.current)
+        let graph_bytes = serde_json::to_vec(&self.current)
             .map(|encoded| encoded.len() as u64)
             .unwrap_or(0);
+        let report_bytes: u64 = self
+            .current_reports
+            .iter()
+            .filter_map(|(_, report)| serde_json::to_vec(report).ok())
+            .map(|encoded| encoded.len() as u64)
+            .sum();
         IncrementalStats::from_snapshot(IncrementalStatsSnapshot {
             executed: self.executed,
             green: self.green,
             red: self.red,
             result_cache_loads: self.result_cache_loads,
             bytes_read: self.bytes_read,
-            bytes_written,
+            bytes_written: graph_bytes.saturating_add(report_bytes),
             fingerprint_nanos: self.fingerprint_nanos,
             executed_by_kind: self.executed_by_kind.clone(),
         })
@@ -326,12 +405,32 @@ impl QuerySession {
         self.append(kind, key, result, dependencies)
     }
 
-    fn promote_report(&mut self, report: CachedReport) {
-        self.current.reports.push(report);
+    fn promote_report(&mut self, key: Fingerprint, result: Fingerprint, report: &TypedCheckReport) {
+        let file_name = format!("report-{}-{}.json", key.hex(), result.hex());
+        self.current
+            .summaries
+            .push(CachedSummary::from_report(key, result, report));
+        self.current.reports.push(CachedReportRef {
+            node_key: key,
+            result_fingerprint: result,
+            file_name: file_name.clone(),
+        });
+        self.current_reports
+            .push((file_name, CachedReport::from_report(key, result, report)));
     }
 
     fn loaded_result_cache(&mut self) {
         self.result_cache_loads += 1;
+    }
+
+    fn cached_report(&mut self, key: Fingerprint, result: Fingerprint) -> Option<CachedReport> {
+        let report = self.previous.cached_report_ref(key, result)?;
+        let path = self.previous_dir.as_ref()?.join(report.file_name);
+        let bytes = fs::read(path).ok()?;
+        let cached = serde_json::from_slice(&bytes).ok()?;
+        self.bytes_read = self.bytes_read.saturating_add(bytes.len() as u64);
+        self.loaded_result_cache();
+        Some(cached)
     }
 
     fn record_fingerprint_time(&mut self, started: Instant) {
@@ -393,7 +492,7 @@ impl QuerySession {
     }
 
     fn publish(self, cache_dir: &Path) -> Result<(), IncrementalCheckError> {
-        publish_session(cache_dir, &self.current)
+        publish_session(cache_dir, &self.current, &self.current_reports)
     }
 }
 
@@ -626,6 +725,54 @@ pub fn check_typed_entry_incremental(
     requested_entry: &str,
     cache_dir: &Path,
 ) -> Result<TypedCheckReport, IncrementalCheckError> {
+    match check_typed_entry_incremental_impl(
+        file_name,
+        source,
+        requested_entry,
+        cache_dir,
+        RequestedCheck::Report,
+    )? {
+        IncrementalCheckResult::Report(report) => Ok(report),
+        IncrementalCheckResult::Summary(_) => unreachable!("report mode returns a report"),
+    }
+}
+
+pub fn check_typed_entry_summary_incremental(
+    file_name: &str,
+    source: &str,
+    requested_entry: &str,
+    cache_dir: &Path,
+) -> Result<TypedCheckSummary, IncrementalCheckError> {
+    match check_typed_entry_incremental_impl(
+        file_name,
+        source,
+        requested_entry,
+        cache_dir,
+        RequestedCheck::Summary,
+    )? {
+        IncrementalCheckResult::Summary(summary) => Ok(summary),
+        IncrementalCheckResult::Report(_) => unreachable!("summary mode returns a summary"),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RequestedCheck {
+    Summary,
+    Report,
+}
+
+enum IncrementalCheckResult {
+    Summary(TypedCheckSummary),
+    Report(TypedCheckReport),
+}
+
+fn check_typed_entry_incremental_impl(
+    file_name: &str,
+    source: &str,
+    requested_entry: &str,
+    cache_dir: &Path,
+    requested: RequestedCheck,
+) -> Result<IncrementalCheckResult, IncrementalCheckError> {
     let mut session = QuerySession::open(cache_dir);
     let source_key = Fingerprint::of_parts(&["source", file_name]);
     let source_result = Fingerprint::of_bytes(source.as_bytes());
@@ -648,10 +795,20 @@ pub fn check_typed_entry_incremental(
 
     let check_key = Fingerprint::of_parts(&["check", file_name, requested_entry]);
     if let Some(result) = session.try_replay_green(DepKind::CheckEntry, check_key) {
-        if let Some(cached) = session.previous.cached_report(check_key, result) {
-            session.loaded_result_cache();
-            let report = cached.into_report(session.stats_without_write());
-            return Ok(report);
+        match requested {
+            RequestedCheck::Summary => {
+                if let Some(cached) = session.previous.cached_summary(check_key, result) {
+                    session.loaded_result_cache();
+                    let summary = cached.into_summary(session.stats_without_write());
+                    return Ok(IncrementalCheckResult::Summary(summary));
+                }
+            }
+            RequestedCheck::Report => {
+                if let Some(cached) = session.cached_report(check_key, result) {
+                    let report = cached.into_report(session.stats_without_write());
+                    return Ok(IncrementalCheckResult::Report(report));
+                }
+            }
         }
     }
 
@@ -662,10 +819,16 @@ pub fn check_typed_entry_incremental(
     let collect_node = semantic_graph(&mut session, &report, &parse_nodes, true)
         .expect("executing semantic queries always produces a diagnostics node");
     session.append_executed(DepKind::CheckEntry, check_key, result, &[collect_node]);
-    session.promote_report(CachedReport::from_report(check_key, result, &report));
-    let report = report.with_incremental(session.stats());
+    session.promote_report(check_key, result, &report);
+    let stats = session.stats();
+    let output = match requested {
+        RequestedCheck::Summary => {
+            IncrementalCheckResult::Summary(report.summary().with_incremental(stats))
+        }
+        RequestedCheck::Report => IncrementalCheckResult::Report(report.with_incremental(stats)),
+    };
     session.publish(cache_dir)?;
-    Ok(report)
+    Ok(output)
 }
 
 pub fn check_typed_bundle_entry_incremental(
@@ -683,6 +846,21 @@ pub fn check_typed_bundle_entry_incremental(
     )
 }
 
+pub fn check_typed_bundle_entry_summary_incremental(
+    entry_module: &str,
+    modules: &BTreeMap<String, String>,
+    requested_entry: &str,
+    cache_dir: &Path,
+) -> Result<TypedCheckSummary, IncrementalCheckError> {
+    let mut loader = |module: &str| Ok(modules.get(module).cloned());
+    check_typed_bundle_entry_summary_incremental_with_loader(
+        entry_module,
+        requested_entry,
+        cache_dir,
+        &mut loader,
+    )
+}
+
 pub fn check_typed_bundle_entry_incremental_with_loader<F>(
     entry_module: &str,
     requested_entry: &str,
@@ -692,14 +870,57 @@ pub fn check_typed_bundle_entry_incremental_with_loader<F>(
 where
     F: FnMut(&str) -> Result<Option<String>, String>,
 {
+    match check_typed_bundle_entry_incremental_impl(
+        entry_module,
+        requested_entry,
+        cache_dir,
+        loader,
+        RequestedCheck::Report,
+    )? {
+        IncrementalCheckResult::Report(report) => Ok(report),
+        IncrementalCheckResult::Summary(_) => unreachable!("report mode returns a report"),
+    }
+}
+
+pub fn check_typed_bundle_entry_summary_incremental_with_loader<F>(
+    entry_module: &str,
+    requested_entry: &str,
+    cache_dir: &Path,
+    loader: &mut F,
+) -> Result<TypedCheckSummary, IncrementalCheckError>
+where
+    F: FnMut(&str) -> Result<Option<String>, String>,
+{
+    match check_typed_bundle_entry_incremental_impl(
+        entry_module,
+        requested_entry,
+        cache_dir,
+        loader,
+        RequestedCheck::Summary,
+    )? {
+        IncrementalCheckResult::Summary(summary) => Ok(summary),
+        IncrementalCheckResult::Report(_) => unreachable!("summary mode returns a summary"),
+    }
+}
+
+fn check_typed_bundle_entry_incremental_impl<F>(
+    entry_module: &str,
+    requested_entry: &str,
+    cache_dir: &Path,
+    loader: &mut F,
+    requested: RequestedCheck,
+) -> Result<IncrementalCheckResult, IncrementalCheckError>
+where
+    F: FnMut(&str) -> Result<Option<String>, String>,
+{
     let mut session = QuerySession::open(cache_dir);
     let check_key = Fingerprint::of_parts(&["check-bundle", entry_module, requested_entry]);
-    let previous_report = session.previous.latest_cached_report(check_key);
+    let previous_summary = session.previous.latest_cached_summary(check_key);
     let mut parse_nodes = HashMap::<String, u32>::new();
     let mut sources = HashMap::<String, String>::new();
 
-    if let Some(previous_report) = &previous_report {
-        let mut previous_modules = previous_report.queried_modules.clone();
+    if let Some(previous_summary) = &previous_summary {
+        let mut previous_modules = previous_summary.queried_modules.clone();
         previous_modules.sort();
         query_bundle_modules(
             &mut session,
@@ -709,10 +930,20 @@ where
             loader,
         )?;
         if let Some(result) = session.try_replay_green(DepKind::CheckEntry, check_key) {
-            if let Some(cached) = session.previous.cached_report(check_key, result) {
-                session.loaded_result_cache();
-                let report = cached.into_report(session.stats_without_write());
-                return Ok(report);
+            match requested {
+                RequestedCheck::Summary => {
+                    if let Some(cached) = session.previous.cached_summary(check_key, result) {
+                        session.loaded_result_cache();
+                        let summary = cached.into_summary(session.stats_without_write());
+                        return Ok(IncrementalCheckResult::Summary(summary));
+                    }
+                }
+                RequestedCheck::Report => {
+                    if let Some(cached) = session.cached_report(check_key, result) {
+                        let report = cached.into_report(session.stats_without_write());
+                        return Ok(IncrementalCheckResult::Report(report));
+                    }
+                }
             }
         }
     }
@@ -737,10 +968,16 @@ where
     let collect_node = semantic_graph(&mut session, &report, &parse_nodes, true)
         .expect("executing semantic queries always produces a diagnostics node");
     session.append_executed(DepKind::CheckEntry, check_key, result, &[collect_node]);
-    session.promote_report(CachedReport::from_report(check_key, result, &report));
-    let report = report.with_incremental(session.stats());
+    session.promote_report(check_key, result, &report);
+    let stats = session.stats();
+    let output = match requested {
+        RequestedCheck::Summary => {
+            IncrementalCheckResult::Summary(report.summary().with_incremental(stats))
+        }
+        RequestedCheck::Report => IncrementalCheckResult::Report(report.with_incremental(stats)),
+    };
     session.publish(cache_dir)?;
-    Ok(report)
+    Ok(output)
 }
 
 fn query_bundle_modules<F>(
@@ -816,19 +1053,20 @@ fn semantic_parse_fingerprint(
     Ok(Fingerprint(fingerprint))
 }
 
-fn load_previous(cache_dir: &Path) -> Option<(PersistedSession, u64)> {
+fn load_previous(cache_dir: &Path) -> Option<(PersistedSession, u64, Option<PathBuf>)> {
     let current = fs::read_to_string(cache_dir.join(CURRENT_FILE)).ok()?;
     let session_dir = cache_dir.join(current.trim());
     let bytes = fs::read(session_dir.join(DEP_GRAPH_FILE)).ok()?;
     let session: PersistedSession = serde_json::from_slice(&bytes).ok()?;
     session
         .compatible()
-        .then_some((session, bytes.len() as u64))
+        .then_some((session, bytes.len() as u64, Some(session_dir)))
 }
 
 fn publish_session(
     cache_dir: &Path,
     session: &PersistedSession,
+    reports: &[(String, CachedReport)],
 ) -> Result<(), IncrementalCheckError> {
     fs::create_dir_all(cache_dir)?;
     let nonce = SystemTime::now()
@@ -842,6 +1080,13 @@ fn publish_session(
     if let Err(error) = fs::write(private_dir.join(DEP_GRAPH_FILE), encoded) {
         let _ = fs::remove_dir_all(&private_dir);
         return Err(error.into());
+    }
+    for (file_name, report) in reports {
+        let encoded = serde_json::to_vec(report)?;
+        if let Err(error) = fs::write(private_dir.join(file_name), encoded) {
+            let _ = fs::remove_dir_all(&private_dir);
+            return Err(error.into());
+        }
     }
     let final_name = format!("session-{}-{nonce}", std::process::id());
     let final_dir = cache_dir.join(&final_name);

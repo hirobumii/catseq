@@ -29,7 +29,9 @@ pub use hir::{
 };
 pub use incremental::{
     IncrementalCheckError, check_typed_bundle_entry_incremental,
-    check_typed_bundle_entry_incremental_with_loader, check_typed_entry_incremental,
+    check_typed_bundle_entry_incremental_with_loader, check_typed_bundle_entry_summary_incremental,
+    check_typed_bundle_entry_summary_incremental_with_loader, check_typed_entry_incremental,
+    check_typed_entry_summary_incremental,
 };
 pub use names::{PathRoot, ResolvedPath, ScanSlotUse};
 pub use session::{
@@ -42,7 +44,7 @@ pub use source_hir::{
 };
 pub use typed::{
     IncrementalStats, SourceType, TypeSignature, TypedCheckError, TypedCheckReport,
-    TypedDefinition, TypedParameter, check_typed_bundle_entry,
+    TypedCheckSummary, TypedDefinition, TypedParameter, check_typed_bundle_entry,
     check_typed_bundle_entry_with_loader, check_typed_entry,
 };
 pub use validate::{TopologyContext, ValidationError};

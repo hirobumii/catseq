@@ -104,7 +104,7 @@ fn oasm_black_box_definition_is_an_opaque_atomic_boundary() {
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
-            "check",
+            "emit-hir",
             path.to_str().unwrap(),
             "--entry",
             "sequence",
@@ -186,18 +186,85 @@ fn binary_reports_the_entry_type_signature_as_structured_check_output() {
         String::from_utf8_lossy(&output.stderr)
     );
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["schema_version"], 2);
     assert_eq!(report["entry"], "sequence");
-    assert_eq!(report["definitions"][0]["qualified_name"], "sequence");
+    assert_eq!(report["definition_count"], 1);
+    assert!(report["hir_node_count"].as_u64().unwrap() > 0);
+    assert!(report.get("definitions").is_none());
     assert_eq!(
-        report["definitions"][0]["parameters"][0]["name"],
+        report["entry_signature"]["parameters"][0]["name"],
         "duration"
     );
-    assert_eq!(report["definitions"][0]["parameters"][0]["type"], "Float64");
-    assert_eq!(report["definitions"][0]["return_type"], "Morphism");
+    assert_eq!(
+        report["entry_signature"]["parameters"][0]["type"],
+        "Float64"
+    );
+    assert_eq!(report["entry_signature"]["return_type"], "Morphism");
     assert_eq!(report["diagnostics"], serde_json::json!([]));
     assert!(report["incremental"]["executed"].as_u64().is_some());
     assert!(report["incremental"]["green"].as_u64().is_some());
+}
+
+#[test]
+fn emit_hir_json_explicitly_outputs_the_definition_graph() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.morphism import Morphism, identity\n\ndef sequence(duration: float) -> Morphism:\n    return identity(duration)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-hir",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(&path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["entry"], "sequence");
+    assert_eq!(report["definitions"][0]["qualified_name"], "sequence");
+    assert!(
+        !report["definitions"][0]["hir"]["nodes"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn invalid_emit_hir_format_is_rejected_before_compilation() {
+    let path = source_file();
+    let cache_dir = path.with_extension("incremental");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-hir",
+            path.to_str().unwrap(),
+            "--entry",
+            "Experiment.sequence",
+            "--format",
+            "text",
+            "--cache-dir",
+            cache_dir.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("emit-hir requires --format json"));
+    assert!(!cache_dir.exists());
 }
 
 #[test]
@@ -227,19 +294,16 @@ fn explicit_check_entry_does_not_require_an_arena_build_decorator() {
         String::from_utf8_lossy(&output.stderr)
     );
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let definition = &report["definitions"][0];
+    let signature = &report["entry_signature"];
+    assert_eq!(report["entry"], "RydbergTransferExp.build_sequence");
+    assert_eq!(signature["parameters"][0]["name"], "self");
     assert_eq!(
-        definition["qualified_name"],
-        "RydbergTransferExp.build_sequence"
-    );
-    assert_eq!(definition["parameters"][0]["name"], "self");
-    assert_eq!(
-        definition["parameters"][0]["type"],
+        signature["parameters"][0]["type"],
         "Instance<RydbergTransferExp>"
     );
-    assert_eq!(definition["parameters"][1]["name"], "params");
-    assert_eq!(definition["parameters"][1]["type"], "ScanBindings");
-    assert_eq!(definition["return_type"], "Morphism");
+    assert_eq!(signature["parameters"][1]["name"], "params");
+    assert_eq!(signature["parameters"][1]["type"], "ScanBindings");
+    assert_eq!(signature["return_type"], "Morphism");
 }
 
 #[test]
@@ -304,7 +368,53 @@ fn unchanged_check_reuses_queries_from_the_previous_process() {
             .is_some()
     );
     assert!(second["incremental"]["executed_by_kind"].is_object());
-    assert_eq!(second["definitions"], first["definitions"]);
+    assert_eq!(second["entry_signature"], first["entry_signature"]);
+}
+
+#[test]
+fn compact_check_does_not_load_the_full_hir_cache() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.morphism import Morphism, identity\n\ndef sequence(duration: float) -> Morphism:\n    return identity(duration)\n",
+    )
+    .unwrap();
+    let cache_dir = path.with_extension("incremental");
+    let run = |command: &str| {
+        Command::new(env!("CARGO_BIN_EXE_catseqc"))
+            .args([
+                command,
+                path.to_str().unwrap(),
+                "--entry",
+                "sequence",
+                "--format",
+                "json",
+                "--cache-dir",
+                cache_dir.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap()
+    };
+
+    assert!(run("check").status.success());
+    let check_output = run("check");
+    assert!(check_output.status.success());
+    let check: serde_json::Value = serde_json::from_slice(&check_output.stdout).unwrap();
+    let hir_output = run("emit-hir");
+    assert!(hir_output.status.success());
+    let hir: serde_json::Value = serde_json::from_slice(&hir_output.stdout).unwrap();
+
+    fs::remove_file(path).unwrap();
+    fs::remove_dir_all(cache_dir).unwrap();
+
+    assert!(check.get("definitions").is_none());
+    assert!(hir["definitions"].is_array());
+    assert_eq!(check["incremental"]["executed"], 0);
+    assert_eq!(hir["incremental"]["executed"], 0);
+    assert!(
+        check["incremental"]["bytes_read"].as_u64().unwrap()
+            < hir["incremental"]["bytes_read"].as_u64().unwrap()
+    );
 }
 
 #[test]
@@ -346,7 +456,7 @@ fn comment_only_change_stops_after_the_parser_semantic_fingerprint() {
 
     assert_eq!(second["incremental"]["executed"], 1);
     assert!(second["incremental"]["green"].as_u64().unwrap() >= 2);
-    assert_eq!(second["definitions"], first["definitions"]);
+    assert_eq!(second["entry_signature"], first["entry_signature"]);
 }
 
 #[test]
@@ -369,7 +479,7 @@ fn check_follows_reachable_definitions_across_the_source_bundle() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
-            "check",
+            "emit-hir",
             entry_path.to_str().unwrap(),
             "--source-root",
             source_root.to_str().unwrap(),
@@ -427,7 +537,7 @@ fn reachable_service_singleton_resolves_to_its_compile_class_method() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
-            "check",
+            "emit-hir",
             entry_path.to_str().unwrap(),
             "--source-root",
             root.to_str().unwrap(),
@@ -466,7 +576,7 @@ fn static_property_comprehension_expands_compile_instance_calls() {
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
-            "check",
+            "emit-hir",
             path.to_str().unwrap(),
             "--entry",
             "sequence",
@@ -522,7 +632,7 @@ fn compile_discriminated_optional_annotation_has_a_native_source_type() {
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
-            "check",
+            "emit-hir",
             path.to_str().unwrap(),
             "--entry",
             "pulse",
@@ -555,7 +665,7 @@ fn unannotated_numeric_parameter_is_inferred_from_restricted_arithmetic() {
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
-            "check",
+            "emit-hir",
             path.to_str().unwrap(),
             "--entry",
             "pulse",
@@ -585,7 +695,7 @@ fn unannotated_return_type_is_inferred_from_flat_hir() {
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
-            "check",
+            "emit-hir",
             path.to_str().unwrap(),
             "--entry",
             "pulse",
@@ -615,7 +725,7 @@ fn unannotated_return_type_flows_across_a_resolved_definition_call() {
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
-            "check",
+            "emit-hir",
             path.to_str().unwrap(),
             "--entry",
             "sequence",
@@ -657,7 +767,7 @@ fn unresolved_call_assignment_keeps_a_local_resolution_edge() {
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
-            "check",
+            "emit-hir",
             path.to_str().unwrap(),
             "--entry",
             "sequence",
@@ -707,7 +817,7 @@ fn legacy_repeat_sequence_handle_is_erased_and_self_calls_remain_reachable() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
-            "check",
+            "emit-hir",
             entry_path.to_str().unwrap(),
             "--source-root",
             root.to_str().unwrap(),
@@ -815,7 +925,7 @@ fn forwarded_legacy_state_edge_is_erased_from_reachable_signatures() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
-            "check",
+            "emit-hir",
             entry_path.to_str().unwrap(),
             "--source-root",
             root.to_str().unwrap(),
@@ -872,7 +982,7 @@ fn source_bundle_cache_tracks_only_compile_reachable_modules() {
     let run = || {
         Command::new(env!("CARGO_BIN_EXE_catseqc"))
             .args([
-                "check",
+                "emit-hir",
                 entry_path.to_str().unwrap(),
                 "--source-root",
                 root.to_str().unwrap(),
@@ -954,7 +1064,7 @@ fn compile_visible_field_change_invalidates_only_its_definition_revision() {
     let run = || {
         Command::new(env!("CARGO_BIN_EXE_catseqc"))
             .args([
-                "check",
+                "emit-hir",
                 entry_path.to_str().unwrap(),
                 "--source-root",
                 root.to_str().unwrap(),
@@ -1012,7 +1122,7 @@ fn typed_check_returns_flat_definition_hir_with_scan_semantic_facts() {
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
-            "check",
+            "emit-hir",
             path.to_str().unwrap(),
             "--entry",
             "Experiment.sequence",
@@ -1067,7 +1177,7 @@ fn registered_phase_tracker_attribute_has_a_phase_frame_fact() {
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
-            "check",
+            "emit-hir",
             path.to_str().unwrap(),
             "--entry",
             "Module.pulse",
@@ -1219,7 +1329,7 @@ fn failed_check_preserves_the_last_successful_incremental_session() {
     let run = || {
         Command::new(env!("CARGO_BIN_EXE_catseqc"))
             .args([
-                "check",
+                "emit-hir",
                 path.to_str().unwrap(),
                 "--entry",
                 "sequence",
@@ -1283,7 +1393,7 @@ fn real_rydberg_transfer_reuses_the_definition_segmented_hir() {
     let run = || {
         Command::new(env!("CARGO_BIN_EXE_catseqc"))
             .args([
-                "check",
+                "emit-hir",
                 entry_path.to_str().unwrap(),
                 "--source-root",
                 source_root.to_str().unwrap(),

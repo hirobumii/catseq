@@ -207,6 +207,76 @@ pub struct TypedCheckReport {
     incremental: IncrementalStats,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypedCheckSummary {
+    entry: String,
+    entry_signature: TypeSignature,
+    definition_count: usize,
+    hir_node_count: usize,
+    diagnostics: Vec<String>,
+    queried_modules: Vec<String>,
+    incremental: IncrementalStats,
+}
+
+impl TypedCheckSummary {
+    pub const fn schema_version(&self) -> u32 {
+        2
+    }
+
+    pub fn entry(&self) -> &str {
+        &self.entry
+    }
+
+    pub const fn entry_signature(&self) -> &TypeSignature {
+        &self.entry_signature
+    }
+
+    pub const fn definition_count(&self) -> usize {
+        self.definition_count
+    }
+
+    pub const fn hir_node_count(&self) -> usize {
+        self.hir_node_count
+    }
+
+    pub fn diagnostics(&self) -> &[String] {
+        &self.diagnostics
+    }
+
+    pub fn queried_modules(&self) -> &[String] {
+        &self.queried_modules
+    }
+
+    pub const fn incremental(&self) -> &IncrementalStats {
+        &self.incremental
+    }
+
+    pub(crate) fn with_incremental(mut self, incremental: IncrementalStats) -> Self {
+        self.incremental = incremental;
+        self
+    }
+
+    pub(crate) fn from_cached(
+        entry: String,
+        entry_signature: TypeSignature,
+        definition_count: usize,
+        hir_node_count: usize,
+        diagnostics: Vec<String>,
+        queried_modules: Vec<String>,
+        incremental: IncrementalStats,
+    ) -> Self {
+        Self {
+            entry,
+            entry_signature,
+            definition_count,
+            hir_node_count,
+            diagnostics,
+            queried_modules,
+            incremental,
+        }
+    }
+}
+
 impl TypedCheckReport {
     pub const fn schema_version(&self) -> u32 {
         1
@@ -230,6 +300,28 @@ impl TypedCheckReport {
 
     pub const fn incremental(&self) -> &IncrementalStats {
         &self.incremental
+    }
+
+    pub fn summary(&self) -> TypedCheckSummary {
+        let entry_signature = self
+            .definitions
+            .first()
+            .expect("a successful typed check has an entry definition")
+            .signature
+            .clone();
+        TypedCheckSummary {
+            entry: self.entry.clone(),
+            entry_signature,
+            definition_count: self.definitions.len(),
+            hir_node_count: self
+                .definitions
+                .iter()
+                .map(|definition| definition.hir.nodes().len())
+                .sum(),
+            diagnostics: self.diagnostics.clone(),
+            queried_modules: self.queried_modules.clone(),
+            incremental: self.incremental.clone(),
+        }
     }
 
     pub(crate) fn with_incremental(mut self, incremental: IncrementalStats) -> Self {

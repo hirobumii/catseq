@@ -109,6 +109,7 @@ dependencies = [
  "catseq-core",
  "catseq-frontend",
  "catseq-rtmq",
+ "serde",
  "serde_json",
 ]
 

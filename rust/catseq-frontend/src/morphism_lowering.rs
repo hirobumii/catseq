@@ -255,7 +255,11 @@ impl<'a> SpecializationLowerer<'a> {
                         .find(|argument| argument.name.as_deref() == Some(parameter.name()))
                         .map(|argument| argument.value.clone())
                 })
-                .or_else(|| parameter.default_value().and_then(lower_normalized_default));
+                .or_else(|| {
+                    parameter
+                        .default_value()
+                        .and_then(|value| lower_normalized_default(value, self.clock_hz))
+                });
             if let Some(value) = value {
                 parameter_bindings.insert(parameter.name(), value);
             }
@@ -308,7 +312,10 @@ impl<'a> SpecializationLowerer<'a> {
                 }
                 SourceHirKind::Name
                     if fact.compile_value().is_some()
-                        && source_type_to_value_type(source_type).is_some() =>
+                        && (source_type_to_value_type(source_type).is_some()
+                            || normalized_has_duration_unit(
+                                fact.compile_value().expect("checked above"),
+                            )) =>
                 {
                     lower_compile_value(
                         node,
@@ -319,7 +326,10 @@ impl<'a> SpecializationLowerer<'a> {
                 }
                 SourceHirKind::Attribute
                     if fact.compile_value().is_some()
-                        && source_type_to_value_type(source_type).is_some() =>
+                        && (source_type_to_value_type(source_type).is_some()
+                            || normalized_has_duration_unit(
+                                fact.compile_value().expect("checked above"),
+                            )) =>
                 {
                     lower_compile_value(
                         node,
@@ -1760,9 +1770,8 @@ fn lower_compile_value(
                     .and_then(|value| i64::try_from(value).ok())
                     .ok_or_else(|| lowering_error(node, "Int64 compile value is not integral"))?;
                 ScalarValue::Int(integer)
-            } else if ["name:s", "name:ms", "name:us", "name:ns"]
-                .iter()
-                .any(|unit| value.contains(unit))
+            } else if source_type == Some(&SourceType::Duration)
+                || normalized_has_duration_unit(value)
             {
                 ScalarValue::DurationCycles(
                     numeric
@@ -1777,7 +1786,15 @@ fn lower_compile_value(
     Ok(Some(LoweredValue::Scalar(scalar)))
 }
 
-fn lower_normalized_default(value: &str) -> Option<LoweredValue> {
+fn normalized_has_duration_unit(value: &str) -> bool {
+    value
+        .split(|character: char| {
+            !(character.is_ascii_alphanumeric() || character == '_' || character == ':')
+        })
+        .any(|token| matches!(token, "name:s" | "name:ms" | "name:us" | "name:ns"))
+}
+
+fn lower_normalized_default(value: &str, clock_hz: u64) -> Option<LoweredValue> {
     let scalar = match value {
         "constant:None" => return Some(LoweredValue::Null),
         "constant:Bool(true)" => ScalarValue::Bool(true),
@@ -1789,6 +1806,12 @@ fn lower_normalized_default(value: &str) -> Option<LoweredValue> {
                 .parse()
                 .ok()?;
             ScalarValue::Int(value)
+        }
+        value if normalized_has_duration_unit(value) =>
+        {
+            ScalarValue::DurationCycles(
+                parse_normalized_numeric(value)?.checked_mul(ExactDecimal::from_u64(clock_hz))?,
+            )
         }
         value => ScalarValue::Float(parse_normalized_numeric(value)?),
     };
@@ -2425,4 +2448,18 @@ fn lowering_error(node: &SourceHirNode, message: impl Display) -> MorphismLoweri
         node.anchor().line(),
         node.anchor().column()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalized_has_duration_unit;
+
+    #[test]
+    fn normalized_duration_units_are_matched_as_complete_name_tokens() {
+        assert!(normalized_has_duration_unit(
+            "bin:Mult(constant:Int(80),name:ns)"
+        ));
+        assert!(!normalized_has_duration_unit("name:start"));
+        assert!(!normalized_has_duration_unit("name:usage"));
+    }
 }

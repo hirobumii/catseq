@@ -340,6 +340,8 @@ struct TtlEvent {
     local_id: u8,
     high: bool,
     instruction_cost_cycles: u64,
+    order: EventOrder,
+    loop_scope: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -350,6 +352,56 @@ struct DirectEvent {
     function: OasmFunction,
     args: Vec<OasmArgument>,
     instruction_cost_cycles: u64,
+    order: EventOrder,
+    group_id: u64,
+    preload: bool,
+    loop_scope: Option<u64>,
+}
+
+#[derive(Clone, Copy)]
+struct LoopRegion {
+    epoch: u32,
+    start: u64,
+    body_duration: u64,
+    count: u64,
+    marker_group_id: u64,
+}
+
+struct BoardEpochInput {
+    epoch: u32,
+    origin_cycles: u64,
+    address: String,
+    board_kind: TargetBoardKind,
+    duration_cycles: u64,
+    initial_cursor: u64,
+    ttl_events: Vec<TtlEvent>,
+    direct_events: Vec<DirectEvent>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct EventOrder {
+    channel_kind: u8,
+    local_id: u8,
+    sequence: u64,
+}
+
+impl EventOrder {
+    const BOARD: Self = Self {
+        channel_kind: 0,
+        local_id: 0,
+        sequence: 0,
+    };
+
+    const fn channel(kind: ChannelKind, local_id: u8, sequence: u64) -> Self {
+        Self {
+            channel_kind: match kind {
+                ChannelKind::Rwg | ChannelKind::Rsp => 0,
+                ChannelKind::Ttl => 1,
+            },
+            local_id,
+            sequence,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -428,7 +480,13 @@ pub fn compile_oasm_call_plan(
                                 "Target Profile has no Atomic Schema for {operation}"
                             ))
                         })?;
-                        if let Some(duration) = schema.fixed_duration_cycles {
+                        if schema.lowering == AtomicLowering::RwgInitialize
+                            && atomic_bool_argument(arena, payload, program, 1)
+                        {
+                            target.clock_hz.checked_div(1_000_000).ok_or_else(|| {
+                                OasmCompileError::new("RWG hard-init delay is invalid")
+                            })?
+                        } else if let Some(duration) = schema.fixed_duration_cycles {
                             duration
                         } else if let Some(duration_argument) = schema.duration_argument {
                             let duration = arena
@@ -591,6 +649,7 @@ pub fn compile_oasm_call_plan(
     let mut direct_events = Vec::<DirectEvent>::new();
     let mut rwg_states = HashMap::<String, RwgChannelState>::new();
     let mut rsp_pid_configs = HashMap::<String, serde_json::Value>::new();
+    let mut loop_regions = Vec::<LoopRegion>::new();
     enum TraversalTask {
         Visit {
             node_id: usize,
@@ -615,6 +674,7 @@ pub fn compile_oasm_call_plan(
         channel: None,
     }];
     let mut epoch_origins = BTreeMap::from([(0_u32, 0_u64)]);
+    let mut next_event_id = 0_u64;
     while let Some(task) = pending.pop() {
         let TraversalTask::Visit {
             node_id,
@@ -650,6 +710,23 @@ pub fn compile_oasm_call_plan(
             let cursor_advance = total_duration.checked_sub(body_duration).ok_or_else(|| {
                 OasmCompileError::new("hardware loop duration is shorter than its body")
             })?;
+            let marker_group_id = next_event_id;
+            next_event_id = next_event_id
+                .checked_add(1)
+                .ok_or_else(|| OasmCompileError::new("OASM event id overflows u64"))?;
+            loop_regions.push(LoopRegion {
+                epoch,
+                start,
+                body_duration,
+                count,
+                marker_group_id,
+            });
+            for event in &mut ttl_events[ttl_start..] {
+                event.loop_scope = Some(marker_group_id);
+            }
+            for event in &mut direct_events[direct_start..] {
+                event.loop_scope = Some(marker_group_id);
+            }
             for board in boards {
                 direct_events.push(DirectEvent {
                     epoch,
@@ -658,6 +735,10 @@ pub fn compile_oasm_call_plan(
                     function: OasmFunction::LoopBegin,
                     args: vec![OasmArgument::Unsigned(1), OasmArgument::Unsigned(count)],
                     instruction_cost_cycles: 0,
+                    order: EventOrder::BOARD,
+                    group_id: marker_group_id,
+                    preload: false,
+                    loop_scope: Some(marker_group_id),
                 });
                 direct_events.push(DirectEvent {
                     epoch,
@@ -666,6 +747,10 @@ pub fn compile_oasm_call_plan(
                     function: OasmFunction::LoopEnd,
                     args: Vec::new(),
                     instruction_cost_cycles: cursor_advance,
+                    order: EventOrder::BOARD,
+                    group_id: marker_group_id,
+                    preload: false,
+                    loop_scope: Some(marker_group_id),
                 });
             }
             continue;
@@ -677,6 +762,10 @@ pub fn compile_oasm_call_plan(
         match node.kind() {
             MorphismNodeKind::Wait => {}
             MorphismNodeKind::Atomic => {
+                let group_id = next_event_id;
+                next_event_id = next_event_id
+                    .checked_add(1)
+                    .ok_or_else(|| OasmCompileError::new("OASM event id overflows u64"))?;
                 let Some(MorphismPayload::Atomic { operation, .. }) = payload else {
                     unreachable!("validated arena has an Atomic payload")
                 };
@@ -732,6 +821,10 @@ pub fn compile_oasm_call_plan(
                                 vec![OasmArgument::Unsigned(12_345)]
                             },
                             instruction_cost_cycles: schema.instruction_cost_cycles,
+                            order: EventOrder::BOARD,
+                            group_id,
+                            preload: false,
+                            loop_scope: None,
                         });
                     }
                     continue;
@@ -759,6 +852,10 @@ pub fn compile_oasm_call_plan(
                         function: OasmFunction::UserDefinedFunc,
                         args,
                         instruction_cost_cycles: schema.instruction_cost_cycles,
+                        order: EventOrder::BOARD,
+                        group_id,
+                        preload: false,
+                        loop_scope: None,
                     });
                     continue;
                 }
@@ -794,6 +891,7 @@ pub fn compile_oasm_call_plan(
                     program,
                     &evaluated_values,
                     target.clock_hz,
+                    group_id,
                     &mut rwg_states,
                     &mut rsp_pid_configs,
                     &mut ttl_events,
@@ -879,6 +977,19 @@ pub fn compile_oasm_call_plan(
         }
     }
 
+    for event in &mut direct_events {
+        event.instruction_cost_cycles = event.instruction_cost_cycles.max(oasm_call_cost(event)?);
+    }
+    let loop_delta = apply_loop_timing(
+        &loop_regions,
+        &mut ttl_events,
+        &mut direct_events,
+        &mut epoch_origins,
+    )?;
+    let program_duration = durations[arena.root().index()]
+        .checked_add(loop_delta)
+        .ok_or_else(|| OasmCompileError::new("program duration overflows u64"))?;
+
     let mut board_ttl_events = BTreeMap::<(u32, String), Vec<TtlEvent>>::new();
     for event in ttl_events {
         board_ttl_events
@@ -893,39 +1004,95 @@ pub fn compile_oasm_call_plan(
             .or_default()
             .push(event);
     }
+    let program_addresses = board_ttl_events
+        .keys()
+        .chain(board_direct_events.keys())
+        .map(|(_, address)| address.clone())
+        .collect::<std::collections::BTreeSet<_>>();
     let mut epochs = Vec::new();
+    let mut epoch_initial_cursors = BTreeMap::<String, u64>::new();
     for id in 0..=sync_counts[arena.root().index()] {
         let origin_cycles = *epoch_origins.get(&id).ok_or_else(|| {
             OasmCompileError::new(format!("epoch {id} has no global sync origin"))
         })?;
-        let addresses = board_ttl_events
-            .keys()
-            .chain(board_direct_events.keys())
-            .filter(|(event_epoch, _)| *event_epoch == id)
-            .map(|(_, address)| address.clone())
-            .collect::<std::collections::BTreeSet<_>>();
-        let boards = addresses
-            .into_iter()
+        let end_cycles = epoch_origins
+            .get(&(id + 1))
+            .copied()
+            .unwrap_or(program_duration);
+        let duration_cycles = end_cycles
+            .checked_sub(origin_cycles)
+            .ok_or_else(|| OasmCompileError::new("epoch end precedes its origin"))?;
+        let mut boards = program_addresses
+            .iter()
             .map(|address| {
-                let board = target.boards.get(&address).ok_or_else(|| {
+                let board = target.boards.get(address).ok_or_else(|| {
                     OasmCompileError::new(format!(
                         "Target Profile has no board capabilities for {address}"
                     ))
                 })?;
-                compile_board(
-                    id,
+                compile_board(BoardEpochInput {
+                    epoch: id,
                     origin_cycles,
-                    address.clone(),
-                    board.kind,
-                    board_ttl_events
+                    address: address.clone(),
+                    board_kind: board.kind,
+                    duration_cycles,
+                    initial_cursor: epoch_initial_cursors.get(address).copied().unwrap_or(0),
+                    ttl_events: board_ttl_events
                         .remove(&(id, address.clone()))
                         .unwrap_or_default(),
-                    board_direct_events
+                    direct_events: board_direct_events
                         .remove(&(id, address.clone()))
                         .unwrap_or_default(),
-                )
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let sync_frontier = boards
+            .iter()
+            .flat_map(|board| board.calls.iter())
+            .filter(|call| {
+                matches!(
+                    call.function,
+                    OasmFunction::WaitMaster | OasmFunction::TrigSlave
+                )
+            })
+            .map(|call| {
+                call.offset_cycles
+                    + if call.function == OasmFunction::WaitMaster {
+                        8
+                    } else {
+                        0
+                    }
+            })
+            .max();
+        if let Some(sync_frontier) = sync_frontier {
+            for board in &mut boards {
+                for call in &mut board.calls {
+                    if call.function == OasmFunction::TrigSlave {
+                        let master_wait = sync_frontier
+                            .saturating_sub(call.offset_cycles)
+                            .saturating_add(100);
+                        if let Some(argument) = call.args.first_mut() {
+                            *argument = OasmArgument::Unsigned(master_wait);
+                        }
+                    }
+                }
+            }
+        }
+        epoch_initial_cursors.clear();
+        for board in &boards {
+            let carry = board
+                .calls
+                .iter()
+                .rev()
+                .find_map(|call| match call.function {
+                    OasmFunction::WaitMaster => Some(8),
+                    OasmFunction::TrigSlave => Some(17),
+                    _ => None,
+                });
+            if let Some(carry) = carry {
+                epoch_initial_cursors.insert(board.address.clone(), carry);
+            }
+        }
         epochs.push(OasmEpochPlan {
             id,
             origin_cycles,
@@ -951,6 +1118,7 @@ fn lower_atomic_events(
     program: &NativeArenas,
     evaluated_values: &[Result<ExactDecimal, OasmCompileError>],
     clock_hz: u64,
+    group_id: u64,
     rwg_states: &mut HashMap<String, RwgChannelState>,
     rsp_pid_configs: &mut HashMap<String, serde_json::Value>,
     ttl_events: &mut Vec<TtlEvent>,
@@ -974,6 +1142,10 @@ fn lower_atomic_events(
             function,
             args,
             instruction_cost_cycles: schema.instruction_cost_cycles,
+            order: EventOrder::channel(binding.kind, binding.local_id, group_id),
+            group_id,
+            preload: false,
+            loop_scope: None,
         });
     };
     let validate_kind = |expected: ChannelKind| {
@@ -1000,6 +1172,8 @@ fn lower_atomic_events(
                 local_id: binding.local_id,
                 high,
                 instruction_cost_cycles: schema.instruction_cost_cycles,
+                order: EventOrder::channel(binding.kind, binding.local_id, group_id),
+                loop_scope: None,
             });
             if schema.lowering == AtomicLowering::TtlPulse {
                 ttl_events.push(TtlEvent {
@@ -1011,6 +1185,8 @@ fn lower_atomic_events(
                     local_id: binding.local_id,
                     high: false,
                     instruction_cost_cycles: schema.instruction_cost_cycles,
+                    order: EventOrder::channel(binding.kind, binding.local_id, group_id),
+                    loop_scope: None,
                 });
             }
         }
@@ -1037,7 +1213,9 @@ fn lower_atomic_events(
                 direct(start, OasmFunction::RwgInit, vec![], direct_events);
             }
             direct(
-                start,
+                start
+                    .checked_add(duration)
+                    .ok_or_else(|| OasmCompileError::new("RWG init timestamp overflows"))?,
                 OasmFunction::RwgSetCarrier,
                 vec![
                     OasmArgument::Unsigned(binding.local_id.into()),
@@ -1076,6 +1254,7 @@ fn lower_atomic_events(
                 phase_reset,
                 StaticWaveformMode::Set,
                 schema.instruction_cost_cycles,
+                group_id,
                 direct_events,
             );
             rwg_states.insert(
@@ -1121,6 +1300,7 @@ fn lower_atomic_events(
                 epoch,
                 ramp,
                 schema.instruction_cost_cycles,
+                group_id,
                 direct_events,
             );
             emit_prepared_rwg_waveforms(
@@ -1131,6 +1311,7 @@ fn lower_atomic_events(
                 epoch,
                 static_stop,
                 schema.instruction_cost_cycles,
+                group_id,
                 direct_events,
             );
             rwg_states.insert(
@@ -1186,7 +1367,9 @@ fn lower_atomic_events(
             }
             direct(start, OasmFunction::RspInit, args, direct_events);
             direct(
-                start,
+                start
+                    .checked_add(duration)
+                    .ok_or_else(|| OasmCompileError::new("RSP init timestamp overflows"))?,
                 OasmFunction::RspSetCarrier,
                 vec![
                     OasmArgument::Unsigned(binding.local_id.into()),
@@ -1395,6 +1578,7 @@ fn emit_rwg_waveforms(
     phase_reset: bool,
     _mode: StaticWaveformMode,
     instruction_cost_cycles: u64,
+    group_id: u64,
     events: &mut Vec<DirectEvent>,
 ) {
     for target in targets {
@@ -1408,7 +1592,7 @@ fn emit_rwg_waveforms(
             "sbg_id": sbg_id,
             "freq_coeffs": [target.get("freq").cloned().unwrap_or(serde_json::Value::Null), null, null, null],
             "amp_coeffs": [target.get("amp").cloned().unwrap_or(serde_json::Value::Null), null, null, null],
-            "initial_phase": target.get("phase").cloned().unwrap_or(serde_json::Value::Null),
+            "initial_phase": target.get("phase").cloned().unwrap_or_else(|| serde_json::Value::from(0.0)),
             "phase_reset": phase_reset,
             "fct": target.get("fct").cloned().unwrap_or(serde_json::Value::Null)
         });
@@ -1419,6 +1603,10 @@ fn emit_rwg_waveforms(
             function: OasmFunction::RwgLoadWaveform,
             args: vec![OasmArgument::Json(waveform)],
             instruction_cost_cycles,
+            order: EventOrder::channel(binding.kind, binding.local_id, group_id),
+            group_id,
+            preload: true,
+            loop_scope: None,
         });
     }
     let mask = 1_u64 << binding.local_id;
@@ -1429,6 +1617,10 @@ fn emit_rwg_waveforms(
         function: OasmFunction::RwgPlay,
         args: vec![OasmArgument::Unsigned(mask), OasmArgument::Unsigned(mask)],
         instruction_cost_cycles,
+        order: EventOrder::channel(binding.kind, binding.local_id, group_id),
+        group_id,
+        preload: false,
+        loop_scope: None,
     });
 }
 
@@ -1438,6 +1630,7 @@ fn emit_prepared_rwg_waveforms(
     epoch: u32,
     waveforms: Vec<serde_json::Value>,
     instruction_cost_cycles: u64,
+    group_id: u64,
     events: &mut Vec<DirectEvent>,
 ) {
     for waveform in waveforms {
@@ -1448,6 +1641,10 @@ fn emit_prepared_rwg_waveforms(
             function: OasmFunction::RwgLoadWaveform,
             args: vec![OasmArgument::Json(waveform)],
             instruction_cost_cycles,
+            order: EventOrder::channel(binding.kind, binding.local_id, group_id),
+            group_id,
+            preload: true,
+            loop_scope: None,
         });
     }
     let mask = 1_u64 << binding.local_id;
@@ -1458,6 +1655,10 @@ fn emit_prepared_rwg_waveforms(
         function: OasmFunction::RwgPlay,
         args: vec![OasmArgument::Unsigned(mask), OasmArgument::Unsigned(mask)],
         instruction_cost_cycles,
+        order: EventOrder::channel(binding.kind, binding.local_id, group_id),
+        group_id,
+        preload: false,
+        loop_scope: None,
     });
 }
 
@@ -1466,6 +1667,20 @@ fn bool_argument(program: &NativeArenas, id: ValueExprId) -> Option<bool> {
         Some(ValueExprPayload::Bool(value)) => Some(*value),
         _ => None,
     }
+}
+
+fn atomic_bool_argument(
+    arena: &catseq_core::morphism_arena::MorphismArena,
+    payload: &MorphismPayload,
+    program: &NativeArenas,
+    index: usize,
+) -> bool {
+    arena
+        .payload_arguments(payload)
+        .ok()
+        .and_then(|arguments| arguments.get(index))
+        .and_then(|id| bool_argument(program, *id))
+        .unwrap_or(false)
 }
 
 fn json_argument(
@@ -1551,14 +1766,186 @@ fn value_to_oasm_argument(
     }
 }
 
-fn compile_board(
-    epoch: u32,
-    origin_cycles: u64,
-    address: String,
-    board_kind: TargetBoardKind,
-    mut events: Vec<TtlEvent>,
-    mut direct_events: Vec<DirectEvent>,
-) -> Result<OasmBoardPlan, OasmCompileError> {
+fn apply_loop_timing(
+    regions: &[LoopRegion],
+    ttl_events: &mut [TtlEvent],
+    direct_events: &mut [DirectEvent],
+    epoch_origins: &mut BTreeMap<u32, u64>,
+) -> Result<u64, OasmCompileError> {
+    let mut total_delta = 0_u64;
+    for region in regions {
+        let start = direct_events
+            .iter()
+            .find(|event| {
+                event.group_id == region.marker_group_id
+                    && event.function == OasmFunction::LoopBegin
+            })
+            .map_or(region.start, |event| event.offset_cycles);
+        let end = start
+            .checked_add(region.body_duration)
+            .ok_or_else(|| OasmCompileError::new("loop body end overflows u64"))?;
+        let after_body = end
+            .checked_add(1)
+            .ok_or_else(|| OasmCompileError::new("loop body boundary overflows u64"))?;
+        let loop_boards = direct_events
+            .iter()
+            .filter(|event| {
+                event.epoch == region.epoch
+                    && event.loop_scope == Some(region.marker_group_id)
+                    && event.group_id != region.marker_group_id
+            })
+            .map(|event| event.board.clone())
+            .chain(
+                ttl_events
+                    .iter()
+                    .filter(|event| {
+                        event.epoch == region.epoch
+                            && event.loop_scope == Some(region.marker_group_id)
+                    })
+                    .map(|event| event.board.clone()),
+            )
+            .collect::<std::collections::BTreeSet<_>>();
+        for event in direct_events.iter_mut().filter(|event| {
+            event.epoch == region.epoch
+                && loop_boards.contains(&event.board)
+                && event.loop_scope != Some(region.marker_group_id)
+                && event.offset_cycles >= start
+                && event.offset_cycles <= end
+        }) {
+            event.offset_cycles = after_body;
+        }
+        for event in ttl_events.iter_mut().filter(|event| {
+            event.epoch == region.epoch
+                && loop_boards.contains(&event.board)
+                && event.loop_scope != Some(region.marker_group_id)
+                && event.offset_cycles >= start
+                && event.offset_cycles <= end
+        }) {
+            event.offset_cycles = after_body;
+        }
+        // Preload scheduling and call coalescing are board-local operations. Keeping
+        // this boundary here prevents equal timestamps on independent boards from
+        // being collapsed into one synthetic call while measuring loop occupancy.
+        let mut body_events_by_board = BTreeMap::<String, Vec<DirectEvent>>::new();
+        for event in direct_events.iter().filter(|event| {
+            event.epoch == region.epoch
+                && event.loop_scope == Some(region.marker_group_id)
+                && event.group_id != region.marker_group_id
+        }) {
+            body_events_by_board
+                .entry(event.board.clone())
+                .or_default()
+                .push(event.clone());
+        }
+        let mut scheduled = Vec::new();
+        for mut body_events in body_events_by_board.into_values() {
+            let fused_handoffs = eliminate_superseded_preloads(&mut body_events);
+            schedule_preloads(&mut body_events)?;
+            remove_fused_handoff_plays(&mut body_events, &fused_handoffs);
+            scheduled.extend(coalesce_direct_events(body_events)?);
+        }
+
+        let mut ttl_by_offset = BTreeMap::<(String, u64), EventOrder>::new();
+        for event in ttl_events.iter().filter(|event| {
+            event.epoch == region.epoch && event.loop_scope == Some(region.marker_group_id)
+        }) {
+            ttl_by_offset
+                .entry((event.board.clone(), event.offset_cycles))
+                .and_modify(|order| *order = (*order).min(event.order))
+                .or_insert(event.order);
+        }
+        scheduled.extend(
+            ttl_by_offset
+                .into_iter()
+                .map(|((board, offset_cycles), order)| DirectEvent {
+                    epoch: region.epoch,
+                    offset_cycles,
+                    board,
+                    function: OasmFunction::TtlSet,
+                    args: Vec::new(),
+                    instruction_cost_cycles: 1,
+                    order,
+                    group_id: order.sequence,
+                    preload: false,
+                    loop_scope: Some(region.marker_group_id),
+                }),
+        );
+        scheduled.sort_by_key(|event| {
+            (
+                event.offset_cycles,
+                oasm_function_priority(event.function),
+                event.order,
+            )
+        });
+        let mut board_cursors = BTreeMap::<String, u64>::new();
+        for event in scheduled {
+            let cursor = board_cursors.entry(event.board.clone()).or_insert(start);
+            let actual_start = event.offset_cycles.max(*cursor);
+            *cursor = actual_start
+                .checked_add(event.instruction_cost_cycles)
+                .ok_or_else(|| OasmCompileError::new("loop body cursor overflows u64"))?;
+        }
+        let actual_body_duration = board_cursors
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(end)
+            .saturating_sub(start)
+            .max(region.body_duration);
+        let body_delta = actual_body_duration - region.body_duration;
+        let loop_delta = body_delta
+            .checked_mul(region.count)
+            .ok_or_else(|| OasmCompileError::new("loop lowering delta overflows u64"))?;
+        if loop_delta == 0 {
+            continue;
+        }
+        let marker_extra = loop_delta.saturating_sub(body_delta);
+        for event in direct_events.iter_mut() {
+            if event.group_id == region.marker_group_id && event.function == OasmFunction::LoopEnd {
+                event.instruction_cost_cycles = event
+                    .instruction_cost_cycles
+                    .checked_add(marker_extra)
+                    .ok_or_else(|| OasmCompileError::new("loop marker cost overflows u64"))?;
+            } else if event.epoch > region.epoch
+                || (event.epoch == region.epoch && event.offset_cycles > end)
+            {
+                event.offset_cycles = event
+                    .offset_cycles
+                    .checked_add(loop_delta)
+                    .ok_or_else(|| OasmCompileError::new("post-loop timestamp overflows u64"))?;
+            }
+        }
+        for event in ttl_events.iter_mut().filter(|event| {
+            event.epoch > region.epoch || (event.epoch == region.epoch && event.offset_cycles > end)
+        }) {
+            event.offset_cycles = event
+                .offset_cycles
+                .checked_add(loop_delta)
+                .ok_or_else(|| OasmCompileError::new("post-loop TTL timestamp overflows u64"))?;
+        }
+        for origin in epoch_origins.values_mut().filter(|origin| **origin > end) {
+            *origin = origin
+                .checked_add(loop_delta)
+                .ok_or_else(|| OasmCompileError::new("post-loop epoch origin overflows u64"))?;
+        }
+        total_delta = total_delta
+            .checked_add(loop_delta)
+            .ok_or_else(|| OasmCompileError::new("program loop delta overflows u64"))?;
+    }
+    Ok(total_delta)
+}
+
+fn compile_board(input: BoardEpochInput) -> Result<OasmBoardPlan, OasmCompileError> {
+    let BoardEpochInput {
+        epoch,
+        origin_cycles,
+        address,
+        board_kind,
+        duration_cycles,
+        initial_cursor,
+        ttl_events: mut events,
+        mut direct_events,
+    } = input;
     for event in &mut events {
         if event.epoch != epoch {
             return Err(OasmCompileError::new(
@@ -1582,27 +1969,28 @@ fn compile_board(
             .ok_or_else(|| OasmCompileError::new("direct event precedes its epoch origin"))?;
     }
     events.sort_by_key(|event| (event.offset_cycles, event.local_id));
-    let mut states = HashMap::<u8, bool>::new();
+    for event in &mut direct_events {
+        event.instruction_cost_cycles = event.instruction_cost_cycles.max(oasm_call_cost(event)?);
+    }
+    let fused_handoffs = eliminate_superseded_preloads(&mut direct_events);
+    schedule_preloads(&mut direct_events)?;
+    remove_fused_handoff_plays(&mut direct_events, &fused_handoffs);
     let mut scheduled = coalesce_direct_events(direct_events)?;
     let mut index = 0;
     while index < events.len() {
         let offset = events[index].offset_cycles;
         let mut mask = 0_u64;
+        let mut state = 0_u64;
         let mut instruction_cost_cycles = 0_u64;
         while index < events.len() && events[index].offset_cycles == offset {
             let event = &events[index];
             mask |= 1_u64 << event.local_id;
-            states.insert(event.local_id, event.high);
+            if event.high {
+                state |= 1_u64 << event.local_id;
+            }
             instruction_cost_cycles = instruction_cost_cycles.max(event.instruction_cost_cycles);
             index += 1;
         }
-        let state = states.iter().fold(0_u64, |bits, (local_id, high)| {
-            if *high {
-                bits | (1_u64 << local_id)
-            } else {
-                bits
-            }
-        });
         scheduled.push(DirectEvent {
             epoch,
             offset_cycles: offset,
@@ -1614,11 +2002,24 @@ fn compile_board(
                 OasmArgument::String(board_kind.oasm_argument().to_owned()),
             ],
             instruction_cost_cycles,
+            order: events[index - 1].order,
+            group_id: events[index - 1].order.sequence,
+            preload: false,
+            loop_scope: events[index - 1].loop_scope,
         });
     }
-    scheduled.sort_by_key(|event| (event.offset_cycles, oasm_function_priority(event.function)));
+    for event in &mut scheduled {
+        event.instruction_cost_cycles = event.instruction_cost_cycles.max(oasm_call_cost(event)?);
+    }
+    scheduled.sort_by_key(|event| {
+        (
+            event.offset_cycles,
+            oasm_function_priority(event.function),
+            event.order,
+        )
+    });
     let mut calls = Vec::with_capacity(scheduled.len());
-    let mut cursor = 0_u64;
+    let mut cursor = initial_cursor;
     for event in scheduled {
         if event.offset_cycles > cursor {
             calls.push(OasmCall {
@@ -1627,17 +2028,22 @@ fn compile_board(
                 args: vec![OasmArgument::Unsigned(event.offset_cycles - cursor)],
             });
         }
+        let actual_start = event.offset_cycles.max(cursor);
         calls.push(OasmCall {
-            offset_cycles: event.offset_cycles,
+            offset_cycles: actual_start,
             function: event.function,
             args: event.args,
         });
-        cursor = cursor.max(
-            event
-                .offset_cycles
-                .checked_add(event.instruction_cost_cycles)
-                .ok_or_else(|| OasmCompileError::new("OASM cursor overflows u64"))?,
-        );
+        cursor = actual_start
+            .checked_add(event.instruction_cost_cycles)
+            .ok_or_else(|| OasmCompileError::new("OASM cursor overflows u64"))?;
+    }
+    if duration_cycles > cursor {
+        calls.push(OasmCall {
+            offset_cycles: cursor,
+            function: OasmFunction::Wait,
+            args: vec![OasmArgument::Unsigned(duration_cycles - cursor)],
+        });
     }
     Ok(OasmBoardPlan { address, calls })
 }
@@ -1645,7 +2051,7 @@ fn compile_board(
 fn coalesce_direct_events(
     mut events: Vec<DirectEvent>,
 ) -> Result<Vec<DirectEvent>, OasmCompileError> {
-    events.sort_by_key(|event| (event.offset_cycles, oasm_function_priority(event.function)));
+    events.sort_by_key(|event| (event.offset_cycles, coalesce_priority(event.function)));
     let mut coalesced = Vec::<DirectEvent>::with_capacity(events.len());
     for event in events {
         let mergeable = matches!(
@@ -1663,6 +2069,7 @@ fn coalesce_direct_events(
         previous.instruction_cost_cycles = previous
             .instruction_cost_cycles
             .max(event.instruction_cost_cycles);
+        previous.order = previous.order.min(event.order);
         match event.function {
             OasmFunction::RwgInit => {}
             OasmFunction::TtlConfig | OasmFunction::RwgPlay => {
@@ -1697,15 +2104,264 @@ fn coalesce_direct_events(
     Ok(coalesced)
 }
 
+const fn coalesce_priority(function: OasmFunction) -> u8 {
+    match function {
+        OasmFunction::RwgInit => 0,
+        OasmFunction::TtlConfig => 1,
+        OasmFunction::RwgPlay => 2,
+        _ => 3,
+    }
+}
+
+fn schedule_preloads(events: &mut [DirectEvent]) -> Result<(), OasmCompileError> {
+    let mut groups = BTreeMap::<(u64, u64, EventOrder), Vec<usize>>::new();
+    for (index, event) in events.iter().enumerate() {
+        if event.preload {
+            groups
+                .entry((event.group_id, event.offset_cycles, event.order))
+                .or_default()
+                .push(index);
+        }
+    }
+    let mut pairs = groups
+        .into_iter()
+        .filter_map(|((group_id, deadline, order), indices)| {
+            events
+                .iter()
+                .any(|event| {
+                    event.group_id == group_id
+                        && event.offset_cycles == deadline
+                        && event.function == OasmFunction::RwgPlay
+                })
+                .then_some((deadline, order, group_id, indices))
+        })
+        .collect::<Vec<_>>();
+    pairs.sort_by_key(|(deadline, order, ..)| (*deadline, *order));
+
+    let mut next_load_available = u64::MAX;
+    for (deadline, _order, group_id, indices) in pairs.into_iter().rev() {
+        let cost = indices.iter().try_fold(0_u64, |total, index| {
+            total
+                .checked_add(events[*index].instruction_cost_cycles)
+                .ok_or_else(|| OasmCompileError::new("RWG preload cost overflows u64"))
+        })?;
+        let latest_finish = deadline.min(next_load_available);
+        let proposed_start = latest_finish.saturating_sub(cost);
+        let proposed_end = proposed_start.saturating_add(cost);
+        let conflict = events
+            .iter()
+            .filter(|event| {
+                !(event.preload
+                    || (event.group_id == group_id
+                        && event.offset_cycles == deadline
+                        && event.function == OasmFunction::RwgPlay))
+            })
+            .filter_map(|event| {
+                let event_end = event
+                    .offset_cycles
+                    .saturating_add(event.instruction_cost_cycles);
+                (proposed_start < event_end && proposed_end > event.offset_cycles)
+                    .then_some(event.offset_cycles)
+            })
+            .min();
+        let finish = conflict.unwrap_or(latest_finish);
+        let start = finish.saturating_sub(cost);
+        for index in indices {
+            events[index].offset_cycles = start;
+        }
+        next_load_available = start;
+    }
+    Ok(())
+}
+
+type PreloadKey = (u64, u8, u8);
+
+fn eliminate_superseded_preloads(
+    events: &mut Vec<DirectEvent>,
+) -> std::collections::BTreeSet<PreloadKey> {
+    let preload_groups = events.iter().filter(|event| event.preload).fold(
+        BTreeMap::<(u64, u8, u8), std::collections::BTreeSet<u64>>::new(),
+        |mut groups, event| {
+            groups
+                .entry((
+                    event.offset_cycles,
+                    event.order.channel_kind,
+                    event.order.local_id,
+                ))
+                .or_default()
+                .insert(event.group_id);
+            groups
+        },
+    );
+    let latest_groups = events.iter().filter(|event| event.preload).fold(
+        BTreeMap::<(u64, u8, u8), u64>::new(),
+        |mut latest, event| {
+            latest
+                .entry((
+                    event.offset_cycles,
+                    event.order.channel_kind,
+                    event.order.local_id,
+                ))
+                .and_modify(|group| *group = (*group).max(event.group_id))
+                .or_insert(event.group_id);
+            latest
+        },
+    );
+    let fused_handoffs = preload_groups
+        .iter()
+        .filter_map(|(key, groups)| (groups.len() > 1).then_some(*key))
+        .collect::<std::collections::BTreeSet<_>>();
+    events.retain(|event| {
+        let key = (
+            event.offset_cycles,
+            event.order.channel_kind,
+            event.order.local_id,
+        );
+        !event.preload
+            || latest_groups
+                .get(&key)
+                .is_none_or(|group| *group == event.group_id)
+    });
+    fused_handoffs
+}
+
+fn remove_fused_handoff_plays(
+    events: &mut Vec<DirectEvent>,
+    fused_handoffs: &std::collections::BTreeSet<PreloadKey>,
+) {
+    events.retain(|event| {
+        event.function != OasmFunction::RwgPlay
+            || !fused_handoffs.contains(&(
+                event.offset_cycles,
+                event.order.channel_kind,
+                event.order.local_id,
+            ))
+    });
+}
+
+fn oasm_call_cost(event: &DirectEvent) -> Result<u64, OasmCompileError> {
+    let fixed = match event.function {
+        OasmFunction::LoopBegin | OasmFunction::LoopEnd | OasmFunction::UserDefinedFunc => 0,
+        OasmFunction::TtlConfig => 2,
+        OasmFunction::TtlSet => 1,
+        OasmFunction::RwgInit => 53,
+        OasmFunction::RwgSetCarrier => rwg_set_carrier_cost(event)?,
+        OasmFunction::RwgRfSwitch => event
+            .args
+            .first()
+            .and_then(unsigned_argument)
+            .map_or(1, |mask| u64::from(mask.count_ones())),
+        OasmFunction::RwgLoadWaveform => return rwg_load_waveform_cost(event),
+        OasmFunction::RwgPlay => 15,
+        OasmFunction::WaitMaster => 8,
+        OasmFunction::TrigSlave => 17,
+        OasmFunction::RspInit => 11,
+        OasmFunction::RspSetCarrier => 37,
+        OasmFunction::RspPidConfig => 39,
+        OasmFunction::RspPidStart => 3,
+        OasmFunction::RspPidHold => 2,
+        OasmFunction::RspPidRelease | OasmFunction::RspPidRelink => 15,
+        OasmFunction::RspRfConfig => 13,
+        OasmFunction::Wait => 0,
+    };
+    Ok(fixed)
+}
+
+fn rwg_set_carrier_cost(event: &DirectEvent) -> Result<u64, OasmCompileError> {
+    let frequency = match event.args.get(1) {
+        Some(OasmArgument::Float(value)) => *value,
+        Some(OasmArgument::Unsigned(value)) => *value as f64,
+        Some(OasmArgument::Signed(value)) => *value as f64,
+        _ => {
+            return Err(OasmCompileError::new(
+                "rwg_set_carrier requires a numeric frequency",
+            ));
+        }
+    };
+    Ok(if frequency == 0.0 {
+        16
+    } else if frequency == 250.0 {
+        17
+    } else {
+        18
+    })
+}
+
+fn unsigned_argument(argument: &OasmArgument) -> Option<u64> {
+    match argument {
+        OasmArgument::Unsigned(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn rwg_load_waveform_cost(event: &DirectEvent) -> Result<u64, OasmCompileError> {
+    let waveform = match event.args.first() {
+        Some(OasmArgument::Json(serde_json::Value::Object(waveform))) => waveform,
+        _ => {
+            return Err(OasmCompileError::new(
+                "rwg_load_waveform requires one waveform record",
+            ));
+        }
+    };
+    let fct =
+        optional_json_number(waveform.get("fct"))?.unwrap_or(0x1_0000_0000_u64 as f64 / 250.0);
+    let mut cost = 4_u64; // SFS+CLO for FTE config, then FTE and APE high writes.
+    cost = cost
+        .checked_add(rwg_coefficients_cost(
+            waveform.get("freq_coeffs"),
+            fct,
+            false,
+        )?)
+        .ok_or_else(|| OasmCompileError::new("RWG waveform cost overflows u64"))?;
+    if let Some(phase) = optional_json_number(waveform.get("initial_phase"))? {
+        let encoded = (phase * 0x10_0000_u64 as f64).round_ties_even() as i128;
+        cost += immediate_write_cost(encoded & 0xF_FFFF);
+    }
+    cost = cost
+        .checked_add(rwg_coefficients_cost(
+            waveform.get("amp_coeffs"),
+            0x7FFF_FFFF_u64 as f64,
+            true,
+        )?)
+        .ok_or_else(|| OasmCompileError::new("RWG waveform cost overflows u64"))?;
+    Ok(cost)
+}
+
+fn rwg_coefficients_cost(
+    value: Option<&serde_json::Value>,
+    fct: f64,
+    amplitude: bool,
+) -> Result<u64, OasmCompileError> {
+    let coefficients = value
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| OasmCompileError::new("RWG coefficients must be an array"))?;
+    let scale: f64 = 8192.0 / 250.0;
+    coefficients
+        .iter()
+        .enumerate()
+        .try_fold(0_u64, |cost, (order, coefficient)| {
+            let Some(coefficient) = optional_json_number(Some(coefficient))? else {
+                return Ok(cost);
+            };
+            let encoded = (coefficient * fct * scale.powi(order as i32)).round_ties_even() as i128;
+            let encoded = if amplitude { encoded >> 12 } else { encoded };
+            cost.checked_add(immediate_write_cost(encoded))
+                .ok_or_else(|| OasmCompileError::new("RWG coefficient write cost overflows u64"))
+        })
+}
+
+const fn immediate_write_cost(value: i128) -> u64 {
+    let low = value & 0xFFFF_FFFF;
+    if low == 0 || low == 0xFFFF_FFFF { 1 } else { 2 }
+}
+
 fn oasm_function_priority(function: OasmFunction) -> u8 {
     match function {
         OasmFunction::LoopBegin => 0,
-        OasmFunction::RwgInit | OasmFunction::RspInit | OasmFunction::TtlConfig => 1,
-        OasmFunction::RwgLoadWaveform => 2,
-        OasmFunction::RwgPlay => 4,
-        OasmFunction::WaitMaster | OasmFunction::TrigSlave => 5,
-        OasmFunction::LoopEnd => 6,
-        _ => 3,
+        OasmFunction::RwgInit => 1,
+        OasmFunction::WaitMaster | OasmFunction::TrigSlave => 3,
+        OasmFunction::LoopEnd => 4,
+        _ => 2,
     }
 }
 
@@ -1919,6 +2575,21 @@ mod tests {
         }
     }
 
+    fn direct_event(function: OasmFunction, args: Vec<OasmArgument>) -> DirectEvent {
+        DirectEvent {
+            epoch: 0,
+            offset_cycles: 0,
+            board: "rwg0".to_owned(),
+            function,
+            args,
+            instruction_cost_cycles: 0,
+            order: EventOrder::BOARD,
+            group_id: 0,
+            preload: false,
+            loop_scope: None,
+        }
+    }
+
     #[test]
     fn duration_runtime_slots_require_integer_cycle_bindings() {
         let program = duration_program(false);
@@ -1954,5 +2625,25 @@ mod tests {
         assert!(LinkValue::Bool(true).matches_type(ValueExprType::Bool));
         assert!(LinkValue::String("state".to_owned()).matches_type(ValueExprType::String));
         assert!(!LinkValue::Float(5.0).matches_type(ValueExprType::Duration));
+    }
+
+    #[test]
+    fn oasm_instruction_occupancy_is_a_target_lowering_property() {
+        let play = direct_event(
+            OasmFunction::RwgPlay,
+            vec![OasmArgument::Unsigned(1), OasmArgument::Unsigned(1)],
+        );
+        let zero_carrier = direct_event(
+            OasmFunction::RwgSetCarrier,
+            vec![OasmArgument::Unsigned(0), OasmArgument::Float(0.0)],
+        );
+        let ordinary_carrier = direct_event(
+            OasmFunction::RwgSetCarrier,
+            vec![OasmArgument::Unsigned(0), OasmArgument::Float(100.0)],
+        );
+
+        assert_eq!(oasm_call_cost(&play).unwrap(), 15);
+        assert_eq!(oasm_call_cost(&zero_carrier).unwrap(), 16);
+        assert_eq!(oasm_call_cost(&ordinary_carrier).unwrap(), 18);
     }
 }

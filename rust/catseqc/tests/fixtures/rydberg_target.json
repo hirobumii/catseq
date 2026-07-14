@@ -29,7 +29,7 @@
     "catseq.hardware.rwg.rf_on": {"lowering": "rwg_rf_on", "duration_argument": null, "instruction_cost_cycles": 0},
     "catseq.hardware.rwg.rf_off": {"lowering": "rwg_rf_off", "duration_argument": null, "instruction_cost_cycles": 0},
     "catseq.hardware.rwg.rf_pulse": {"lowering": "rwg_rf_pulse", "duration_argument": 0, "instruction_cost_cycles": 0},
-    "catseq.hardware.rsp.initialize": {"lowering": "rsp_initialize", "duration_argument": null, "instruction_cost_cycles": 0},
+    "catseq.hardware.rsp.initialize": {"lowering": "rsp_initialize", "duration_argument": null, "fixed_duration_cycles": 2500, "instruction_cost_cycles": 0},
     "catseq.hardware.rsp.pid_config": {"lowering": "rsp_pid_config", "duration_argument": null, "instruction_cost_cycles": 0},
     "catseq.hardware.rsp.pid_start": {"lowering": "rsp_pid_start", "duration_argument": null, "instruction_cost_cycles": 0},
     "catseq.hardware.rsp.pid_hold": {"lowering": "rsp_pid_hold", "duration_argument": null, "instruction_cost_cycles": 0},

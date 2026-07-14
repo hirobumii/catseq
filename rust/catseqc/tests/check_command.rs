@@ -1622,7 +1622,7 @@ fn real_rydberg_transfer_compiles_to_a_complete_oasm_call_plan() {
     let epochs = plan["epochs"].as_array().unwrap();
     assert_eq!(epochs.len(), 2);
     assert_eq!(epochs[0]["origin_cycles"], 0);
-    assert_eq!(epochs[1]["origin_cycles"], 90_000);
+    assert_eq!(epochs[1]["origin_cycles"], 92_500);
     let calls = plan["epochs"]
         .as_array()
         .unwrap()
@@ -1630,7 +1630,7 @@ fn real_rydberg_transfer_compiles_to_a_complete_oasm_call_plan() {
         .flat_map(|epoch| epoch["boards"].as_array().unwrap())
         .flat_map(|board| board["calls"].as_array().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(calls.len(), 789, "real-program call inventory changed");
+    assert_eq!(calls.len(), 797, "real-program call inventory changed");
     for required in [
         "loop_begin",
         "loop_end",
@@ -1946,7 +1946,7 @@ fn compile_aligns_parallel_pulses_and_merges_same_board_ttl_writes() {
         serde_json::json!([
             {"offset_cycles": 0, "function": "ttl_set", "args": [3, 3, "rwg"]},
             {"offset_cycles": 1, "function": "wait", "args": [4]},
-            {"offset_cycles": 5, "function": "ttl_set", "args": [2, 1, "rwg"]},
+            {"offset_cycles": 5, "function": "ttl_set", "args": [2, 0, "rwg"]},
             {"offset_cycles": 6, "function": "wait", "args": [4]},
             {"offset_cycles": 10, "function": "ttl_set", "args": [1, 0, "rwg"]}
         ])

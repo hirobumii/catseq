@@ -7,20 +7,49 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added the standalone Rust `catseqc` compiler with `check`, `emit-hir`,
+  `emit-arena`, and `compile` commands. The compiler reads a restricted Python
+  sequencing language through the pinned NAC3 parser without importing or
+  executing experiment modules.
+- Added static source-bundle loading, import-aware reachability, typed Source
+  HIR, resolved definition calls, compile-time attribute evaluation, and
+  source-anchored diagnostics for the supported Python subset.
+- Added a rustc-style on-disk incremental query graph with stable fingerprints,
+  per-definition fingerprints and red-green invalidation boundaries, selected
+  result caching, and atomic publication of successful sessions.
+- Added Python-free canonical Morphism and Value Expression arenas with
+  variadic Serial and Parallel nodes, shared definition bodies, channel-bound
+  template instantiation, stable scan Runtime Slots, and relative timing.
+- Added native specialization and RTMQ lowering through a complete versioned
+  `OASMCallPlan` for the agreed 0.3 target slice, including TTL, RWG, RSP,
+  hardware loops, global-sync epoch boundaries, and explicitly registered
+  opaque host calls.
+
 ### Changed
 
-- Started the 0.3 `catseqc` DAG-native compiler development line.
-- Added a restricted-Python source frontend that discovers sequence entry
-  points without importing or executing experiment modules.
-- Added source HIR lowering for assignments, calls, attributes, subscripts,
-  literals, containers, arithmetic, and timing-composition operators.
-- Added import-aware call-target resolution and stable runtime slots for scan
-  parameter uses.
-- Enforced typed `ExpParams` scan discovery, lexical parameter shadowing,
-  root-reachable analysis, and rejection of scan-dependent topology.
-- Added a shared segmented arena with zero-copy template instantiation.
-- Preserved the Python timing-composition syntax while moving compiler-owned
-  storage to Rust.
+- Preserved the existing Python timing-composition API while moving source
+  analysis, DAG construction, specialization, and OASM planning into Rust.
+- Made source-level atomic operations logically cost-free; board-local OASM
+  instruction occupancy and wait insertion are now owned by target lowering.
+- Moved scan-dependent scalar values to link-time Runtime Bindings while
+  rejecting scan values that would change channels, call targets, event count,
+  or other DAG topology.
+- On 2026-07-14, a release build compiling
+  `RydbergTransferExp.build_sequence` measured as follows on the development
+  container. Cold samples use 20 unique caches; warm samples use 100 unchanged
+  cache processes, and p95 uses nearest-rank selection. Wall time includes
+  process startup, source discovery, cache I/O, and JSON serialization.
+
+  | Command | Cold median / p95 | Warm median / p95 | Core lowering median (cold / warm) |
+  | --- | ---: | ---: | ---: |
+  | `check` | 90.2 / 92.2 ms | 5.12 / 6.86 ms | — |
+  | `emit-arena` | 91.4 / 95.3 ms | 9.99 / 12.7 ms | HIR → arena: 0.047 / 0.041 ms |
+  | `compile` | 108.8 / 112.3 ms | 29.0 / 31.7 ms | specialization + OASM: 16.1 / 16.3 ms |
+
+- Unchanged warm runs reuse the on-disk typed frontend cache. Reusable
+  specialization and OASM work products are not yet cached across processes.
 
 ## [0.2.4] - 2026-07-12
 

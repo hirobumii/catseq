@@ -1,5 +1,10 @@
 # CatSeq
 
+[![CI](https://github.com/hirobumii/catseq/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hirobumii/catseq/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/hirobumii/catseq)](https://github.com/hirobumii/catseq/releases)
+![Python](https://img.shields.io/badge/python-3.12-blue.svg)
+![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)
+
 CatSeq is a categorical timing-composition language and native compiler for
 RTMQ hardware sequences.
 

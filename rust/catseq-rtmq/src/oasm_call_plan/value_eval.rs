@@ -16,13 +16,22 @@ pub(super) fn json_argument(
         .get(index)
         .copied()
         .ok_or_else(|| OasmCompileError::new(format!("JSON argument {index} is absent")))?;
+    json_value(program, id, values)
+}
+
+pub(super) fn json_value(
+    program: &NativeArenas,
+    id: ValueExprId,
+    values: &[Result<ExactDecimal, OasmCompileError>],
+) -> Result<serde_json::Value, OasmCompileError> {
     let Some(ValueExprPayload::Json(value)) = program
         .values()
         .payload(id)
         .map_err(|error| OasmCompileError::new(error.to_string()))?
     else {
         return Err(OasmCompileError::new(format!(
-            "argument {index} is not structured native data"
+            "expression {} is not structured native data",
+            id.index()
         )));
     };
     resolve_json_expressions(value, values)
@@ -80,7 +89,12 @@ pub(super) fn value_to_oasm_argument(
         Some(ValueExprPayload::Json(value)) => {
             Ok(OasmArgument::Json(resolve_json_expressions(value, values)?))
         }
-        Some(ValueExprPayload::RuntimeSlot(_) | ValueExprPayload::EnvironmentSlot(_)) | None => {
+        Some(
+            ValueExprPayload::RuntimeSlot(_)
+            | ValueExprPayload::EnvironmentSlot(_)
+            | ValueExprPayload::RwgWaveforms(_),
+        )
+        | None => {
             let value = values.get(id.index()).cloned().ok_or_else(|| {
                 OasmCompileError::new(format!("unknown OASM argument expression {}", id.index()))
             })??;
@@ -171,6 +185,9 @@ pub(super) fn evaluate_numeric_values(
                     ))),
                 }
             }
+            ValueExprKind::Intrinsic => Err(OasmCompileError::new(format!(
+                "expression {index} is structured intrinsic data, not a numeric value"
+            ))),
         };
         values.push(value);
     }

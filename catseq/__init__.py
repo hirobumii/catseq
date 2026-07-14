@@ -1,84 +1,66 @@
-"""
-CatSeq: Category Theory-based Quantum Experiment Sequencing
+"""CatSeq restricted-source DSL and native compiler adapter."""
 
-A Python framework for quantum physics experiment control based on 
-Category Theory (Monoidal Categories). CatSeq provides a mathematical
-foundation for composing complex quantum control sequences with 
-precise timing and state management.
-
-Core concepts:
-- Morphisms: Physical processes that evolve the system over time
-- Composition: @ (strict state matching), >> (auto state inference), | (parallel)
-- OASM Interface: Translation to hardware control via OASM DSL
-"""
-
-# Core types and enums
-
-
-# Time utilities
-from .time_utils import us_to_cycles, cycles_to_us, time_to_cycles, cycles_to_time, s, ms, us, ns, mu
-
-# Atomic operations
-from .atomic import ttl_init, ttl_on, ttl_off
-from .morphism import identity
-
-# Morphism system
-from .morphism import Morphism, from_atomic
-from .expr import Expr, input_state, realize_morphism, var
-
-# Hardware abstraction
-from .hardware import pulse, initialize, set_high, set_low, hold
-
-# OASM interface
 from .compilation import (
+    CatSeqCompileError,
     OASMCall,
-    compile_to_oasm_calls,
+    OASMCompileResult,
+    compile_entry,
     execute_oasm_calls,
-    oasm_call_plan_to_calls,
 )
+from .morphism import (
+    CompilerDefinition,
+    CompilerOnlyError,
+    Morphism,
+    MorphismDef,
+    MorphismTemplate,
+    atomic_morphism,
+    arena_build,
+    identity,
+    morphism_template,
+    repeat_morphism,
+)
+from .time_utils import (
+    cycles_to_time,
+    cycles_to_us,
+    ms,
+    mu,
+    ns,
+    s,
+    time_to_cycles,
+    us,
+    us_to_cycles,
+)
+from .types import Board, Channel, ChannelType, State
 
 __version__ = "0.3.0.dev0"
 
 __all__ = [
-    # Core types
-    # 'Board',
-    # 'Channel', 
-    # 'TTLState',
-    # 'OperationType',
-    # 'AtomicMorphism',
-    
-    # Time utilities
-    'us_to_cycles',
-    'cycles_to_us',
-    'time_to_cycles',
-    'cycles_to_time',
-    # SI time units
-    's', 'ms', 'us', 'ns', 'mu',
-    
-    # Atomic operations
-    'ttl_init',
-    'ttl_on', 
-    'ttl_off',
-    'identity',
-    
-    # Morphism system
-    'Morphism',
-    'from_atomic',
-    'Expr',
-    'var',
-    'input_state',
-    'realize_morphism',
-    
-    # Hardware abstraction
-    'pulse',
-    'initialize',
-    'set_high',
-    'set_low', 
-    'hold',
-    
-    # OASM interface
-    'compile_to_oasm_calls',
-    'execute_oasm_calls',
-    'oasm_call_plan_to_calls',
-    'OASMCall',
+    "Board",
+    "CatSeqCompileError",
+    "Channel",
+    "ChannelType",
+    "CompilerDefinition",
+    "CompilerOnlyError",
+    "Morphism",
+    "MorphismDef",
+    "MorphismTemplate",
+    "OASMCall",
+    "OASMCompileResult",
+    "State",
+    "atomic_morphism",
+    "arena_build",
+    "compile_entry",
+    "cycles_to_time",
+    "cycles_to_us",
+    "execute_oasm_calls",
+    "identity",
+    "ms",
+    "morphism_template",
+    "mu",
+    "ns",
+    "repeat_morphism",
+    "s",
+    "time_to_cycles",
+    "us",
+    "us_to_cycles",
 ]

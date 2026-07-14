@@ -1,31 +1,27 @@
-"""
-Public morphism API.
-"""
+"""Public source-language types and intrinsics for CatSeq sequencing."""
 
-from ..lanes import Lane
-from ..types.common import State
-from .compose import (
-    auto_compose_morphisms,
-    parallel_compose_morphisms,
-    strict_compose_morphisms,
+from .core import (
+    CompilerDefinition,
+    CompilerOnlyError,
+    Morphism,
+    MorphismDef,
+    MorphismTemplate,
+    atomic_morphism,
+    arena_build,
+    identity,
+    morphism_template,
+    repeat_morphism,
 )
-from .core import Morphism, MorphismEndStateView, arena_build, from_atomic, identity
-from .deferred import MorphismDef, deferred_batch_from_state_source
-from .arena import ArenaProgram, ProgramArena
 
 __all__ = [
-    "Lane",
+    "CompilerDefinition",
+    "CompilerOnlyError",
     "Morphism",
     "MorphismDef",
-    "MorphismEndStateView",
-    "ArenaProgram",
-    "ProgramArena",
-    "State",
+    "MorphismTemplate",
+    "atomic_morphism",
     "arena_build",
-    "from_atomic",
     "identity",
-    "deferred_batch_from_state_source",
-    "strict_compose_morphisms",
-    "auto_compose_morphisms",
-    "parallel_compose_morphisms",
+    "morphism_template",
+    "repeat_morphism",
 ]

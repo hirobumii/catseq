@@ -56,19 +56,29 @@ C = A | B
 
 在定义操作时，`catseq` 会检查当前状态是否是此操作的合法起始状态。例如，你不能在一个已经是 `ON` 状态的 TTL 通道上再次执行 `on()` 操作。这种机制可以帮助你在编译前就发现大量逻辑错误。
 
-## MorphismDef: 延迟执行的“配方”
+## MorphismDef：可编译的 Morphism Template
 
-你可能已经注意到，在 `rwg.initialize(...)` 或 `ttl.on()` 的调用中，我们并没有立即提供 `channel`。这是因为它们返回的不是一个 `Morphism`，而是一个 `MorphismDef`。
+`MorphismDef` 是 `MorphismTemplate` 的兼容拼写。它不是 Python generator，
+也不会在 CPython 中接收 `start_state` 后构造 Lane。模板具有自由 Channel
+slot；绑定 Channel 时，Rust Morphism arena 生成引用共享模板体的
+`Instantiate` 节点。
 
-*   **它是什么？** `MorphismDef` (Morphism Definition) 可以被看作是一个用于创建 `Morphism` 的“配方”或“模板”。
-*   **它为什么有用？** 它允许你先定义一个操作的**内容**（例如，一个频率为10MHz、幅度为0.5的波形），但将它具体应用到哪个**通道**上这一决定推迟。这使得序列的定义可以和具体的硬件配置解耦，大大提高了代码的复用性。
-
-当你调用一个 `MorphismDef` 并传入 `channel` 和 `start_state` 时，它才会“烘焙”出一个具体的、可以被组合的 `Morphism`。
+用户可以直接用 Atomic Morphism 组合更复杂的模板：
 
 ```python
-# rwg.set_state(...) 返回一个 MorphismDef (配方)
-set_state_def = rwg.set_state([...])
+from catseq.hardware.ttl import hold, set_high, set_low
+from catseq.morphism import MorphismDef, morphism_template
 
-# 调用配方，传入具体通道和状态，生成一个真正的 Morphism
-morphism = set_state_def(my_channel, start_state=some_state)
+
+@morphism_template
+def pulse(duration: float) -> MorphismDef:
+    return set_high() >> hold(duration) >> set_low()
 ```
+
+编译器将函数体保留为 `Serial(set_high, Wait(duration), set_low)`，调用点
+只保存参数和 `Instantiate` 引用。入口中可使用
+`{my_channel: pulse(duration)}` 完成绑定。输入/输出状态由 Morphism Effect
+沿 Serial 边隐式传递，不出现在 Python 函数参数中。
+
+`@atomic_morphism` 仅供硬件驱动/Intrinsic Registry 声明不可再分解的叶子；
+普通用户应通过 `@morphism_template` 组合已注册的原子操作。

@@ -32,7 +32,12 @@ fn main() -> ExitCode {
 }
 
 fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
-    let command = CommandKind::parse(&args.next().ok_or_else(usage)?)?;
+    let first = args.next().ok_or_else(usage)?;
+    if first == "--version" {
+        println!("catseqc {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    let command = CommandKind::parse(&first)?;
     let path = args.next().ok_or_else(usage)?;
     let mut requested_entry = None;
     let mut output_format = command.default_output_format();
@@ -90,9 +95,18 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         .map(|path| {
             let bytes = fs::read(path)
                 .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-            serde_json::from_slice::<TargetProfile>(&bytes).map_err(|error| {
-                format!("cannot decode target profile {}: {error}", path.display())
-            })
+            if path.extension().and_then(|extension| extension.to_str()) == Some("toml") {
+                let source = std::str::from_utf8(&bytes).map_err(|error| {
+                    format!("cannot decode target profile {}: {error}", path.display())
+                })?;
+                toml::from_str::<TargetProfile>(source).map_err(|error| {
+                    format!("cannot decode target profile {}: {error}", path.display())
+                })
+            } else {
+                serde_json::from_slice::<TargetProfile>(&bytes).map_err(|error| {
+                    format!("cannot decode target profile {}: {error}", path.display())
+                })
+            }
         })
         .transpose()?;
     if command == CommandKind::Compile && target_profile.is_none() {
@@ -192,12 +206,14 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             CheckedOutput::CallPlan {
                 report,
                 plan,
+                clock_hz,
                 compile_time,
             },
             OutputFormat::Json,
         ) => write_json(&CallPlanReportJson {
             report: &report,
             plan: &plan,
+            clock_hz,
             compile_time,
         })?,
         (CheckedOutput::CallPlan { .. }, OutputFormat::Text) => {
@@ -217,6 +233,7 @@ enum CheckedOutput {
     CallPlan {
         report: TypedCheckReport,
         plan: OasmCallPlan,
+        clock_hz: u64,
         compile_time: Duration,
     },
 }
@@ -246,6 +263,7 @@ fn compile_output(
     Ok(CheckedOutput::CallPlan {
         report,
         plan,
+        clock_hz: target.clock_hz(),
         compile_time: start.elapsed(),
     })
 }
@@ -362,7 +380,7 @@ fn print_text_summary(summary: &TypedCheckSummary) {
 
 fn usage() -> String {
     String::from(
-        "usage: catseqc check <source.py> [--source-root <path>] [--entry <qualified-name>] [--format text|json] [--cache-dir <path>]\n       catseqc emit-hir <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]\n       catseqc emit-arena <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]\n       catseqc compile <source.py> [--source-root <path>] --entry <qualified-name> --compile-environment <path> --target-profile <path> [--link-bindings <path>] [--format json] [--cache-dir <path>]",
+        "usage: catseqc --version\n       catseqc check <source.py> [--source-root <path>] [--entry <qualified-name>] [--format text|json] [--cache-dir <path>]\n       catseqc emit-hir <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]\n       catseqc emit-arena <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]\n       catseqc compile <source.py> [--source-root <path>] --entry <qualified-name> --compile-environment <path> --target-profile <path> [--link-bindings <path>] [--format json] [--cache-dir <path>]",
     )
 }
 
@@ -544,6 +562,7 @@ impl Serialize for ArenaReportJson<'_> {
 struct CallPlanReportJson<'a> {
     report: &'a TypedCheckReport,
     plan: &'a OasmCallPlan,
+    clock_hz: u64,
     compile_time: Duration,
 }
 
@@ -552,11 +571,16 @@ impl Serialize for CallPlanReportJson<'_> {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CallPlanResponse", 7)?;
+        let mut state = serializer.serialize_struct("CallPlanResponse", 9)?;
         state.serialize_field("schema_version", &1_u32)?;
         state.serialize_field("stage", "oasm_call_plan")?;
         state.serialize_field("entry", self.report.entry())?;
         state.serialize_field("oasm_call_plan", self.plan)?;
+        state.serialize_field(
+            "logical_duration_cycles",
+            &self.plan.logical_duration_cycles(),
+        )?;
+        state.serialize_field("clock_hz", &self.clock_hz)?;
         state.serialize_field("native_compile_seconds", &self.compile_time.as_secs_f64())?;
         state.serialize_field("diagnostics", self.report.diagnostics())?;
         state.serialize_field("incremental", &IncrementalJson(self.report.incremental()))?;

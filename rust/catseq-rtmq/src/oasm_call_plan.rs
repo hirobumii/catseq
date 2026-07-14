@@ -163,17 +163,14 @@ struct AtomicTargetSchema {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum AtomicLowering {
-    TtlPulse,
     TtlInitialize,
     TtlSetHigh,
     TtlSetLow,
-    Hold,
     RwgInitialize,
-    RwgSetState,
-    RwgLinearRamp,
+    RwgLoad,
+    RwgPlay,
     RwgRfOn,
     RwgRfOff,
-    RwgRfPulse,
     RspInitialize,
     RspPidConfig,
     RspPidStart,
@@ -244,11 +241,21 @@ impl LinkValue {
 pub struct OasmCallPlan {
     schema_version: u32,
     epochs: Vec<OasmEpochPlan>,
+    #[serde(skip)]
+    logical_duration_cycles: u64,
 }
 
 impl OasmCallPlan {
     pub fn epochs(&self) -> &[OasmEpochPlan] {
         &self.epochs
+    }
+
+    /// Duration of the root Morphism under its algebraic timing semantics.
+    ///
+    /// This deliberately excludes OASM instruction occupancy and hardware-loop
+    /// scheduling overhead added while lowering the Morphism into a call plan.
+    pub const fn logical_duration_cycles(&self) -> u64 {
+        self.logical_duration_cycles
     }
 }
 
@@ -421,6 +428,34 @@ enum RwgChannelState {
         rf_on: bool,
         snapshot: Vec<serde_json::Value>,
     },
+    ActiveUnknown {
+        rf_on: bool,
+    },
+    WaveformsLoaded {
+        rf_on: bool,
+        transition: RwgPlayTransition,
+        preload_group_id: u64,
+    },
+    Ramping {
+        rf_on: bool,
+        static_stop: Vec<serde_json::Value>,
+        end_snapshot: Vec<serde_json::Value>,
+    },
+}
+
+#[derive(Clone)]
+enum RwgPlayTransition {
+    Activate {
+        snapshot: Vec<serde_json::Value>,
+    },
+    ActivateUnknown,
+    StartRamp {
+        static_stop: Vec<serde_json::Value>,
+        end_snapshot: Vec<serde_json::Value>,
+    },
+    FinishRamp {
+        end_snapshot: Vec<serde_json::Value>,
+    },
 }
 
 /// Lower, schedule and link native arenas into calls understood by the
@@ -443,7 +478,7 @@ pub fn compile_oasm_call_plan(
             target.schema_version
         )));
     }
-    if target.rtmq_abi_version != 1 {
+    if target.rtmq_abi_version != 2 {
         return Err(OasmCompileError::new(format!(
             "unsupported RTMQ ABI version {}",
             target.rtmq_abi_version
@@ -461,35 +496,41 @@ pub fn compile_oasm_call_plan(
     let arena = program.morphisms();
     let evaluated_values = evaluate_numeric_values(program, link_bindings);
     let mut durations = vec![0_u64; arena.nodes().len()];
+    let mut logical_durations = vec![0_u64; arena.nodes().len()];
     for (index, node) in arena.nodes().iter().enumerate() {
         let payload = node
             .payload()
             .map(|payload| &arena.payloads()[payload.index()]);
-        durations[index] = match node.kind() {
+        let (duration, logical_duration) = match node.kind() {
             MorphismNodeKind::Wait => match payload {
                 Some(MorphismPayload::Wait { duration }) => {
-                    eval_duration_cycles(&evaluated_values, *duration, target.duration_quantization)
-                        .map_err(|error| {
-                            let source = &arena.provenance()[node.provenance().index()];
-                            OasmCompileError::new(format!(
-                                "invalid wait at {}:{}:{}: {error}",
-                                source.owner(),
-                                source.line(),
-                                source.column()
-                            ))
-                        })?
+                    let duration = eval_duration_cycles(
+                        &evaluated_values,
+                        *duration,
+                        target.duration_quantization,
+                    )
+                    .map_err(|error| {
+                        let source = &arena.provenance()[node.provenance().index()];
+                        OasmCompileError::new(format!(
+                            "invalid wait at {}:{}:{}: {error}",
+                            source.owner(),
+                            source.line(),
+                            source.column()
+                        ))
+                    })?;
+                    (duration, duration)
                 }
                 _ => unreachable!("validated arena has a Wait payload"),
             },
-            MorphismNodeKind::Atomic => {
-                match payload {
-                    Some(payload @ MorphismPayload::Atomic { operation, .. }) => {
-                        let operation = &arena.operations()[operation.index()];
-                        let schema = target.operations.get(operation).ok_or_else(|| {
-                            OasmCompileError::new(format!(
-                                "Target Profile has no Atomic Schema for {operation}"
-                            ))
-                        })?;
+            MorphismNodeKind::Atomic => match payload {
+                Some(payload @ MorphismPayload::Atomic { operation, .. }) => {
+                    let operation = &arena.operations()[operation.index()];
+                    let schema = target.operations.get(operation).ok_or_else(|| {
+                        OasmCompileError::new(format!(
+                            "Target Profile has no Atomic Schema for {operation}"
+                        ))
+                    })?;
+                    let duration =
                         if schema.lowering == AtomicLowering::RwgInitialize
                             && atomic_bool_argument(arena, payload, program, 1)
                         {
@@ -523,35 +564,50 @@ pub fn compile_oasm_call_plan(
                             })?
                         } else {
                             0
-                        }
-                    }
-                    _ => unreachable!("validated arena has an Atomic payload"),
+                        };
+                    (duration, duration)
                 }
-            }
+                _ => unreachable!("validated arena has an Atomic payload"),
+            },
             MorphismNodeKind::Instantiate => match payload {
                 Some(MorphismPayload::Instantiate { template, .. }) => {
-                    durations[arena.templates()[template.index()].root().index()]
+                    let root = arena.templates()[template.index()].root().index();
+                    (durations[root], logical_durations[root])
                 }
                 _ => unreachable!("validated arena has an Instantiate payload"),
             },
             MorphismNodeKind::Serial => {
-                arena
+                let mut duration = 0_u64;
+                let mut logical_duration = 0_u64;
+                for child in arena.children_by_node(node) {
+                    duration = duration
+                        .checked_add(durations[child.index()])
+                        .ok_or_else(|| {
+                            OasmCompileError::new("serial duration overflows u64 cycles")
+                        })?;
+                    logical_duration = logical_duration
+                        .checked_add(logical_durations[child.index()])
+                        .ok_or_else(|| {
+                            OasmCompileError::new("serial logical duration overflows u64 cycles")
+                        })?;
+                }
+                (duration, logical_duration)
+            }
+            MorphismNodeKind::Parallel => {
+                let duration = arena
                     .children_by_node(node)
                     .iter()
-                    .try_fold(0_u64, |duration, child| {
-                        duration
-                            .checked_add(durations[child.index()])
-                            .ok_or_else(|| {
-                                OasmCompileError::new("serial duration overflows u64 cycles")
-                            })
-                    })?
+                    .map(|child| durations[child.index()])
+                    .max()
+                    .unwrap_or(0);
+                let logical_duration = arena
+                    .children_by_node(node)
+                    .iter()
+                    .map(|child| logical_durations[child.index()])
+                    .max()
+                    .unwrap_or(0);
+                (duration, logical_duration)
             }
-            MorphismNodeKind::Parallel => arena
-                .children_by_node(node)
-                .iter()
-                .map(|child| durations[child.index()])
-                .max()
-                .unwrap_or(0),
             MorphismNodeKind::DefinitionRef => {
                 let definition = match payload {
                     Some(MorphismPayload::DefinitionRef { definition, .. }) => {
@@ -574,13 +630,19 @@ pub fn compile_oasm_call_plan(
                     .ok_or_else(|| {
                         OasmCompileError::new("loop iteration duration overflows u64 cycles")
                     })?;
-                target
+                let duration = target
                     .loop_timing
                     .fixed_overhead_cycles
                     .checked_add(iteration.checked_mul(count).ok_or_else(|| {
                         OasmCompileError::new("loop duration overflows u64 cycles")
                     })?)
-                    .ok_or_else(|| OasmCompileError::new("loop duration overflows u64 cycles"))?
+                    .ok_or_else(|| OasmCompileError::new("loop duration overflows u64 cycles"))?;
+                let logical_duration = logical_durations[body.index()]
+                    .checked_mul(count)
+                    .ok_or_else(|| {
+                        OasmCompileError::new("loop logical duration overflows u64 cycles")
+                    })?;
+                (duration, logical_duration)
             }
             MorphismNodeKind::SyncPhi => {
                 return Err(OasmCompileError::new(format!(
@@ -589,6 +651,8 @@ pub fn compile_oasm_call_plan(
                 )));
             }
         };
+        durations[index] = duration;
+        logical_durations[index] = logical_duration;
     }
 
     // Epochs are a structural property of the Morphism DAG.  Keep them
@@ -869,9 +933,6 @@ pub fn compile_oasm_call_plan(
                     });
                     continue;
                 }
-                if schema.lowering == AtomicLowering::Hold {
-                    continue;
-                }
                 let channel = channel.ok_or_else(|| {
                     OasmCompileError::new(format!(
                         "hardware operation {operation} is not instantiated on a channel"
@@ -901,6 +962,7 @@ pub fn compile_oasm_call_plan(
                     program,
                     &evaluated_values,
                     target.clock_hz,
+                    target.duration_quantization,
                     group_id,
                     &mut rwg_states,
                     &mut rsp_pid_configs,
@@ -1112,6 +1174,7 @@ pub fn compile_oasm_call_plan(
     Ok(OasmCallPlan {
         schema_version: 1,
         epochs,
+        logical_duration_cycles: logical_durations[arena.root().index()],
     })
 }
 
@@ -1157,7 +1220,7 @@ impl MorphismArenaNodeExt for catseq_core::morphism_arena::MorphismArena {
 mod tests {
     use super::*;
     use catseq_core::morphism_arena::{MorphismArenaBuilder, NativeProvenance};
-    use catseq_core::value_expr::{ValueExprArenaBuilder, ValueExprType};
+    use catseq_core::value_expr::{ValueExprArenaBuilder, ValueExprPayload, ValueExprType};
 
     fn duration_program(environment_slot: bool) -> NativeArenas {
         let mut values = ValueExprArenaBuilder::new();
@@ -1173,6 +1236,18 @@ mod tests {
         NativeArenas::new(morphisms.finish(root).unwrap(), values).unwrap()
     }
 
+    fn loop_program() -> NativeArenas {
+        let mut values = ValueExprArenaBuilder::new();
+        let duration = values.constant(ValueExprPayload::DurationCycles(10));
+        let count = values.constant(ValueExprPayload::Int64(3));
+        let values = values.finish().unwrap();
+        let mut morphisms = MorphismArenaBuilder::new();
+        let provenance = morphisms.intern_provenance(NativeProvenance::new("test.sequence", 1, 1));
+        let body = morphisms.wait(duration, provenance);
+        let root = morphisms.loop_region(body, count, provenance);
+        NativeArenas::new(morphisms.finish(root).unwrap(), values).unwrap()
+    }
+
     fn empty_environment() -> CompileEnvironment {
         CompileEnvironment {
             schema_version: 1,
@@ -1184,7 +1259,7 @@ mod tests {
     fn target() -> TargetProfile {
         TargetProfile {
             schema_version: 1,
-            rtmq_abi_version: 1,
+            rtmq_abi_version: 2,
             clock_hz: 250_000_000,
             duration_quantization: DurationQuantization::Strict,
             loop_timing: LoopTiming::default(),
@@ -1236,6 +1311,19 @@ mod tests {
             compile_oasm_call_plan(&program, &empty_environment(), &target(), &bindings).unwrap();
 
         assert!(plan.epochs()[0].boards().is_empty());
+    }
+
+    #[test]
+    fn logical_duration_excludes_hardware_loop_scheduling_overhead() {
+        let plan = compile_oasm_call_plan(
+            &loop_program(),
+            &empty_environment(),
+            &target(),
+            &LinkBindings::empty(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.logical_duration_cycles(), 30);
     }
 
     #[test]

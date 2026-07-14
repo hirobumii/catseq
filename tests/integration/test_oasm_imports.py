@@ -1,41 +1,21 @@
-import pytest
+"""Smoke-test the OASM dependency used by the Python host adapter."""
 
-# These imports are provided by the lab-maintained OASM package.
-from oasm.rtmq2.intf import sim_intf
-from oasm.rtmq2 import assembler, disassembler
 from oasm.dev.main import C_MAIN, run_cfg
 from oasm.dev.rwg import C_RWG, rwg
-
-"""
-Tests that necessary OASM modules can be imported and objects instantiated.
-"""
-
-print("\n🧪 Testing OASM imports and instantiation...")
-
-# Instantiate sim_intf
-intf_usb = sim_intf()
-intf_usb.nod_adr = 0
-intf_usb.loc_chn = 1
-print(f"✅ sim_intf instantiated: {intf_usb}")
-
-# Define rwgs
-rwgs = [1, 2, 3, 4, 5]
-print(f"✅ rwgs defined: {rwgs}")
-
-# Instantiate run_cfg objects
-run_all = run_cfg(intf_usb, rwgs + [0])
-print(f"✅ run_all (run_cfg) instantiated: {run_all}")
-
-rwg_run = run_cfg(intf_usb, rwgs, core=C_RWG)
-print(f"✅ rwg_run (run_cfg) instantiated: {rwg_run}")
-
-print("🎉 All OASM imports and instantiations successful (assuming setup.sh was run).")
+from oasm.rtmq2 import assembler, disassembler
+from oasm.rtmq2.intf import sim_intf
 
 
-def uv_off():
-    rwg.ttl.off(1)
+def test_oasm_assembler_accepts_a_catseq_host_callback() -> None:
+    interface = sim_intf()
+    interface.nod_adr = 0
+    interface.loc_chn = 1
+    run_all = run_cfg(interface, [1, 0])
+    sequence = assembler(run_all, [("rwg0", C_RWG), ("main", C_MAIN)])
 
-seq = assembler(run_all,[(f'rwg{i}',C_RWG) for i in range(len(rwgs))]+[('main',C_MAIN)])
-seq('rwg0', uv_off)
-# seq.run(disa=True)
-print(disassembler(core=C_RWG)(seq.asm['rwg0']))
+    def uv_off() -> None:
+        rwg.ttl.off(1)
+
+    sequence("rwg0", uv_off)
+
+    assert disassembler(core=C_RWG)(sequence.asm["rwg0"])

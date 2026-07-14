@@ -1,16 +1,14 @@
+[build-system]
+requires = ["maturin>=1.14,<2"]
+build-backend = "maturin"
+
 [project]
 name = "catseq"
 version = "0.3.0.dev0"
 description = "A Categorical Framework for Hardware Sequence Control"
 requires-python = ">=3.12"
 dependencies = [
-    "numpy",
     "oasm @ git+https://git.opticaltweezer.eu.org/OT/oasm.git@33b6c2538509e70475b49de5bd5a13ef334d4387",
-    "ipykernel",
-    "h5py",
-    "scipy",
-    "matplotlib>=3.10.6",
-    "dataclasses-json",
 ]
 
 [project.optional-dependencies]
@@ -21,9 +19,11 @@ dev = [
     "mypy"
 ]
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["catseq*"]
+[tool.maturin]
+manifest-path = "rust/catseqc/Cargo.toml"
+bindings = "bin"
+python-source = "."
+python-packages = ["catseq"]
 
 [tool.ruff]
 line-length = 88
@@ -43,12 +43,11 @@ exclude = ["build/"]
 
 [dependency-groups]
 dev = [
-    "ipykernel>=6.30.1",
     "pytest-mock>=3.14.1",
 ]
 
 
 [tool.pyright]
-include = [".venv/**/site-packages/oasm"]
+include = ["catseq"]
 exclude = [".git", "**/node_modules", "**/__pycache__", "**/.*", ".venv"]
-typeCheckingMode = "off"   # 或者 "basic"
+typeCheckingMode = "basic"

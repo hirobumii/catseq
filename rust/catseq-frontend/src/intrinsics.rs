@@ -2,7 +2,16 @@
 
 use crate::typed::SourceType;
 
-pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 3;
+pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 5;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NativeMorphismTemplate {
+    Hold,
+    TtlPulse,
+    RwgSetState,
+    RwgRfPulse,
+    RwgLinearRamp,
+}
 
 #[derive(Clone, Copy)]
 enum ResultRule {
@@ -171,6 +180,10 @@ const INTRINSICS: &[Intrinsic] = &[
         leaf: "StaticWaveform",
         result: ResultRule::NativeRecord("StaticWaveform"),
     },
+    Intrinsic {
+        leaf: "WaveformParams",
+        result: ResultRule::NativeRecord("WaveformParams"),
+    },
 ];
 
 pub(crate) fn return_type(path: &str, first_argument: Option<&SourceType>) -> Option<SourceType> {
@@ -203,4 +216,20 @@ pub(crate) fn is_registered(path: &str) -> bool {
 
 pub(crate) fn is_compiler_special_form(resolved: &str) -> bool {
     resolved == "rb1system.utils.dict_to_morphism"
+}
+
+/// Return the precompiled template body associated with a composite hardware
+/// API. Everything else in ``catseq.hardware`` is an Atomic Schema unless it
+/// is handled as a compiler Special Form above.
+pub(crate) fn native_morphism_template(path: &str) -> Option<NativeMorphismTemplate> {
+    match path {
+        "catseq.hardware.common.hold" | "catseq.hardware.rwg.hold" | "catseq.hardware.ttl.hold" => {
+            Some(NativeMorphismTemplate::Hold)
+        }
+        "catseq.hardware.ttl.pulse" => Some(NativeMorphismTemplate::TtlPulse),
+        "catseq.hardware.rwg.set_state" => Some(NativeMorphismTemplate::RwgSetState),
+        "catseq.hardware.rwg.rf_pulse" => Some(NativeMorphismTemplate::RwgRfPulse),
+        "catseq.hardware.rwg.linear_ramp" => Some(NativeMorphismTemplate::RwgLinearRamp),
+        _ => None,
+    }
 }

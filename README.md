@@ -1,243 +1,100 @@
 # CatSeq
 
-![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Version](https://img.shields.io/badge/version-0.3.0.dev0-orange.svg)
-![Tests](https://img.shields.io/badge/tests-185%20passed-brightgreen.svg)
+CatSeq is a categorical timing-composition language and native compiler for
+RTMQ hardware sequences.
 
-> **A Category Theory-based framework for quantum experiment sequencing** - A mathematically rigorous abstraction for hardware timing in quantum physics experiments.
+CatSeq 0.3 preserves the Python `Morphism`, `MorphismDef`, `>>`, `@`, `|`, and
+channel-dictionary syntax. Production compilation is source based: `catseqc`
+parses one `build_sequence` entry and its reachable service/module definitions,
+then lowers them through native HIR and Morphism arenas to a complete
+`OASMCallPlan`. It never imports or executes the experiment module.
 
-<p align="center">
-  <a href="docs/user/01_quickstart.md"><strong>Quickstart</strong></a> ·
-  <a href="docs/user/02_core_concepts.md"><strong>Core Concepts</strong></a> ·
-  <a href="CHANGELOG.md"><strong>Changelog</strong></a> ·
-  <a href="docs/dev/compiler_notes.md">Developer Docs</a> ·
-  <a href="https://github.com/hirobumii/catseq/issues">Report a Bug</a>
-</p>
+## Installation
 
----
+Release wheels are platform-specific and include both the Python package and
+the native `catseqc` compiler. The supported release interpreter is Python
+3.12.
 
-## Table of Contents
-
-- [Introduction](#introduction)
-- [Core Features](#core-features)
-- [Quickstart](#quickstart)
-  - [Prerequisites](#prerequisites)
-  - [Installation](#installation)
-  - [Basic Usage](#basic-usage)
-- [Design Philosophy](#design-philosophy)
-- [Roadmap](#roadmap)
-- [Contributing](#contributing)
-- [License](#license)
-- [Acknowledgements](#acknowledgements)
-
-## Introduction
-
-**CatSeq** (Category Theory-based Quantum Experiment Sequencing) is a hardware control framework designed specifically for quantum physics experiments. It is built upon the mathematical principles of **Monoidal Categories** to provide a rigorous foundation and an intuitive programming abstraction for complex quantum control sequences.
-
-In traditional quantum experiment control, coordinating complex timing, managing state, and handling parallel operations often leads to code that is difficult to understand and maintain. CatSeq abstracts these complexities into predictable and verifiable mathematical objects by leveraging the **compositionality** and **type safety** of category theory, making quantum experiment programming both intuitive and powerful.
-
-This framework is particularly well-suited for quantum physics research teams that require **precise timing control** (nanosecond-level precision), **multi-channel coordination**, and **complex waveform synthesis**.
-
-## Core Features
-
-* **🧮 Mathematical Rigor**: Based on Monoidal Category theory, providing provably correct operational compositions.
-* **⚡ Precise Timing**: Supports 250MHz clock resolution (4ns), meeting the strict timing requirements of quantum experiments.
-* **🔀 Flexible Composition**: Intuitive sequence composition using the `@` (serial) and `|` (parallel) operators.
-* **🎛️ Multi-Hardware Support**: Unified control over various quantum experiment hardware, such as TTL switches and AWG waveform generators.
-* **🔧 Type Safety**: Compile-time state verification to prevent hardware configuration errors and timing conflicts.
-* **⚙️ OASM Compilation**: Directly compiles to RTMQ hardware instructions, eliminating the need to write low-level assembly code by hand.
-
-## Quickstart
-
-### Prerequisites
-
-Before you begin, ensure you have the following software installed in your development environment:
-* [Python](https://python.org/) (version >= 3.12)
-* [uv](https://docs.astral.sh/uv/) A modern Python package manager
-
-### Installation
-
-**Linux/macOS - Using setup script (Recommended)**
-```bash
-git clone https://github.com/hirobumii/catseq.git
-cd catseq
-chmod +x scripts/setup.sh
-./scripts/setup.sh
-```
-
-**Windows PowerShell - Using setup script (Recommended)**
-```powershell
-git clone https://github.com/hirobumii/catseq.git
-cd catseq
-.\scripts\setup.ps1
-```
-
-**Manual Installation (Any Platform)**
-```bash
-# 1. Clone the repository
-git clone https://github.com/hirobumii/catseq.git
-cd catseq
-
-# 2. Install uv (if not already installed)
-# Linux/macOS:
-curl -LsSf https://astral.sh/uv/install.sh | sh
-# Windows PowerShell:
-# Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
-
-# 3. Create a virtual environment and install dependencies
-uv venv --python 3.12
-# Linux/macOS:
-source .venv/bin/activate
-# Windows:
-# .\.venv\Scripts\Activate.ps1
-
-uv pip install -e .[dev]
-
-# 4. Verify the installation
-.venv/bin/pytest tests/ -v  # Linux/macOS
-# .\.venv\Scripts\python.exe -m pytest tests/ -v  # Windows
-```
-
-**Install from Any Location**
-
-To install CatSeq as a dependency from any directory:
+For development from a checkout:
 
 ```bash
-# Option 1: Direct installation
-pip install git+https://github.com/hirobumii/catseq.git
-
-# Option 2: Clone and install
-git clone https://github.com/hirobumii/catseq.git
-cd catseq
-pip install -e .
+uv sync --locked --all-extras --dev --python 3.12
 ```
 
-CatSeq depends on the lab-maintained OASM package from Gitea, which already includes the RTMQ and device modules used by CatSeq.
+No platform setup script is required.
 
-### Basic Usage
-
-Here is a basic example of creating a TTL pulse sequence:
+## Sequence source
 
 ```python
-from catseq import ttl_init, ttl_on, ttl_off, identity
-from catseq.types.common import Board, Channel, ChannelType
-from catseq.compilation import compile_to_oasm_calls
+from catseq.hardware.ttl import hold, set_high, set_low
+from catseq.morphism import Morphism, MorphismDef, identity, morphism_template
+from catseq.time_utils import us
 
-# Define hardware channels
-board = Board("RWG_0")
-ttl_ch = Channel(board, 0, ChannelType.TTL)
 
-# Build the sequence: initialize -> on for 10μs -> off
-pulse_sequence = (
-    ttl_init(ttl_ch) @ 
-    ttl_on(ttl_ch) @ 
-    identity(ttl_ch, 10e-6) @ 
-    ttl_off(ttl_ch)
+@morphism_template
+def pulse(duration: float) -> MorphismDef:
+    return set_high() >> hold(duration) >> set_low()
+
+
+class PulseExperiment:
+    def build_sequence(self, params) -> Morphism:
+        return identity(10 * us) >> {
+            self.trigger: pulse(params["duration_us"] * us)
+        }
+```
+
+`MorphismDef` is the source spelling of `MorphismTemplate`. Its body may compose
+Atomic Schemas with `>>`, `@`, and `|`; the compiler stores the body once and
+binding it to a channel creates an `Instantiate` node. Calling this source with
+CPython raises `CompilerOnlyError` because Python no longer owns a shadow arena.
+
+## Native compilation
+
+The host application owns its hardware channel map, opaque callable registry,
+and OASM assembler. CatSeq ships the fixed RTMQ target profile:
+
+```python
+from catseq.compilation import compile_entry, execute_oasm_calls
+
+result = compile_entry(
+    experiment.build_sequence,
+    params,
+    environment=environment,
 )
-
-# Compile to hardware instructions
-oasm_calls = compile_to_oasm_calls(pulse_sequence)
-
-# Execute the sequence (requires RTMQ hardware environment)
-# execute_oasm_calls(oasm_calls)
+calls = result.to_oasm_calls(opaque_callables=opaque_callables)
+_, exp_sequence = execute_oasm_calls(calls, assembler_seq)
 ```
 
-**Example of parallel operations**:
-```python
-# Create pulses on two different channels
-ch1_pulse = ttl_on(ch1) @ identity(ch1, 5e-6) @ ttl_off(ch1)
-ch2_pulse = ttl_on(ch2) @ identity(ch2, 8e-6) @ ttl_off(ch2)
+`compile_entry()` does not call the bound method. It uses it to locate the
+source entry and to bind only restricted compile values. The result also
+contains `logical_duration_cycles`, allowing a host such as `rb1-next.BaseExp`
+to preserve its existing execution timeout contract.
 
-# Execute in parallel (time is automatically aligned)
-parallel_sequence = ch1_pulse | ch2_pulse  # Total duration will be 8μs
+The 0.2 `compile_to_oasm_calls(morphism, ...)` API and Python compiler passes
+are intentionally removed. See [UPGRADING.md](UPGRADING.md).
+
+## Compiler commands
+
+The packaged `catseqc` executable provides:
+
+```text
+catseqc check
+catseqc emit-hir
+catseqc emit-arena
+catseqc compile
 ```
 
-For more advanced usage and AWG waveform control, please refer to our [Quickstart Guide](docs/user/01_quickstart.md).
+The Python facade is the stable application API; the command-line interface is
+primarily for diagnostics, CI, and compiler development.
 
-## Design Philosophy
+## Development checks
 
-The design of CatSeq is based on the following core principles:
-
-### 🧮 Category Theory Foundation
-- **Objects**: The complete state of the system (a mapping of all channel states).
-- **Morphisms**: Physical processes (state transitions that evolve over time).
-- **Composition**: Strict function composition that guarantees state continuity.
-
-### 🔒 Type Safety First
-- Compile-time state verification to prevent illegal state transitions.
-- Strongly-typed channel management to avoid hardware address errors.
-- Automatic inference of state transitions to reduce manual errors.
-
-### 🎯 User-Friendliness
-- Intuitive operators: `@` for sequential composition and `|` for parallel execution.
-- A declarative programming style that focuses on "what to do" rather than "how to do it."
-- Rich error messages and debugging information.
-
-## Roadmap
-
-We have a clear plan for the future development of CatSeq:
-
-**v0.2.0** (Q2 2025)
-- [ ] **Visualization Tools**: Timing diagram generation and an interactive debugging interface.
-- [ ] **Broader Hardware Support**: Support for more types of quantum experiment devices.
-- [ ] **Performance Optimization**: Compilation optimizations for large-scale sequences.
-
-**v0.3.0** (Q3 2025)
-- [ ] **Cloud Compilation**: Support for real-time control of remote hardware.
-- [ ] **Machine Learning Integration**: Automated parameter optimization and sequence learning.
-- [ ] **Standard Library Expansion**: A pre-defined library of common quantum experiment operations.
-
-Feel free to check out our [Issues](https://github.com/hirobumii/catseq/issues) page for more details and to join the discussion.
-
-## Contributing
-
-We welcome contributions from the community! If you'd like to get involved, please follow these steps:
-
-1.  Fork the repository
-2.  Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3.  Run tests to ensure code quality (`.venv/bin/pytest tests/ -v`)
-4.  Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-5.  Push to the branch (`git push origin feature/AmazingFeature`)
-6.  Open a Pull Request
-
-**Development Environment Setup**:
 ```bash
-# Linux/macOS - Use the setup script
-chmod +x scripts/setup.sh && ./scripts/setup.sh
-
-# Windows PowerShell - Use the setup script
-.\scripts\setup.ps1
-
-# Or set up manually (any platform)
-source .venv/bin/activate  # Linux/macOS
-# .\.venv\Scripts\Activate.ps1  # Windows
-
-uv pip install -e .[dev]
-
-# Run the test suite
-.venv/bin/pytest tests/ -v  # Linux/macOS
-# .\.venv\Scripts\python.exe -m pytest tests/ -v  # Windows
-
-# Check code formatting and types
-ruff check catseq/
-mypy catseq/
+uv run pytest -q
+uv run ruff check catseq tests
+cargo test --locked --workspace --all-targets --manifest-path rust/Cargo.toml
 ```
-Before contributing, please be sure to run the test suite to ensure all 49 tests are passing.
 
-## License
-
-This project is distributed under the **MIT** License. See the `LICENSE` file for more information.
-
-## Acknowledgements
-
-- **Foundations of Category Theory**: Our thanks to the mathematicians whose work on Monoidal Category theory made this possible.
-- **RTMQ Hardware Platform**: For providing a powerful hardware foundation for quantum experiment control.
-- **The Python Ecosystem**: Excellent tools like NumPy, pytest, and uv make development efficient.
-- **uv Package Manager**: For providing fast and reliable dependency management for the project.
-
----
-
-<p align="center">
-  <strong>CatSeq - Bringing mathematical elegance to quantum experiment control.</strong>
-</p>
+Architecture and accepted decisions are documented in
+[docs/dev/0.3_native_compiler.md](docs/dev/0.3_native_compiler.md) and
+[docs/adr](docs/adr).

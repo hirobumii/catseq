@@ -4,13 +4,13 @@ use std::collections::HashMap;
 
 use catseq_core::exact_decimal::ExactDecimal;
 use catseq_core::native_arenas::NativeArenas;
-use catseq_core::value_expr::ValueExprId;
+use catseq_core::value_expr::{RwgWaveformDerivation, ValueExprId, ValueExprPayload};
 
-use super::value_eval::{json_argument, value_to_oasm_argument};
+use super::value_eval::{eval_duration_cycles, json_argument, json_value, value_to_oasm_argument};
 use super::{
-    AtomicLowering, AtomicTargetSchema, ChannelBinding, ChannelKind, DirectEvent, EventOrder,
-    OasmArgument, OasmCompileError, OasmFunction, RwgChannelState, TargetBoard, TtlEvent,
-    bool_argument,
+    AtomicLowering, AtomicTargetSchema, ChannelBinding, ChannelKind, DirectEvent,
+    DurationQuantization, EventOrder, OasmArgument, OasmCompileError, OasmFunction,
+    RwgChannelState, RwgPlayTransition, TargetBoard, TtlEvent, bool_argument,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -26,6 +26,7 @@ pub(super) fn lower_atomic_events(
     program: &NativeArenas,
     evaluated_values: &[Result<ExactDecimal, OasmCompileError>],
     clock_hz: u64,
+    duration_quantization: DurationQuantization,
     group_id: u64,
     rwg_states: &mut HashMap<String, RwgChannelState>,
     rsp_pid_configs: &mut HashMap<String, serde_json::Value>,
@@ -67,7 +68,7 @@ pub(super) fn lower_atomic_events(
         }
     };
     match schema.lowering {
-        AtomicLowering::TtlPulse | AtomicLowering::TtlSetHigh | AtomicLowering::TtlSetLow => {
+        AtomicLowering::TtlSetHigh | AtomicLowering::TtlSetLow => {
             validate_kind(ChannelKind::Ttl)?;
             if binding.local_id >= board.ttl_width || board.ttl_width > 64 {
                 return Err(OasmCompileError::new("invalid TTL local id"));
@@ -83,20 +84,6 @@ pub(super) fn lower_atomic_events(
                 order: EventOrder::channel(binding.kind, binding.local_id, group_id),
                 loop_scope: None,
             });
-            if schema.lowering == AtomicLowering::TtlPulse {
-                ttl_events.push(TtlEvent {
-                    epoch,
-                    offset_cycles: start.checked_add(duration).ok_or_else(|| {
-                        OasmCompileError::new("TTL pulse timestamp overflows u64")
-                    })?,
-                    board: binding.board.clone(),
-                    local_id: binding.local_id,
-                    high: false,
-                    instruction_cost_cycles: schema.instruction_cost_cycles,
-                    order: EventOrder::channel(binding.kind, binding.local_id, group_id),
-                    loop_scope: None,
-                });
-            }
         }
         AtomicLowering::TtlInitialize => {
             validate_kind(ChannelKind::Ttl)?;
@@ -133,108 +120,262 @@ pub(super) fn lower_atomic_events(
             );
             rwg_states.insert(channel_key.to_owned(), RwgChannelState::Ready);
         }
-        AtomicLowering::RwgSetState => {
+        AtomicLowering::RwgLoad => {
             validate_kind(ChannelKind::Rwg)?;
-            let targets = json_argument(program, arguments, 0, evaluated_values)?;
-            let targets = targets
-                .as_array()
-                .ok_or_else(|| OasmCompileError::new("RWG targets must be a native aggregate"))?;
-            let phase_reset = arguments
-                .get(1)
+            let waveform_expr = arguments
+                .first()
                 .copied()
-                .and_then(|id| bool_argument(program, id))
-                .unwrap_or(true);
-            let rf_on = match rwg_states.get(channel_key) {
-                Some(RwgChannelState::Ready) => false,
-                Some(RwgChannelState::Active { rf_on, .. }) => *rf_on,
-                None => {
-                    return Err(OasmCompileError::new(
-                        "RWG set_state requires a preceding initialize operation",
-                    ));
+                .ok_or_else(|| OasmCompileError::new("RWG load requires a waveform expression"))?;
+            let waveform_payload = program
+                .values()
+                .payload(waveform_expr)
+                .map_err(|error| OasmCompileError::new(error.to_string()))?;
+            if matches!(waveform_payload, Some(ValueExprPayload::Json(_))) {
+                let waveforms = json_value(program, waveform_expr, evaluated_values)?;
+                let waveforms = waveforms.as_array().ok_or_else(|| {
+                    OasmCompileError::new("RWG load requires a waveform aggregate")
+                })?;
+                validate_waveform_params(waveforms)?;
+                let rf_on = match rwg_states.get(channel_key) {
+                    Some(RwgChannelState::Ready) => false,
+                    Some(RwgChannelState::Active { rf_on, .. })
+                    | Some(RwgChannelState::ActiveUnknown { rf_on }) => *rf_on,
+                    Some(
+                        RwgChannelState::WaveformsLoaded { .. } | RwgChannelState::Ramping { .. },
+                    ) => {
+                        return Err(OasmCompileError::new(
+                            "RWG load cannot interrupt a pending waveform transition",
+                        ));
+                    }
+                    None => {
+                        return Err(OasmCompileError::new(
+                            "RWG load requires a preceding initialize operation",
+                        ));
+                    }
+                };
+                let transition = static_snapshot_from_waveforms(waveforms)
+                    .map(|snapshot| RwgPlayTransition::Activate { snapshot })
+                    .unwrap_or(RwgPlayTransition::ActivateUnknown);
+                emit_prepared_rwg_loads(
+                    binding,
+                    start,
+                    epoch,
+                    waveforms.to_vec(),
+                    schema.instruction_cost_cycles,
+                    group_id,
+                    direct_events,
+                );
+                rwg_states.insert(
+                    channel_key.to_owned(),
+                    RwgChannelState::WaveformsLoaded {
+                        rf_on,
+                        transition,
+                        preload_group_id: group_id,
+                    },
+                );
+                return Ok(());
+            }
+            let Some(ValueExprPayload::RwgWaveforms(derivation)) = waveform_payload else {
+                return Err(OasmCompileError::new(
+                    "RWG load requires waveform parameters",
+                ));
+            };
+            let expression_arguments = program
+                .values()
+                .children(waveform_expr)
+                .map_err(|error| OasmCompileError::new(error.to_string()))?;
+            let (waveforms, rf_on, transition) = match derivation {
+                RwgWaveformDerivation::Static => {
+                    let targets = expression_arguments
+                        .first()
+                        .copied()
+                        .ok_or_else(|| OasmCompileError::new("static waveforms require targets"))?;
+                    let targets = json_value(program, targets, evaluated_values)?;
+                    let targets = targets.as_array().ok_or_else(|| {
+                        OasmCompileError::new("RWG targets must be a native aggregate")
+                    })?;
+                    let phase_reset = expression_arguments
+                        .get(1)
+                        .copied()
+                        .and_then(|id| bool_argument(program, id))
+                        .unwrap_or(true);
+                    let rf_on = match rwg_states.get(channel_key) {
+                        Some(RwgChannelState::Ready) => false,
+                        Some(RwgChannelState::Active { rf_on, .. })
+                        | Some(RwgChannelState::ActiveUnknown { rf_on }) => *rf_on,
+                        Some(
+                            RwgChannelState::WaveformsLoaded { .. }
+                            | RwgChannelState::Ramping { .. },
+                        ) => {
+                            return Err(OasmCompileError::new(
+                                "RWG set_state cannot interrupt a pending waveform transition",
+                            ));
+                        }
+                        None => {
+                            return Err(OasmCompileError::new(
+                                "RWG set_state requires a preceding initialize operation",
+                            ));
+                        }
+                    };
+                    validate_static_waveforms(targets, true)?;
+                    (
+                        build_static_waveforms(targets, phase_reset),
+                        rf_on,
+                        RwgPlayTransition::Activate {
+                            snapshot: targets.to_vec(),
+                        },
+                    )
+                }
+                RwgWaveformDerivation::Linear => {
+                    let targets = expression_arguments
+                        .first()
+                        .copied()
+                        .ok_or_else(|| OasmCompileError::new("linear waveforms require targets"))?;
+                    let duration_id = expression_arguments.get(1).copied().ok_or_else(|| {
+                        OasmCompileError::new("linear waveforms require a duration")
+                    })?;
+                    let ramp_duration =
+                        eval_duration_cycles(evaluated_values, duration_id, duration_quantization)?;
+                    if ramp_duration == 0 {
+                        return Err(OasmCompileError::new(
+                            "RWG linear_ramp duration must be positive",
+                        ));
+                    }
+                    let targets = json_value(program, targets, evaluated_values)?;
+                    let targets = targets.as_array().ok_or_else(|| {
+                        OasmCompileError::new("RWG targets must be a native aggregate")
+                    })?;
+                    validate_static_waveforms(targets, false)?;
+                    let Some(RwgChannelState::Active { rf_on, snapshot }) =
+                        rwg_states.get(channel_key).cloned()
+                    else {
+                        return Err(OasmCompileError::new(
+                            "RWG linear_ramp requires an active channel state",
+                        ));
+                    };
+                    if targets.len() != snapshot.len() {
+                        return Err(OasmCompileError::new(format!(
+                            "RWG linear_ramp target count {} does not match active SBG count {}",
+                            targets.len(),
+                            snapshot.len()
+                        )));
+                    }
+                    let duration_us = ramp_duration as f64 * 1_000_000.0 / clock_hz as f64;
+                    let (ramp, static_stop, end_snapshot) =
+                        build_linear_ramp_waveforms(&snapshot, targets, duration_us)?;
+                    (
+                        ramp,
+                        rf_on,
+                        RwgPlayTransition::StartRamp {
+                            static_stop,
+                            end_snapshot,
+                        },
+                    )
+                }
+                RwgWaveformDerivation::RampEndpoint => {
+                    if expression_arguments.len() != 1 {
+                        return Err(OasmCompileError::new(
+                            "RWG linear ramp endpoint requires its ramp waveform expression",
+                        ));
+                    }
+                    let Some(RwgChannelState::Ramping {
+                        rf_on,
+                        static_stop,
+                        end_snapshot,
+                    }) = rwg_states.get(channel_key).cloned()
+                    else {
+                        return Err(OasmCompileError::new(
+                            "RWG linear ramp endpoint has no preceding ramp play",
+                        ));
+                    };
+                    (
+                        static_stop,
+                        rf_on,
+                        RwgPlayTransition::FinishRamp { end_snapshot },
+                    )
                 }
             };
-            validate_static_waveforms(targets, true)?;
-            emit_rwg_waveforms(
+            emit_prepared_rwg_loads(
                 binding,
                 start,
                 epoch,
-                targets,
-                phase_reset,
-                StaticWaveformMode::Set,
+                waveforms,
                 schema.instruction_cost_cycles,
                 group_id,
                 direct_events,
             );
             rwg_states.insert(
                 channel_key.to_owned(),
-                RwgChannelState::Active {
+                RwgChannelState::WaveformsLoaded {
                     rf_on,
-                    snapshot: targets.to_vec(),
+                    transition,
+                    preload_group_id: group_id,
                 },
             );
         }
-        AtomicLowering::RwgLinearRamp => {
+        AtomicLowering::RwgPlay => {
             validate_kind(ChannelKind::Rwg)?;
-            if duration == 0 {
-                return Err(OasmCompileError::new(
-                    "RWG linear_ramp duration must be positive",
-                ));
-            }
-            let targets = json_argument(program, arguments, 0, evaluated_values)?;
-            let targets = targets
-                .as_array()
-                .ok_or_else(|| OasmCompileError::new("RWG targets must be a native aggregate"))?;
-            validate_static_waveforms(targets, false)?;
-            let Some(RwgChannelState::Active { rf_on, snapshot }) =
-                rwg_states.get(channel_key).cloned()
-            else {
-                return Err(OasmCompileError::new(
-                    "RWG linear_ramp requires an active channel state",
-                ));
-            };
-            if targets.len() != snapshot.len() {
-                return Err(OasmCompileError::new(format!(
-                    "RWG linear_ramp target count {} does not match active SBG count {}",
-                    targets.len(),
-                    snapshot.len()
-                )));
-            }
-            let duration_us = duration as f64 * 1_000_000.0 / clock_hz as f64;
-            let (ramp, static_stop, end_snapshot) =
-                build_linear_ramp_waveforms(&snapshot, targets, duration_us)?;
-            emit_prepared_rwg_waveforms(
-                binding,
-                start,
-                epoch,
-                ramp,
-                schema.instruction_cost_cycles,
-                group_id,
-                direct_events,
-            );
-            emit_prepared_rwg_waveforms(
-                binding,
-                start
-                    .checked_add(duration)
-                    .ok_or_else(|| OasmCompileError::new("RWG ramp timestamp overflows"))?,
-                epoch,
-                static_stop,
-                schema.instruction_cost_cycles,
-                group_id,
-                direct_events,
-            );
-            rwg_states.insert(
-                channel_key.to_owned(),
-                RwgChannelState::Active {
+            match rwg_states.get(channel_key).cloned() {
+                Some(RwgChannelState::WaveformsLoaded {
                     rf_on,
-                    snapshot: end_snapshot,
-                },
-            );
+                    transition,
+                    preload_group_id,
+                }) => {
+                    emit_rwg_play(
+                        binding,
+                        start,
+                        epoch,
+                        schema.instruction_cost_cycles,
+                        preload_group_id,
+                        direct_events,
+                    );
+                    let next = match transition {
+                        RwgPlayTransition::Activate { snapshot } => {
+                            RwgChannelState::Active { rf_on, snapshot }
+                        }
+                        RwgPlayTransition::ActivateUnknown => {
+                            RwgChannelState::ActiveUnknown { rf_on }
+                        }
+                        RwgPlayTransition::StartRamp {
+                            static_stop,
+                            end_snapshot,
+                        } => RwgChannelState::Ramping {
+                            rf_on,
+                            static_stop,
+                            end_snapshot,
+                        },
+                        RwgPlayTransition::FinishRamp { end_snapshot } => RwgChannelState::Active {
+                            rf_on,
+                            snapshot: end_snapshot,
+                        },
+                    };
+                    rwg_states.insert(channel_key.to_owned(), next);
+                }
+                Some(_) => {
+                    return Err(OasmCompileError::new(
+                        "RWG play requires a preceding waveform load",
+                    ));
+                }
+                None => {
+                    return Err(OasmCompileError::new(
+                        "RWG play requires a preceding initialize operation",
+                    ));
+                }
+            }
         }
-        AtomicLowering::RwgRfOn | AtomicLowering::RwgRfOff | AtomicLowering::RwgRfPulse => {
+        AtomicLowering::RwgRfOn | AtomicLowering::RwgRfOff => {
             validate_kind(ChannelKind::Rwg)?;
             let state = rwg_states.get_mut(channel_key).ok_or_else(|| {
                 OasmCompileError::new("RWG RF switch requires a preceding initialize operation")
             })?;
+            if matches!(
+                state,
+                RwgChannelState::WaveformsLoaded { .. } | RwgChannelState::Ramping { .. }
+            ) {
+                return Err(OasmCompileError::new(
+                    "RWG RF switch cannot interrupt an active ramp template",
+                ));
+            }
             let mask = 1_u64 << binding.local_id;
             let off = schema.lowering == AtomicLowering::RwgRfOff;
             direct(
@@ -246,25 +387,13 @@ pub(super) fn lower_atomic_events(
                 ],
                 direct_events,
             );
-            if schema.lowering == AtomicLowering::RwgRfPulse {
-                match state {
-                    RwgChannelState::Active { rf_on: true, .. } => {
-                        return Err(OasmCompileError::new(
-                            "RWG rf_pulse requires rf_on=false at its start",
-                        ));
-                    }
-                    RwgChannelState::Ready | RwgChannelState::Active { .. } => {}
+            match state {
+                RwgChannelState::Active { rf_on, .. }
+                | RwgChannelState::ActiveUnknown { rf_on } => *rf_on = !off,
+                RwgChannelState::Ready => {}
+                RwgChannelState::WaveformsLoaded { .. } | RwgChannelState::Ramping { .. } => {
+                    unreachable!("pending transitions were rejected above")
                 }
-                direct(
-                    start
-                        .checked_add(duration)
-                        .ok_or_else(|| OasmCompileError::new("RWG RF pulse timestamp overflows"))?,
-                    OasmFunction::RwgRfSwitch,
-                    vec![OasmArgument::Unsigned(mask), OasmArgument::Unsigned(mask)],
-                    direct_events,
-                );
-            } else if let RwgChannelState::Active { rf_on, .. } = state {
-                *rf_on = !off;
             }
         }
         AtomicLowering::RspInitialize => {
@@ -339,16 +468,11 @@ pub(super) fn lower_atomic_events(
             vec![argument(0)?],
             direct_events,
         ),
-        AtomicLowering::Hold | AtomicLowering::GlobalSync | AtomicLowering::Opaque => {
+        AtomicLowering::GlobalSync | AtomicLowering::Opaque => {
             unreachable!("handled by caller")
         }
     }
     Ok(())
-}
-
-#[derive(Clone, Copy)]
-enum StaticWaveformMode {
-    Set,
 }
 
 fn validate_static_waveforms(
@@ -366,6 +490,61 @@ fn validate_static_waveforms(
         }
     }
     Ok(())
+}
+
+fn validate_waveform_params(waveforms: &[serde_json::Value]) -> Result<(), OasmCompileError> {
+    for waveform in waveforms {
+        let object = waveform
+            .as_object()
+            .ok_or_else(|| OasmCompileError::new("RWG load item is not a WaveformParams record"))?;
+        if object.get("sbg_id").and_then(json_u64).is_none() {
+            return Err(OasmCompileError::new(format!(
+                "RWG load requires an integer sbg_id; found {waveform}"
+            )));
+        }
+        for field in ["freq_coeffs", "amp_coeffs"] {
+            if !object
+                .get(field)
+                .is_some_and(|coefficients| coefficients.is_array())
+            {
+                return Err(OasmCompileError::new(format!(
+                    "RWG load requires array-valued {field}; found {waveform}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn static_snapshot_from_waveforms(
+    waveforms: &[serde_json::Value],
+) -> Option<Vec<serde_json::Value>> {
+    waveforms
+        .iter()
+        .map(|waveform| {
+            let object = waveform.as_object()?;
+            let static_coefficient = |field: &str| {
+                let coefficients = object.get(field)?.as_array()?;
+                let value = coefficients.first()?.as_f64()?;
+                coefficients
+                    .iter()
+                    .skip(1)
+                    .all(|coefficient| coefficient.is_null() || coefficient.as_f64() == Some(0.0))
+                    .then_some(value)
+            };
+            Some(serde_json::json!({
+                "$type": "StaticWaveform",
+                "sbg_id": object.get("sbg_id")?.clone(),
+                "freq": static_coefficient("freq_coeffs")?,
+                "amp": static_coefficient("amp_coeffs")?,
+                "phase": object
+                    .get("initial_phase")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0),
+                "fct": object.get("fct").cloned().unwrap_or(serde_json::Value::Null),
+            }))
+        })
+        .collect()
 }
 
 type RwgRampTransition = (
@@ -477,25 +656,19 @@ fn required_json_number(
         .ok_or_else(|| OasmCompileError::new(format!("{description} is absent")))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn emit_rwg_waveforms(
-    binding: &ChannelBinding,
-    offset_cycles: u64,
-    epoch: u32,
+fn build_static_waveforms(
     targets: &[serde_json::Value],
     phase_reset: bool,
-    _mode: StaticWaveformMode,
-    instruction_cost_cycles: u64,
-    group_id: u64,
-    events: &mut Vec<DirectEvent>,
-) {
-    for target in targets {
+) -> Vec<serde_json::Value> {
+    targets
+        .iter()
+        .map(|target| {
         let target = target.as_object().cloned().unwrap_or_default();
         let sbg_id = target
             .get("sbg_id")
             .and_then(json_u64)
             .expect("validated set_state target has an integer sbg_id");
-        let waveform = serde_json::json!({
+            serde_json::json!({
             "$type": "WaveformParams",
             "sbg_id": sbg_id,
             "freq_coeffs": [target.get("freq").cloned().unwrap_or(serde_json::Value::Null), null, null, null],
@@ -503,36 +676,12 @@ fn emit_rwg_waveforms(
             "initial_phase": target.get("phase").cloned().unwrap_or_else(|| serde_json::Value::from(0.0)),
             "phase_reset": phase_reset,
             "fct": target.get("fct").cloned().unwrap_or(serde_json::Value::Null)
-        });
-        events.push(DirectEvent {
-            epoch,
-            offset_cycles,
-            board: binding.board.clone(),
-            function: OasmFunction::RwgLoadWaveform,
-            args: vec![OasmArgument::Json(waveform)],
-            instruction_cost_cycles,
-            order: EventOrder::channel(binding.kind, binding.local_id, group_id),
-            group_id,
-            preload: true,
-            loop_scope: None,
-        });
-    }
-    let mask = 1_u64 << binding.local_id;
-    events.push(DirectEvent {
-        epoch,
-        offset_cycles,
-        board: binding.board.clone(),
-        function: OasmFunction::RwgPlay,
-        args: vec![OasmArgument::Unsigned(mask), OasmArgument::Unsigned(mask)],
-        instruction_cost_cycles,
-        order: EventOrder::channel(binding.kind, binding.local_id, group_id),
-        group_id,
-        preload: false,
-        loop_scope: None,
-    });
+            })
+        })
+        .collect()
 }
 
-fn emit_prepared_rwg_waveforms(
+fn emit_prepared_rwg_loads(
     binding: &ChannelBinding,
     offset_cycles: u64,
     epoch: u32,
@@ -555,6 +704,16 @@ fn emit_prepared_rwg_waveforms(
             loop_scope: None,
         });
     }
+}
+
+fn emit_rwg_play(
+    binding: &ChannelBinding,
+    offset_cycles: u64,
+    epoch: u32,
+    instruction_cost_cycles: u64,
+    group_id: u64,
+    events: &mut Vec<DirectEvent>,
+) {
     let mask = 1_u64 << binding.local_id;
     events.push(DirectEvent {
         epoch,

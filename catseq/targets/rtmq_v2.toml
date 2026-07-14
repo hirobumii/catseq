@@ -1,0 +1,117 @@
+schema_version = 1
+rtmq_abi_version = 2
+clock_hz = 250000000
+duration_quantization = "nearest_even"
+
+[boards.main]
+kind = "main"
+ttl_width = 32
+
+[boards.rwg0]
+kind = "rwg"
+ttl_width = 32
+
+[boards.rwg1]
+kind = "rwg"
+ttl_width = 32
+
+[boards.rwg2]
+kind = "rwg"
+ttl_width = 32
+
+[boards.rwg3]
+kind = "rwg"
+ttl_width = 32
+
+[boards.rwg4]
+kind = "rwg"
+ttl_width = 32
+
+[boards.rwg5]
+kind = "rwg"
+ttl_width = 32
+
+[boards.rwg8]
+kind = "rwg"
+ttl_width = 32
+
+[boards.rwg9]
+kind = "rwg"
+ttl_width = 32
+
+[boards.rsp10]
+kind = "rsp"
+ttl_width = 0
+
+[operations."catseq.hardware.ttl.initialize"]
+lowering = "ttl_initialize"
+instruction_cost_cycles = 0
+
+[operations."catseq.hardware.ttl.set_high"]
+lowering = "ttl_set_high"
+instruction_cost_cycles = 0
+
+[operations."catseq.hardware.ttl.set_low"]
+lowering = "ttl_set_low"
+instruction_cost_cycles = 0
+
+[operations."catseq.hardware.rwg.initialize"]
+lowering = "rwg_initialize"
+instruction_cost_cycles = 0
+
+[operations."catseq.hardware.rwg.load"]
+lowering = "rwg_load"
+instruction_cost_cycles = 0
+
+[operations."catseq.hardware.rwg.play"]
+lowering = "rwg_play"
+instruction_cost_cycles = 0
+
+[operations."catseq.hardware.rwg.rf_on"]
+lowering = "rwg_rf_on"
+instruction_cost_cycles = 0
+
+[operations."catseq.hardware.rwg.rf_off"]
+lowering = "rwg_rf_off"
+instruction_cost_cycles = 0
+
+[operations."catseq.hardware.rsp.initialize"]
+lowering = "rsp_initialize"
+fixed_duration_cycles = 2500
+instruction_cost_cycles = 0
+
+[operations."catseq.hardware.rsp.pid_config"]
+lowering = "rsp_pid_config"
+instruction_cost_cycles = 0
+
+[operations."catseq.hardware.rsp.pid_start"]
+lowering = "rsp_pid_start"
+instruction_cost_cycles = 0
+
+[operations."catseq.hardware.rsp.pid_hold"]
+lowering = "rsp_pid_hold"
+instruction_cost_cycles = 0
+
+[operations."catseq.hardware.rsp.pid_release"]
+lowering = "rsp_pid_release"
+instruction_cost_cycles = 0
+
+[operations."catseq.hardware.rsp.rf_config"]
+lowering = "rsp_rf_config"
+instruction_cost_cycles = 0
+
+[operations."catseq.hardware.sync.global_sync"]
+lowering = "global_sync"
+instruction_cost_cycles = 0
+
+[operations."rb1system.modules.addressing.AddressingModule.amp_calib"]
+lowering = "opaque"
+fixed_duration_cycles = 4124
+board = "rwg8"
+instruction_cost_cycles = 4124
+
+[operations."rb1system.modules.shuttling.ShuttlingModule.amp_calib"]
+lowering = "opaque"
+fixed_duration_cycles = 4124
+board = "rwg9"
+instruction_cost_cycles = 4124

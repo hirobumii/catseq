@@ -26,6 +26,15 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `OASMCallPlan` for the agreed 0.3 target slice, including TTL, RWG, RSP,
   hardware loops, global-sync epoch boundaries, and explicitly registered
   opaque host calls.
+- Added platform wheels containing both the Python package and the native
+  `catseqc` executable, plus `compile_entry()` as the stable Python facade for
+  source compilation.
+- Added integer `logical_duration_cycles` and target clock metadata to native
+  compile results so host runtimes can preserve their execution timeout
+  contract without constructing a Python Morphism for compilation.
+- Added `@morphism_template` and `@atomic_morphism` source declarations. User
+  templates can compose registered Atomic Schemas and compile through shared
+  template segments and channel-bound `Instantiate` nodes.
 
 ### Changed
 
@@ -33,9 +42,19 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   analysis, DAG construction, specialization, and OASM planning into Rust.
 - Made source-level atomic operations logically cost-free; board-local OASM
   instruction occupancy and wait insertion are now owned by target lowering.
+- Lowered composite hardware APIs as native templates instead of opaque Atomic
+  operations. RWG `set_state` is now `load >> play`, and `linear_ramp` retains
+  `load >> play >> Wait >> load >> play`; both use one `load` Atomic Schema and
+  one `list[WaveformParams]` value type while preserving preload-to-exact-event
+  deadlines and the same RTMQ calls.
 - Moved scan-dependent scalar values to link-time Runtime Bindings while
   rejecting scan values that would change channels, call targets, event count,
   or other DAG topology.
+- Removed the 0.2 Python Morphism compiler, its mutable event pipeline,
+  Python DAG compiler session, instruction-cost analyzer, OASM precompiler,
+  and Python subroutine compiler. Python now provides nominal source types and
+  declarations only; production Morphism construction starts at a source entry
+  and lives in Rust arenas.
 - On 2026-07-14, a release build compiling
   `RydbergTransferExp.build_sequence` measured as follows on the development
   container. Cold samples use 20 unique caches; warm samples use 100 unchanged

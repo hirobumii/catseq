@@ -10,8 +10,11 @@ use catseq_core::morphism_arena::{
     ProvenanceId,
 };
 use catseq_core::native_arenas::NativeArenas;
-use catseq_core::value_expr::{ValueExprArenaBuilder, ValueExprId, ValueExprPayload};
+use catseq_core::value_expr::{
+    RwgWaveformDerivation, ValueExprArenaBuilder, ValueExprId, ValueExprPayload,
+};
 
+use crate::intrinsics::{self, NativeMorphismTemplate};
 use crate::{
     MorphismComposition, SourceHirKind, SourceHirNode, SourceType, TypedCheckReport,
     TypedDefinition, TypedSourceHir, ValueAvailability,
@@ -92,6 +95,13 @@ enum TemplatePlanKind {
     Operation {
         operation: String,
         arguments: Vec<ValueExprId>,
+    },
+    DefinitionRef {
+        definition: String,
+        arguments: Vec<ValueExprId>,
+    },
+    Wait {
+        duration: ValueExprId,
     },
     Serial {
         children: Vec<TemplatePlanId>,
@@ -434,36 +444,16 @@ impl<'a> SpecializationLowerer<'a> {
                         .transpose()?
                 }
                 SourceHirKind::Call
-                    if fact.resolved_definition() == Some("catseq.control.repeat_morphism") =>
+                    if fact.resolved_definition().is_some_and(is_repeat_morphism) =>
                 {
-                    let body = children.iter().skip(1).find_map(|child| {
-                        match values[*child as usize].clone() {
-                            Some(LoweredValue::Morphism(body)) => Some(body),
-                            _ => None,
-                        }
-                    });
-                    let count = children.iter().skip(1).find_map(|child| {
-                        match values[*child as usize].clone() {
-                            Some(LoweredValue::Scalar(value)) => Some(value),
-                            _ => None,
-                        }
-                    });
-                    match (body, count) {
-                        (Some(body), Some(count)) => {
-                            let count = scalar_to_expr(count, &mut self.value_builder, node)?;
-                            Some(LoweredValue::Morphism(self.builder.loop_region(
-                                body,
-                                count,
-                                provenance[node_id],
-                            )))
-                        }
-                        _ => {
-                            return Err(lowering_error(
-                                node,
-                                "repeat_morphism requires a native body and compile-time count",
-                            ));
-                        }
-                    }
+                    lower_repeat_call(
+                        node,
+                        children,
+                        &values,
+                        &mut self.builder,
+                        &mut self.value_builder,
+                        provenance[node_id],
+                    )?
                 }
                 SourceHirKind::Call if matches!(source_type, Some(SourceType::NativeRecord(_))) => {
                     lower_native_record_call(node, children, fact, &values)?
@@ -823,6 +813,12 @@ fn lower_entry(
             SourceHirKind::Unary if node.value_operation().is_some() => {
                 lower_value_operation(node, children, &values, source_type, &mut value_builder)?
             }
+            SourceHirKind::Call if matches!(source_type, Some(SourceType::NativeRecord(_))) => {
+                lower_native_record_call(node, children, &hir.facts()[node_id], &values)?
+            }
+            SourceHirKind::Call if source_type == Some(&SourceType::FixedAggregate) => {
+                lower_aggregate_intrinsic(node, children, &hir.facts()[node_id], &values)?
+            }
             SourceHirKind::Call => lower_call(
                 node_id,
                 node,
@@ -837,6 +833,11 @@ fn lower_entry(
                 provenance[node_id],
             )?,
             SourceHirKind::Dictionary => lower_dictionary(children, hir, &values)?,
+            SourceHirKind::Aggregate => children
+                .iter()
+                .map(|child| values[*child as usize].clone())
+                .collect::<Option<Vec<_>>>()
+                .map(LoweredValue::Aggregate),
             SourceHirKind::Binary
                 if matches!(
                     source_type,
@@ -929,15 +930,30 @@ fn lower_call(
             if arguments.is_empty() && resolved.rsplit('.').next() == Some("hold") {
                 arguments.push(value_builder.constant(ValueExprPayload::DurationCycles(0)));
             }
-            let id = TemplatePlanId(template_plans.len());
-            template_plans.push(TemplatePlan {
-                kind: TemplatePlanKind::Operation {
-                    operation: resolved.to_owned(),
+            let id = if definitions.contains(resolved) {
+                let id = TemplatePlanId(template_plans.len());
+                template_plans.push(TemplatePlan {
+                    kind: TemplatePlanKind::DefinitionRef {
+                        definition: resolved.to_owned(),
+                        arguments,
+                    },
+                    provenance,
+                });
+                id
+            } else {
+                push_intrinsic_template_plan(
+                    resolved,
                     arguments,
-                },
-                provenance,
-            });
+                    template_plans,
+                    value_builder,
+                    provenance,
+                    node,
+                )?
+            };
             Ok(Some(LoweredValue::Template(id)))
+        }
+        SourceType::Morphism if is_repeat_morphism(resolved) => {
+            lower_repeat_call(node, children, values, builder, value_builder, provenance)
         }
         SourceType::Morphism if is_identity(resolved) => {
             let duration = call_arguments(children, values, value_builder, node)?
@@ -1079,6 +1095,14 @@ fn lower_native_record_call(
     };
     let field_names: &[&str] = match schema {
         "StaticWaveform" => &["freq", "amp", "sbg_id", "phase", "fct"],
+        "WaveformParams" => &[
+            "sbg_id",
+            "freq_coeffs",
+            "amp_coeffs",
+            "initial_phase",
+            "phase_reset",
+            "fct",
+        ],
         "RSPPIDConfig" => &[
             "adc_in",
             "rf_out",
@@ -1115,6 +1139,21 @@ fn lower_native_record_call(
             record
                 .entry("phase")
                 .or_insert(serde_json::Value::from(0.0));
+            record.entry("fct").or_insert(serde_json::Value::Null);
+        }
+        "WaveformParams" => {
+            record
+                .entry("freq_coeffs")
+                .or_insert(serde_json::json!([0.0, null, null, null]));
+            record
+                .entry("amp_coeffs")
+                .or_insert(serde_json::json!([0.0, null, null, null]));
+            record
+                .entry("initial_phase")
+                .or_insert(serde_json::Value::Null);
+            record
+                .entry("phase_reset")
+                .or_insert(serde_json::Value::Bool(false));
             record.entry("fct").or_insert(serde_json::Value::Null);
         }
         "RSPWaveformParams" => {
@@ -1292,7 +1331,9 @@ fn instantiate_template(
             continue;
         }
         match &plans[plan.0].kind {
-            TemplatePlanKind::Operation { .. } => {}
+            TemplatePlanKind::Operation { .. }
+            | TemplatePlanKind::DefinitionRef { .. }
+            | TemplatePlanKind::Wait { .. } => {}
             TemplatePlanKind::Serial { children, .. } | TemplatePlanKind::Parallel(children) => {
                 pending.extend(children.iter().copied())
             }
@@ -1309,6 +1350,11 @@ fn instantiate_template(
                 operation,
                 arguments,
             } => builder.atomic(operation, arguments, plan.provenance),
+            TemplatePlanKind::DefinitionRef {
+                definition,
+                arguments,
+            } => builder.definition_ref(definition, arguments, plan.provenance),
+            TemplatePlanKind::Wait { duration } => builder.wait(*duration, plan.provenance),
             TemplatePlanKind::Serial {
                 children,
                 boundaries,
@@ -1334,6 +1380,104 @@ fn instantiate_template(
     let template = builder.publish_template(body);
     published_templates[root.0] = Some(template);
     Ok(builder.instantiate(template, channel, plans[root.0].provenance))
+}
+
+fn push_intrinsic_template_plan(
+    operation: &str,
+    arguments: Vec<ValueExprId>,
+    plans: &mut Vec<TemplatePlan>,
+    values: &mut ValueExprArenaBuilder,
+    provenance: ProvenanceId,
+    source: &SourceHirNode,
+) -> Result<TemplatePlanId, MorphismLoweringError> {
+    let push_operation =
+        |plans: &mut Vec<TemplatePlan>, operation: &str, arguments: Vec<ValueExprId>| {
+            let id = TemplatePlanId(plans.len());
+            plans.push(TemplatePlan {
+                kind: TemplatePlanKind::Operation {
+                    operation: operation.to_owned(),
+                    arguments,
+                },
+                provenance,
+            });
+            id
+        };
+    let push_wait = |plans: &mut Vec<TemplatePlan>, duration: ValueExprId| {
+        let id = TemplatePlanId(plans.len());
+        plans.push(TemplatePlan {
+            kind: TemplatePlanKind::Wait { duration },
+            provenance,
+        });
+        id
+    };
+    let required_argument = |index: usize, description: &str| {
+        arguments
+            .get(index)
+            .copied()
+            .ok_or_else(|| lowering_error(source, format!("{description} is absent")))
+    };
+
+    let Some(template) = intrinsics::native_morphism_template(operation) else {
+        return Ok(push_operation(plans, operation, arguments));
+    };
+    let (children, boundaries) = match template {
+        NativeMorphismTemplate::Hold => {
+            return Ok(push_wait(plans, required_argument(0, "hold duration")?));
+        }
+        NativeMorphismTemplate::TtlPulse => {
+            let duration = required_argument(0, "TTL pulse duration")?;
+            let high = push_operation(plans, "catseq.hardware.ttl.set_high", Vec::new());
+            let wait = push_wait(plans, duration);
+            let low = push_operation(plans, "catseq.hardware.ttl.set_low", Vec::new());
+            (vec![high, wait, low], vec![BoundaryPolicy::Auto; 2])
+        }
+        NativeMorphismTemplate::RwgSetState => {
+            let targets = required_argument(0, "RWG static targets")?;
+            let phase_reset = arguments
+                .get(1)
+                .copied()
+                .unwrap_or_else(|| values.constant(ValueExprPayload::Bool(true)));
+            let waveforms =
+                values.rwg_waveforms(RwgWaveformDerivation::Static, &[targets, phase_reset]);
+            let load = push_operation(plans, "catseq.hardware.rwg.load", vec![waveforms]);
+            let play = push_operation(plans, "catseq.hardware.rwg.play", Vec::new());
+            (vec![load, play], vec![BoundaryPolicy::Auto])
+        }
+        NativeMorphismTemplate::RwgRfPulse => {
+            let duration = required_argument(0, "RWG RF pulse duration")?;
+            let on = push_operation(plans, "catseq.hardware.rwg.rf_on", Vec::new());
+            let wait = push_wait(plans, duration);
+            let off = push_operation(plans, "catseq.hardware.rwg.rf_off", Vec::new());
+            (vec![on, wait, off], vec![BoundaryPolicy::Auto; 2])
+        }
+        NativeMorphismTemplate::RwgLinearRamp => {
+            let targets = required_argument(0, "RWG linear ramp targets")?;
+            let duration = required_argument(1, "RWG linear ramp duration")?;
+            let ramp_waveforms =
+                values.rwg_waveforms(RwgWaveformDerivation::Linear, &[targets, duration]);
+            let endpoint_waveforms =
+                values.rwg_waveforms(RwgWaveformDerivation::RampEndpoint, &[ramp_waveforms]);
+            let load_ramp = push_operation(plans, "catseq.hardware.rwg.load", vec![ramp_waveforms]);
+            let start = push_operation(plans, "catseq.hardware.rwg.play", Vec::new());
+            let wait = push_wait(plans, duration);
+            let load_endpoint =
+                push_operation(plans, "catseq.hardware.rwg.load", vec![endpoint_waveforms]);
+            let finish = push_operation(plans, "catseq.hardware.rwg.play", Vec::new());
+            (
+                vec![load_ramp, start, wait, load_endpoint, finish],
+                vec![BoundaryPolicy::Auto; 4],
+            )
+        }
+    };
+    let root = TemplatePlanId(plans.len());
+    plans.push(TemplatePlan {
+        kind: TemplatePlanKind::Serial {
+            children,
+            boundaries,
+        },
+        provenance,
+    });
+    Ok(root)
 }
 
 fn nested_control_statements(hir: &TypedSourceHir) -> HashSet<u32> {
@@ -1465,6 +1609,46 @@ fn native_channel_key(hir: &TypedSourceHir, node_id: u32) -> String {
 
 fn is_identity(resolved: &str) -> bool {
     resolved == "catseq.morphism.identity" || resolved.rsplit('.').next() == Some("identity")
+}
+
+fn is_repeat_morphism(resolved: &str) -> bool {
+    resolved == "catseq.morphism.repeat_morphism"
+}
+
+fn lower_repeat_call(
+    node: &SourceHirNode,
+    children: &[u32],
+    values: &[Option<LoweredValue>],
+    builder: &mut MorphismArenaBuilder,
+    value_builder: &mut ValueExprArenaBuilder,
+    provenance: ProvenanceId,
+) -> Result<Option<LoweredValue>, MorphismLoweringError> {
+    let body = children
+        .iter()
+        .skip(1)
+        .find_map(|child| match values[*child as usize].clone() {
+            Some(LoweredValue::Morphism(body)) => Some(body),
+            _ => None,
+        });
+    let count = children
+        .iter()
+        .skip(1)
+        .find_map(|child| match values[*child as usize].clone() {
+            Some(LoweredValue::Scalar(value)) => Some(value),
+            _ => None,
+        });
+    match (body, count) {
+        (Some(body), Some(ScalarValue::Int(count))) if count > 0 => {
+            let count = scalar_to_expr(ScalarValue::Int(count), value_builder, node)?;
+            Ok(Some(LoweredValue::Morphism(
+                builder.loop_region(body, count, provenance),
+            )))
+        }
+        _ => Err(lowering_error(
+            node,
+            "repeat_morphism requires a native body and compile-time positive integer count",
+        )),
+    }
 }
 
 fn lowering_error(node: &SourceHirNode, message: impl Display) -> MorphismLoweringError {

@@ -6,8 +6,6 @@ Internal conversion to hardware clock cycles (machine units).
 Hardware: RTMQ clock at 250 MHz (4ns per cycle, mu = 1 cycle)
 """
 
-from .expr import Expr
-
 # Hardware constants
 CLOCK_FREQ_HZ = 250_000_000  # 250 MHz
 CYCLE_DURATION_S = 4e-9      # 4ns per cycle in seconds
@@ -47,7 +45,7 @@ def cycles_to_us(cycles: int) -> float:
     return cycles / CYCLES_PER_US
 
 
-def time_to_cycles(time_seconds: float | Expr) -> int | Expr:
+def time_to_cycles(time_seconds: float) -> int:
     """Convert SI time in seconds to machine units (clock cycles).
 
     Args:
@@ -62,8 +60,6 @@ def time_to_cycles(time_seconds: float | Expr) -> int | Expr:
         time_to_cycles(1e-6)      -> 250          # 1 microsecond
         time_to_cycles(4e-9)      -> 1            # 1 machine unit
     """
-    if isinstance(time_seconds, Expr):
-        return Expr.time_to_cycles(time_seconds)
     return round(time_seconds * CLOCK_FREQ_HZ)
 
 

@@ -36,6 +36,7 @@ pub enum ValueExprKind {
     Constant,
     RuntimeSlot,
     EnvironmentSlot,
+    Intrinsic,
     Add,
     Subtract,
     Multiply,
@@ -43,6 +44,14 @@ pub enum ValueExprKind {
     Modulo,
     Maximum,
     Negate,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RwgWaveformDerivation {
+    Static,
+    Linear,
+    RampEndpoint,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -56,6 +65,7 @@ pub enum ValueExprPayload {
     Json(serde_json::Value),
     RuntimeSlot(String),
     EnvironmentSlot(String),
+    RwgWaveforms(RwgWaveformDerivation),
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -156,7 +166,9 @@ impl ValueExprArena {
                 ValueExprPayload::DurationCycles(_) => Some(ValueExprType::Duration),
                 ValueExprPayload::String(_) => Some(ValueExprType::String),
                 ValueExprPayload::Json(_) => Some(ValueExprType::Json),
-                ValueExprPayload::RuntimeSlot(_) | ValueExprPayload::EnvironmentSlot(_) => None,
+                ValueExprPayload::RuntimeSlot(_)
+                | ValueExprPayload::EnvironmentSlot(_)
+                | ValueExprPayload::RwgWaveforms(_) => None,
             });
             match node.kind {
                 ValueExprKind::Constant
@@ -180,6 +192,13 @@ impl ValueExprArena {
                 {
                     return Err(ValueExprError::new(format!(
                         "environment expression {index} has an invalid shape"
+                    )));
+                }
+                ValueExprKind::Intrinsic
+                    if !matches!(payload, Some(ValueExprPayload::RwgWaveforms(_))) =>
+                {
+                    return Err(ValueExprError::new(format!(
+                        "intrinsic expression {index} has an invalid shape"
                     )));
                 }
                 ValueExprKind::Negate if children.len() != 1 || payload.is_some() => {
@@ -243,8 +262,10 @@ impl ValueExprArenaBuilder {
             ValueExprPayload::DurationCycles(_) => ValueExprType::Duration,
             ValueExprPayload::String(_) => ValueExprType::String,
             ValueExprPayload::Json(_) => ValueExprType::Json,
-            ValueExprPayload::RuntimeSlot(_) | ValueExprPayload::EnvironmentSlot(_) => {
-                panic!("slot payload requires a declared type")
+            ValueExprPayload::RuntimeSlot(_)
+            | ValueExprPayload::EnvironmentSlot(_)
+            | ValueExprPayload::RwgWaveforms(_) => {
+                panic!("non-constant payload requires a declared type")
             }
         };
         self.leaf(ValueExprKind::Constant, value_type, payload)
@@ -288,6 +309,25 @@ impl ValueExprArenaBuilder {
             edge_start,
             edge_count: children.len() as u32,
             payload: None,
+        })
+    }
+
+    pub fn rwg_waveforms(
+        &mut self,
+        derivation: RwgWaveformDerivation,
+        children: &[ValueExprId],
+    ) -> ValueExprId {
+        let edge_start = self.edges.len() as u32;
+        self.edges.extend_from_slice(children);
+        let payload = self.payloads.len() as u32;
+        self.payloads
+            .push(ValueExprPayload::RwgWaveforms(derivation));
+        self.push(ValueExprNode {
+            kind: ValueExprKind::Intrinsic,
+            value_type: ValueExprType::Json,
+            edge_start,
+            edge_count: children.len() as u32,
+            payload: Some(payload),
         })
     }
 

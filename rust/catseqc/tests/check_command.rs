@@ -22,17 +22,20 @@ fn ttl_target_profile(source_path: &std::path::Path) -> std::path::PathBuf {
         &path,
         serde_json::to_vec(&serde_json::json!({
             "schema_version": 1,
-            "rtmq_abi_version": 1,
+            "rtmq_abi_version": 2,
             "clock_hz": 250_000_000_u64,
             "boards": {
                 "main": {"kind": "main", "ttl_width": 32},
                 "rwg0": {"kind": "rwg", "ttl_width": 32}
             },
             "operations": {
-                "catseq.hardware.ttl.pulse": {
-                    "lowering": "ttl_pulse",
-                    "duration_argument": 0,
-                    "instruction_cost_cycles": 1
+                "catseq.hardware.ttl.set_high": {
+                    "lowering": "ttl_set_high",
+                    "instruction_cost_cycles": 0
+                },
+                "catseq.hardware.ttl.set_low": {
+                    "lowering": "ttl_set_low",
+                    "instruction_cost_cycles": 0
                 }
             }
         }))
@@ -826,18 +829,18 @@ fn unresolved_call_assignment_keeps_a_local_resolution_edge() {
 }
 
 #[test]
-fn legacy_repeat_sequence_handle_is_erased_and_self_calls_remain_reachable() {
+fn declarative_repeat_self_calls_remain_reachable_without_host_handles() {
     let root = source_file().with_extension("bundle");
     fs::create_dir(&root).unwrap();
     let entry_path = root.join("experiment.py");
     fs::write(
         &entry_path,
-        "from catseq.morphism import Morphism\nfrom services import service\n\nclass Experiment:\n    def sequence(self, count: int) -> Morphism:\n        return service.prepare(self.seq, count)\n",
+        "from catseq.morphism import Morphism\nfrom services import service\n\nclass Experiment:\n    def sequence(self, count: int) -> Morphism:\n        return service.prepare(count)\n",
     )
     .unwrap();
     fs::write(
         root.join("services.py"),
-        "from catseq import repeat_morphism\nfrom catseq.morphism import Morphism, identity\n\nclass Service:\n    def prepare(self, seq, count: int) -> Morphism:\n        return self._repeat(seq, count)\n\n    def _repeat(self, seq, count: int) -> Morphism:\n        return repeat_morphism(identity(1), count, seq)\n\nservice = Service()\n",
+        "from catseq.morphism import Morphism, identity, repeat_morphism\n\nclass Service:\n    def prepare(self, count: int) -> Morphism:\n        return self._repeat(count)\n\n    def _repeat(self, count: int) -> Morphism:\n        return repeat_morphism(identity(1), count)\n\nservice = Service()\n",
     )
     .unwrap();
 
@@ -875,15 +878,79 @@ fn legacy_repeat_sequence_handle_is_erased_and_self_calls_remain_reachable() {
             "services.Service._repeat"
         ]
     );
-    for definition in definitions {
-        assert!(
-            definition["parameters"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|parameter| parameter["name"] != "seq")
-        );
-    }
+    assert!(definitions.iter().all(|definition| {
+        definition["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|parameter| parameter["name"] != "seq")
+    }));
+}
+
+#[test]
+fn declarative_repeat_morphism_lowers_to_a_native_loop_node() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.morphism import Morphism, identity, repeat_morphism\n\ndef sequence() -> Morphism:\n    return repeat_morphism(identity(1), 3)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        report["morphism_arena"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["kind"] == "loop"),
+        "{report:#}"
+    );
+}
+
+#[test]
+fn declarative_repeat_morphism_rejects_a_non_positive_count() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.morphism import Morphism, identity, repeat_morphism\n\ndef sequence() -> Morphism:\n    return repeat_morphism(identity(1), 0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("positive integer"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -1398,6 +1465,7 @@ fn failed_check_preserves_the_last_successful_incremental_session() {
 }
 
 #[test]
+#[ignore = "rb1-next is outside the standalone CatSeq test contract"]
 fn real_rydberg_transfer_reuses_the_definition_segmented_hir() {
     let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../rb1-next")
@@ -1526,6 +1594,7 @@ fn emit_arena_returns_a_python_free_variadic_morphism_dag() {
 }
 
 #[test]
+#[ignore = "rb1-next is outside the standalone CatSeq test contract"]
 fn real_rydberg_transfer_emits_a_definition_linked_morphism_arena() {
     let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../rb1-next")
@@ -1575,6 +1644,7 @@ fn real_rydberg_transfer_emits_a_definition_linked_morphism_arena() {
 }
 
 #[test]
+#[ignore = "rb1-next is outside the standalone CatSeq test contract"]
 fn real_rydberg_transfer_compiles_to_a_complete_oasm_call_plan() {
     let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../rb1-next")
@@ -1587,6 +1657,8 @@ fn real_rydberg_transfer_compiles_to_a_complete_oasm_call_plan() {
         return;
     }
     let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
     let bindings_path = fixture_root.join("rydberg_bindings.json");
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
@@ -1602,7 +1674,7 @@ fn real_rydberg_transfer_compiles_to_a_complete_oasm_call_plan() {
                 .to_str()
                 .unwrap(),
             "--target-profile",
-            fixture_root.join("rydberg_target.json").to_str().unwrap(),
+            target_profile.to_str().unwrap(),
             "--link-bindings",
             bindings_path.to_str().unwrap(),
             "--format",
@@ -1729,6 +1801,8 @@ fn compile_emits_a_linked_oasm_call_plan_for_a_ttl_pulse() {
     let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(response["stage"], "oasm_call_plan");
     assert_eq!(response["entry"], "sequence");
+    assert_eq!(response["logical_duration_cycles"], 10);
+    assert_eq!(response["clock_hz"], 250_000_000_u64);
     let plan = &response["oasm_call_plan"];
     assert_eq!(plan["epochs"].as_array().unwrap().len(), 1);
     let board = &plan["epochs"][0]["boards"][0];
@@ -1790,6 +1864,8 @@ fn compile_specializes_reachable_morphism_definitions_before_oasm_lowering() {
         String::from_utf8_lossy(&output.stderr)
     );
     let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["logical_duration_cycles"], 10);
+    assert_eq!(response["clock_hz"], 250_000_000_u64);
     assert_eq!(
         response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"],
         serde_json::json!([
@@ -1798,6 +1874,274 @@ fn compile_specializes_reachable_morphism_definitions_before_oasm_lowering() {
             {"offset_cycles": 10, "function": "ttl_set", "args": [1, 0, "rwg"]}
         ])
     );
+}
+
+#[test]
+fn user_can_compile_a_morphism_template_composed_from_atomic_operations() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.hardware.ttl import hold, set_high, set_low\nfrom catseq.morphism import Morphism, MorphismDef, identity, morphism_template\nfrom catseq.time_utils import ns\n\n@morphism_template\ndef user_pulse(duration: float) -> MorphismDef:\n    return set_high() >> hold(duration) >> set_low()\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: user_pulse(40 * ns)}\n",
+    )
+    .unwrap();
+    let environment_path = path.with_extension("environment.json");
+    let channel_key = format!("{}::ttl0", path.display());
+    fs::write(
+        &environment_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "channels": {
+                channel_key: {"board": "rwg0", "local_id": 0, "kind": "ttl"}
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let target_profile_path = ttl_target_profile(&path);
+
+    let arena_output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        arena_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&arena_output.stderr)
+    );
+    let artifact: serde_json::Value = serde_json::from_slice(&arena_output.stdout).unwrap();
+    let arena = &artifact["morphism_arena"];
+    let template_root = arena["templates"][0]["root"].as_u64().unwrap() as usize;
+    assert_eq!(arena["nodes"][template_root]["kind"], "definition_ref");
+    assert!(
+        arena["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|operation| !operation.as_str().unwrap().ends_with(".user_pulse"))
+    );
+    assert!(
+        arena["definitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|definition| definition.as_str().unwrap().ends_with(".user_pulse"))
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "compile",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--compile-environment",
+            environment_path.to_str().unwrap(),
+            "--target-profile",
+            target_profile_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    fs::remove_file(environment_path).unwrap();
+    fs::remove_file(target_profile_path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["logical_duration_cycles"], 10);
+    assert_eq!(
+        response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"],
+        serde_json::json!([
+            {"offset_cycles": 0, "function": "ttl_set", "args": [1, 1, "rwg"]},
+            {"offset_cycles": 1, "function": "wait", "args": [9]},
+            {"offset_cycles": 10, "function": "ttl_set", "args": [1, 0, "rwg"]}
+        ])
+    );
+}
+
+#[test]
+fn linear_ramp_is_a_structured_native_template_and_compiles_to_oasm() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.hardware.rwg import initialize, linear_ramp, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import us\nfrom catseq.types import StaticWaveform\n\ndef sequence() -> Morphism:\n    setup = initialize(80.0) >> set_state([StaticWaveform(freq=1.0, amp=0.2, sbg_id=0)])\n    ramp = linear_ramp([StaticWaveform(freq=2.0, amp=0.4)], 1 * us)\n    return identity(0) >> {rwg0: setup} >> {rwg0: ramp}\n",
+    )
+    .unwrap();
+
+    let arena_output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        arena_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&arena_output.stderr)
+    );
+    let artifact: serde_json::Value = serde_json::from_slice(&arena_output.stdout).unwrap();
+    let arena = &artifact["morphism_arena"];
+    let templates = arena["templates"].as_array().unwrap();
+    assert_eq!(templates.len(), 2);
+    let ramp_root = templates[1]["root"].as_u64().unwrap() as usize;
+    assert_eq!(arena["nodes"][ramp_root]["kind"], "serial");
+    assert_eq!(arena["nodes"][ramp_root]["edge_count"], 5);
+    let operations = arena["operations"].as_array().unwrap();
+    assert!(operations.contains(&serde_json::json!("catseq.hardware.rwg.load")));
+    assert!(operations.contains(&serde_json::json!("catseq.hardware.rwg.play")));
+    assert!(!operations.contains(&serde_json::json!("catseq.hardware.rwg.set_state")));
+    assert!(!operations.contains(&serde_json::json!(
+        "catseq.hardware.rwg._load_linear_coefficients"
+    )));
+    assert!(!operations.contains(&serde_json::json!(
+        "catseq.hardware.rwg._load_static_endpoint"
+    )));
+    assert!(!operations.contains(&serde_json::json!("catseq.hardware.rwg.linear_ramp")));
+    let value_payloads = artifact["value_expr_arena"]["payloads"].as_array().unwrap();
+    let waveform_derivations = value_payloads
+        .iter()
+        .filter(|payload| payload["kind"] == "rwg_waveforms")
+        .map(|payload| payload["value"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        waveform_derivations,
+        vec!["static", "linear", "ramp_endpoint"]
+    );
+
+    let environment_path = path.with_extension("environment.json");
+    let channel_key = format!("{}::rwg0", path.display());
+    fs::write(
+        &environment_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "channels": {
+                channel_key: {"board": "rwg0", "local_id": 0, "kind": "rwg"}
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "compile",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--compile-environment",
+            environment_path.to_str().unwrap(),
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    fs::remove_file(environment_path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["logical_duration_cycles"], 250);
+    let calls = response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"]
+        .as_array()
+        .unwrap();
+    assert!(calls.iter().any(|call| {
+        call["function"] == "rwg_load_waveform"
+            && call["args"][0]["amp_coeffs"][1]
+                .as_f64()
+                .is_some_and(|slope| slope != 0.0)
+    }));
+    assert!(calls.iter().any(|call| {
+        call["offset_cycles"].as_u64().unwrap() < 250
+            && call["function"] == "rwg_load_waveform"
+            && call["args"][0]["amp_coeffs"][0] == 0.4
+    }));
+    assert!(
+        calls
+            .iter()
+            .any(|call| { call["offset_cycles"] == 250 && call["function"] == "rwg_play" }),
+        "{calls:#?}"
+    );
+}
+
+#[test]
+fn user_template_can_compose_the_unified_rwg_load_and_play_atomics() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.hardware.rwg import initialize, load, play\nfrom catseq.morphism import Morphism, MorphismDef, identity, morphism_template\nfrom catseq.types import WaveformParams\n\n@morphism_template\ndef custom_state() -> MorphismDef:\n    params = [WaveformParams(sbg_id=0, freq_coeffs=(1.0, None, None, None), amp_coeffs=(0.2, None, None, None), initial_phase=0.0, phase_reset=True)]\n    return load(params) >> play()\n\ndef sequence() -> Morphism:\n    return identity(0) >> {rwg0: initialize(80.0) >> custom_state()}\n",
+    )
+    .unwrap();
+    let environment_path = path.with_extension("environment.json");
+    let channel_key = format!("{}::rwg0", path.display());
+    fs::write(
+        &environment_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "channels": {
+                channel_key: {"board": "rwg0", "local_id": 0, "kind": "rwg"}
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "compile",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--compile-environment",
+            environment_path.to_str().unwrap(),
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    fs::remove_file(environment_path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let calls = response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"]
+        .as_array()
+        .unwrap();
+    assert!(calls.iter().any(|call| {
+        call["function"] == "rwg_load_waveform"
+            && call["args"][0]["freq_coeffs"][0] == 1.0
+            && call["args"][0]["amp_coeffs"][0] == 0.2
+    }));
+    assert!(calls.iter().any(|call| call["function"] == "rwg_play"));
 }
 
 #[test]
@@ -1882,6 +2226,8 @@ fn compile_binds_a_scan_duration_when_linking_the_oasm_call_plan() {
             .contains("exact non-negative target Cycle Count")
     );
     let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["logical_duration_cycles"], 5);
+    assert_eq!(response["clock_hz"], 250_000_000_u64);
     assert_eq!(
         response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"],
         serde_json::json!([

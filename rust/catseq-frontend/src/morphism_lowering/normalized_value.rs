@@ -157,6 +157,14 @@ pub(super) fn normalized_to_json(
             split_normalized_once(arguments, ';').unwrap_or((arguments, ""));
         let field_names: &[&str] = match schema.rsplit('.').next().unwrap_or(schema) {
             "StaticWaveform" => &["freq", "amp", "sbg_id", "phase", "fct"],
+            "WaveformParams" => &[
+                "sbg_id",
+                "freq_coeffs",
+                "amp_coeffs",
+                "initial_phase",
+                "phase_reset",
+                "fct",
+            ],
             "RSPPIDConfig" => &[
                 "adc_in",
                 "rf_out",

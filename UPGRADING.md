@@ -1,92 +1,45 @@
-# Upgrading to 0.2.3
+# Upgrading to CatSeq 0.3
 
-## Summary
+CatSeq 0.3 replaces the Python Morphism compiler with the native source
+compiler. This is an intentional compiler API break.
 
-`0.2.3` introduces three related changes on `main`:
+## Preserved source API
 
-- a fresh top-level `catseq.expr` package for source-level symbolic expressions
-- a cleaner source time model where hardware atomic ops are logically instantaneous
-- a real opaque timed-region primitive for blackbox-style execution regions
-
-The legacy compiler path remains concrete-only. If a morphism contains unresolved exprs, it must be realized before compilation.
-
-## What changed
-
-### Source time model
-
-Source logical time now treats ordinary hardware ops as point-like:
-
-- TTL init/on/off: instantaneous
-- RWG init/load/play/rf switch: instantaneous
-- sync markers: instantaneous
-- only explicit delays (`identity`, `hold`) advance source logical time
-
-Practical effect:
-
-- `ttl_on >> blackbox >> ttl_off` now has source logical duration equal to the blackbox region duration
-- old code that relied on implicit extra source cycles from atomic ops may observe different `total_duration_cycles`
-
-### Expr system
-
-New public API:
-
-- `catseq.expr.Expr`
-- `catseq.expr.var(...)`
-- `catseq.expr.input_state()`
-- `catseq.expr.resolve_value(...)`
-- `catseq.expr.realize_morphism(...)`
-
-Exprs are allowed in source morphism construction, including:
-
-- durations
-- RWG carrier frequency
-- RWG waveform/ramp scalar fields
-
-Compile-time-resolved float exprs are supported in RWG value positions.
-
-### Timed regions / blackbox
-
-Blackbox-style opaque execution regions are now modeled as timed regions rather than long fake atomic ops.
-
-Current blackbox time semantics is:
-
-- interval model `(a, b]`
-- same-board point events at the start boundary `a` are allowed
-- same-board point events with `a < t <= b` are rejected
-
-This matches the current source-time interpretation for instantaneous atomic ops plus duration-bearing opaque regions.
-
-## Required caller changes
-
-### If you stay fully concrete
-
-Most current experiments do not need source changes.
-
-Existing concrete code like current `Rb1-rtmq` sequence construction continues to work. The real `RamanTransferExp.build_sequence()` was recompiled successfully against this version.
-
-### If you start using exprs
-
-Before compiling with the legacy compiler, realize first:
+Morphism construction and composition remain available for simulation,
+visualization, and structural tests:
 
 ```python
-from catseq.expr import realize_morphism
-from catseq.compilation.compiler import compile_to_oasm_calls
-
-realized = realize_morphism(morphism, env={"t": 10, "freq": 12.5})
-calls = compile_to_oasm_calls(realized, assembler_seq)
+sequence = prepare() >> drive() | monitor()
+morphism = experiment.build_sequence(params)
 ```
 
-If unresolved exprs remain, `compile_to_oasm_calls(...)` now raises a targeted error.
+## Removed compiler API
 
-## Notes for blackbox / repeat_morphism users
+The following Python compiler interfaces no longer exist:
 
-- `repeat_morphism(...)` and related opaque region helpers still produce concrete timed regions
-- callers remain responsible for the declared duration/state contract of those opaque regions
-- immediate same-board point events that land inside a timed region are still illegal
+- `compile_to_oasm_calls(morphism, ...)`
+- `CompilerSession`, `CompileResult`, and `CompileDelta`
+- the Python compiler passes and mutable `LogicalEvent` representation
+- Python-side OASM precompilation, instruction-cost analysis, and subroutine
+  compiler
 
-## Verification baseline
+Do not construct a Python Morphism and pass it to a compiler. Instead, compile
+the source entry:
 
-Repo-wide verification for this release:
+```python
+result = compile_entry(
+    experiment.build_sequence,
+    params,
+    environment=environment,
+)
+calls = result.to_oasm_calls(opaque_callables=opaque_callables)
+execute_oasm_calls(calls, assembler_seq)
+```
 
-- `UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q`
-- result: `136 passed`
+The installed platform wheel contains `catseqc`; callers should use the Python
+`compile_entry()` facade rather than locating or invoking the executable
+themselves.
+
+Hardware loops are declared as `repeat_morphism(body, count)` or ordinary
+compile-reachable Python `for` loops. Loop timing and instruction occupancy are
+computed only by native RTMQ lowering.

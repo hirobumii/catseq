@@ -1,16 +1,5 @@
-"""
-Hardware abstraction layer for CatSeq.
+"""Compiler-only hardware intrinsics for the CatSeq source language."""
 
-This module provides hardware-specific abstractions and utilities
-for different types of hardware devices.
-"""
+from .ttl import hold, initialize, pulse, set_high, set_low
 
-from .ttl import pulse, initialize, set_high, set_low, hold
-
-__all__ = [
-    'pulse',
-    'initialize', 
-    'set_high',
-    'set_low',
-    'hold',
-]
+__all__ = ["hold", "initialize", "pulse", "set_high", "set_low"]

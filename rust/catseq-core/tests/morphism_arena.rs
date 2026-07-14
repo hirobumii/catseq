@@ -6,9 +6,9 @@ use catseq_core::morphism_arena::{
 fn canonical_arena_flattens_composition_and_discards_builder_intermediates() {
     let mut builder = MorphismArenaBuilder::new();
     let provenance = builder.intern_provenance(NativeProvenance::new("test.sequence", 1, 1));
-    let a = builder.definition_ref("service.a", provenance);
-    let b = builder.definition_ref("service.b", provenance);
-    let c = builder.definition_ref("service.c", provenance);
+    let a = builder.definition_ref("service.a", &[], provenance);
+    let b = builder.definition_ref("service.b", &[], provenance);
+    let c = builder.definition_ref("service.c", &[], provenance);
     let ab = builder.serial(&[a, b], &[BoundaryPolicy::Auto], provenance);
     let root = builder.serial(&[ab, c], &[BoundaryPolicy::Strict], provenance);
 
@@ -34,9 +34,9 @@ fn canonical_arena_flattens_composition_and_discards_builder_intermediates() {
 fn canonical_arena_represents_parallel_as_one_variadic_node() {
     let mut builder = MorphismArenaBuilder::new();
     let provenance = builder.intern_provenance(NativeProvenance::new("test.sequence", 2, 3));
-    let pulse_body = builder.atomic("catseq.hardware.ttl.pulse", provenance);
+    let pulse_body = builder.atomic("catseq.hardware.ttl.pulse", &[], provenance);
     let pulse_template = builder.publish_template(pulse_body);
-    let hold_body = builder.atomic("catseq.hardware.common.hold", provenance);
+    let hold_body = builder.atomic("catseq.hardware.common.hold", &[], provenance);
     let hold_template = builder.publish_template(hold_body);
     let pulse = builder.instantiate(pulse_template, "ttl0", provenance);
     let hold = builder.instantiate(hold_template, "ttl1", provenance);
@@ -57,8 +57,8 @@ fn canonical_arena_represents_parallel_as_one_variadic_node() {
 fn a_composite_template_body_is_shared_across_instantiations() {
     let mut builder = MorphismArenaBuilder::new();
     let provenance = builder.intern_provenance(NativeProvenance::new("test.sequence", 4, 5));
-    let pulse = builder.atomic("catseq.hardware.ttl.pulse", provenance);
-    let hold = builder.atomic("catseq.hardware.common.hold", provenance);
+    let pulse = builder.atomic("catseq.hardware.ttl.pulse", &[], provenance);
+    let hold = builder.atomic("catseq.hardware.common.hold", &[], provenance);
     let body = builder.serial(&[pulse, hold], &[BoundaryPolicy::Auto], provenance);
     let template = builder.publish_template(body);
     let ttl0 = builder.instantiate(template, "ttl0", provenance);

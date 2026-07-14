@@ -10,6 +10,8 @@ use std::fmt::{Display, Formatter};
 
 use serde::{Deserialize, Serialize};
 
+use crate::value_expr::ValueExprId;
+
 macro_rules! arena_id {
     ($name:ident) => {
         #[derive(
@@ -57,9 +59,13 @@ pub enum MorphismNodeKind {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MorphismPayload {
-    Wait,
+    Wait {
+        duration: ValueExprId,
+    },
     Atomic {
         operation: OperationId,
+        argument_start: u32,
+        argument_count: u32,
     },
     Instantiate {
         template: MorphismTemplateId,
@@ -67,6 +73,8 @@ pub enum MorphismPayload {
     },
     DefinitionRef {
         definition: DefinitionId,
+        argument_start: u32,
+        argument_count: u32,
     },
 }
 
@@ -153,6 +161,7 @@ pub struct MorphismArena {
     edges: Vec<MorphismNodeId>,
     boundaries: Vec<BoundaryPolicy>,
     payloads: Vec<MorphismPayload>,
+    value_arguments: Vec<ValueExprId>,
     templates: Vec<MorphismTemplate>,
     definitions: Vec<String>,
     operations: Vec<String>,
@@ -179,6 +188,34 @@ impl MorphismArena {
 
     pub fn payloads(&self) -> &[MorphismPayload] {
         &self.payloads
+    }
+
+    pub fn value_arguments(&self) -> &[ValueExprId] {
+        &self.value_arguments
+    }
+
+    pub fn payload_arguments(
+        &self,
+        payload: &MorphismPayload,
+    ) -> Result<&[ValueExprId], MorphismArenaError> {
+        let (start, count) = match payload {
+            MorphismPayload::Atomic {
+                argument_start,
+                argument_count,
+                ..
+            }
+            | MorphismPayload::DefinitionRef {
+                argument_start,
+                argument_count,
+                ..
+            } => (*argument_start as usize, *argument_count as usize),
+            _ => return Ok(&[]),
+        };
+        self.value_arguments
+            .get(start..start + count)
+            .ok_or_else(|| {
+                MorphismArenaError::new("payload references an invalid value argument range")
+            })
     }
 
     pub fn templates(&self) -> &[MorphismTemplate] {
@@ -281,7 +318,7 @@ impl MorphismArena {
                 (
                     MorphismNodeKind::Atomic,
                     Some(MorphismPayload::Atomic { .. })
-                ) | (MorphismNodeKind::Wait, Some(MorphismPayload::Wait))
+                ) | (MorphismNodeKind::Wait, Some(MorphismPayload::Wait { .. }))
                     | (
                         MorphismNodeKind::Instantiate,
                         Some(MorphismPayload::Instantiate { .. })
@@ -304,7 +341,7 @@ impl MorphismArena {
                 )));
             }
             match payload {
-                Some(MorphismPayload::Atomic { operation })
+                Some(MorphismPayload::Atomic { operation, .. })
                     if operation.index() >= self.operations.len() =>
                 {
                     return Err(MorphismArenaError::new(format!(
@@ -319,7 +356,7 @@ impl MorphismArena {
                         "node {index} references an unknown template or channel"
                     )));
                 }
-                Some(MorphismPayload::DefinitionRef { definition })
+                Some(MorphismPayload::DefinitionRef { definition, .. })
                     if definition.index() >= self.definitions.len() =>
                 {
                     return Err(MorphismArenaError::new(format!(
@@ -327,6 +364,13 @@ impl MorphismArena {
                     )));
                 }
                 _ => {}
+            }
+            if let Some(payload) = payload {
+                self.payload_arguments(payload).map_err(|_| {
+                    MorphismArenaError::new(format!(
+                        "node {index} references invalid value arguments"
+                    ))
+                })?;
             }
         }
         Ok(())
@@ -356,6 +400,7 @@ pub struct MorphismArenaBuilder {
     edges: Vec<MorphismNodeId>,
     boundaries: Vec<BoundaryPolicy>,
     payloads: Vec<MorphismPayload>,
+    value_arguments: Vec<ValueExprId>,
     templates: Vec<MorphismTemplate>,
     definitions: Vec<String>,
     definition_ids: HashMap<String, DefinitionId>,
@@ -377,20 +422,40 @@ impl MorphismArenaBuilder {
         id
     }
 
-    pub fn definition_ref(&mut self, definition: &str, provenance: ProvenanceId) -> MorphismNodeId {
+    pub fn definition_ref(
+        &mut self,
+        definition: &str,
+        arguments: &[ValueExprId],
+        provenance: ProvenanceId,
+    ) -> MorphismNodeId {
         let definition = self.intern_definition(definition);
-        let payload = self.push_payload(MorphismPayload::DefinitionRef { definition });
+        let (argument_start, argument_count) = self.push_arguments(arguments);
+        let payload = self.push_payload(MorphismPayload::DefinitionRef {
+            definition,
+            argument_start,
+            argument_count,
+        });
         self.push_leaf(MorphismNodeKind::DefinitionRef, Some(payload), provenance)
     }
 
-    pub fn atomic(&mut self, operation: &str, provenance: ProvenanceId) -> MorphismNodeId {
+    pub fn atomic(
+        &mut self,
+        operation: &str,
+        arguments: &[ValueExprId],
+        provenance: ProvenanceId,
+    ) -> MorphismNodeId {
         let operation = self.intern_operation(operation);
-        let payload = self.push_payload(MorphismPayload::Atomic { operation });
+        let (argument_start, argument_count) = self.push_arguments(arguments);
+        let payload = self.push_payload(MorphismPayload::Atomic {
+            operation,
+            argument_start,
+            argument_count,
+        });
         self.push_leaf(MorphismNodeKind::Atomic, Some(payload), provenance)
     }
 
-    pub fn wait(&mut self, provenance: ProvenanceId) -> MorphismNodeId {
-        let payload = self.push_payload(MorphismPayload::Wait);
+    pub fn wait(&mut self, duration: ValueExprId, provenance: ProvenanceId) -> MorphismNodeId {
+        let payload = self.push_payload(MorphismPayload::Wait { duration });
         self.push_leaf(MorphismNodeKind::Wait, Some(payload), provenance)
     }
 
@@ -541,6 +606,7 @@ impl MorphismArenaBuilder {
             edges,
             boundaries,
             payloads: self.payloads,
+            value_arguments: self.value_arguments,
             templates,
             definitions: self.definitions,
             operations: self.operations,
@@ -598,6 +664,12 @@ impl MorphismArenaBuilder {
         let id = MorphismPayloadId(self.payloads.len() as u32);
         self.payloads.push(payload);
         id
+    }
+
+    fn push_arguments(&mut self, arguments: &[ValueExprId]) -> (u32, u32) {
+        let start = self.value_arguments.len() as u32;
+        self.value_arguments.extend_from_slice(arguments);
+        (start, arguments.len() as u32)
     }
 
     fn intern_definition(&mut self, value: &str) -> DefinitionId {

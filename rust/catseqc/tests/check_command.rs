@@ -16,6 +16,32 @@ fn source_file() -> std::path::PathBuf {
     path
 }
 
+fn ttl_target_profile(source_path: &std::path::Path) -> std::path::PathBuf {
+    let path = source_path.with_extension("target.json");
+    fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "rtmq_abi_version": 1,
+            "clock_hz": 250_000_000_u64,
+            "boards": {
+                "main": {"kind": "main", "ttl_width": 32},
+                "rwg0": {"kind": "rwg", "ttl_width": 32}
+            },
+            "operations": {
+                "catseq.hardware.ttl.pulse": {
+                    "lowering": "ttl_pulse",
+                    "duration_argument": 0,
+                    "instruction_cost_cycles": 1
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    path
+}
+
 #[test]
 fn binary_discovers_requested_sequence_entry_from_source() {
     let path = source_file();
@@ -1546,4 +1572,277 @@ fn real_rydberg_transfer_emits_a_definition_linked_morphism_arena() {
     assert!(nodes.iter().any(|node| node["kind"] == "definition_ref"));
     assert!(!nodes.iter().any(|node| node["kind"] == "source_call"));
     assert!(!nodes.iter().any(|node| node["kind"] == "deferred_apply"));
+}
+
+#[test]
+fn compile_emits_a_linked_oasm_call_plan_for_a_ttl_pulse() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: pulse(40 * ns)}\n",
+    )
+    .unwrap();
+    let environment_path = path.with_extension("environment.json");
+    let channel_key = format!("{}::ttl0", path.display());
+    fs::write(
+        &environment_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "channels": {
+                channel_key: {
+                    "board": "rwg0",
+                    "local_id": 0,
+                    "kind": "ttl"
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let target_profile_path = ttl_target_profile(&path);
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "compile",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--compile-environment",
+            environment_path.to_str().unwrap(),
+            "--target-profile",
+            target_profile_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    fs::remove_file(environment_path).unwrap();
+    fs::remove_file(target_profile_path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["stage"], "oasm_call_plan");
+    assert_eq!(response["entry"], "sequence");
+    let plan = &response["oasm_call_plan"];
+    assert_eq!(plan["epochs"].as_array().unwrap().len(), 1);
+    let board = &plan["epochs"][0]["boards"][0];
+    assert_eq!(board["address"], "rwg0");
+    assert_eq!(
+        board["calls"],
+        serde_json::json!([
+            {"offset_cycles": 0, "function": "ttl_set", "args": [1, 1, "rwg"]},
+            {"offset_cycles": 1, "function": "wait", "args": [9]},
+            {"offset_cycles": 10, "function": "ttl_set", "args": [1, 0, "rwg"]}
+        ])
+    );
+}
+
+#[test]
+fn compile_binds_a_scan_duration_when_linking_the_oasm_call_plan() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import us\n\nclass Experiment:\n    def sequence(self, params: ExpParams) -> Morphism:\n        return identity(0) >> {ttl0: pulse(params[self.pulse_time] * us)}\n",
+    )
+    .unwrap();
+    let environment_path = path.with_extension("environment.json");
+    let channel_key = format!("{}::ttl0", path.display());
+    fs::write(
+        &environment_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "channels": {
+                channel_key: {
+                    "board": "rwg0",
+                    "local_id": 0,
+                    "kind": "ttl"
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let target_profile_path = ttl_target_profile(&path);
+    let link_bindings_path = path.with_extension("bindings.json");
+    fs::write(
+        &link_bindings_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "runtime_values": {"self.pulse_time": 0.02}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_catseqc"))
+            .args([
+                "compile",
+                path.to_str().unwrap(),
+                "--entry",
+                "Experiment.sequence",
+                "--compile-environment",
+                environment_path.to_str().unwrap(),
+                "--target-profile",
+                target_profile_path.to_str().unwrap(),
+                "--link-bindings",
+                link_bindings_path.to_str().unwrap(),
+                "--format",
+                "json",
+            ])
+            .output()
+            .unwrap()
+    };
+    let output = run();
+    fs::write(
+        &link_bindings_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "runtime_values": {"self.pulse_time": 0.021}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let nonintegral = run();
+    fs::remove_file(path).unwrap();
+    fs::remove_file(environment_path).unwrap();
+    fs::remove_file(target_profile_path).unwrap();
+    fs::remove_file(link_bindings_path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!nonintegral.status.success());
+    assert!(
+        String::from_utf8_lossy(&nonintegral.stderr)
+            .contains("exact non-negative target Cycle Count")
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"],
+        serde_json::json!([
+            {"offset_cycles": 0, "function": "ttl_set", "args": [1, 1, "rwg"]},
+            {"offset_cycles": 1, "function": "wait", "args": [4]},
+            {"offset_cycles": 5, "function": "ttl_set", "args": [1, 0, "rwg"]}
+        ])
+    );
+}
+
+#[test]
+fn compile_aligns_parallel_pulses_and_merges_same_board_ttl_writes() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: pulse(40 * ns), ttl1: pulse(20 * ns)}\n",
+    )
+    .unwrap();
+    let environment_path = path.with_extension("environment.json");
+    let ttl0 = format!("{}::ttl0", path.display());
+    let ttl1 = format!("{}::ttl1", path.display());
+    fs::write(
+        &environment_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "channels": {
+                ttl0: {"board": "rwg0", "local_id": 0, "kind": "ttl"},
+                ttl1: {"board": "rwg0", "local_id": 1, "kind": "ttl"}
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let target_profile_path = ttl_target_profile(&path);
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "compile",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--compile-environment",
+            environment_path.to_str().unwrap(),
+            "--target-profile",
+            target_profile_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    fs::remove_file(environment_path).unwrap();
+    fs::remove_file(target_profile_path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"],
+        serde_json::json!([
+            {"offset_cycles": 0, "function": "ttl_set", "args": [3, 3, "rwg"]},
+            {"offset_cycles": 1, "function": "wait", "args": [4]},
+            {"offset_cycles": 5, "function": "ttl_set", "args": [2, 1, "rwg"]},
+            {"offset_cycles": 6, "function": "wait", "args": [4]},
+            {"offset_cycles": 10, "function": "ttl_set", "args": [1, 0, "rwg"]}
+        ])
+    );
+}
+
+#[test]
+fn compile_uses_the_target_board_kind_for_ttl_set() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: pulse(40 * ns)}\n",
+    )
+    .unwrap();
+    let environment_path = path.with_extension("environment.json");
+    let channel_key = format!("{}::ttl0", path.display());
+    fs::write(
+        &environment_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "channels": {
+                channel_key: {"board": "main", "local_id": 0, "kind": "ttl"}
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let target_profile_path = ttl_target_profile(&path);
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "compile",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--compile-environment",
+            environment_path.to_str().unwrap(),
+            "--target-profile",
+            target_profile_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    fs::remove_file(environment_path).unwrap();
+    fs::remove_file(target_profile_path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"][0]["args"],
+        serde_json::json!([1, 1, "main"])
+    );
 }

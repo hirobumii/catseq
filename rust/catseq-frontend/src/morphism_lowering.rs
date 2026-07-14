@@ -4,14 +4,19 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+use catseq_core::exact_decimal::ExactDecimal;
 use catseq_core::morphism_arena::{
-    BoundaryPolicy, MorphismArena, MorphismArenaBuilder, MorphismNodeId, MorphismTemplateId,
-    NativeProvenance, ProvenanceId,
+    BoundaryPolicy, MorphismArenaBuilder, MorphismNodeId, MorphismTemplateId, NativeProvenance,
+    ProvenanceId,
+};
+use catseq_core::native_arenas::NativeArenas;
+use catseq_core::value_expr::{
+    ValueExprArenaBuilder, ValueExprId, ValueExprKind, ValueExprPayload, ValueExprType,
 };
 
 use crate::{
-    MorphismComposition, SourceHirKind, SourceHirNode, SourceType, TypedCheckReport,
-    TypedDefinition, TypedSourceHir,
+    MorphismComposition, SourceHirKind, SourceHirNode, SourceLiteral, SourceType, TypedCheckReport,
+    TypedDefinition, TypedSourceHir, ValueAvailability, ValueOperation,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -36,6 +41,17 @@ enum LoweredValue {
     Morphism(MorphismNodeId),
     Template(TemplatePlanId),
     ChannelBindings(Vec<ChannelBinding>),
+    Scalar(ScalarValue),
+}
+
+#[derive(Clone)]
+enum ScalarValue {
+    Bool(bool),
+    Int(i64),
+    Float(ExactDecimal),
+    DurationCycles(ExactDecimal),
+    String(String),
+    Expr(ValueExprId),
 }
 
 #[derive(Clone)]
@@ -53,7 +69,10 @@ struct TemplatePlan {
 }
 
 enum TemplatePlanKind {
-    Operation(String),
+    Operation {
+        operation: String,
+        arguments: Vec<ValueExprId>,
+    },
     Serial {
         children: Vec<TemplatePlanId>,
         boundaries: Vec<BoundaryPolicy>,
@@ -64,9 +83,10 @@ enum TemplatePlanKind {
 /// Lower the checked entry definition to the first durable CatSeq program
 /// representation. Resolved source definitions remain shared
 /// `DefinitionRef` leaves; no Source HIR owner is retained by the result.
-pub fn lower_typed_report_to_morphism_arena(
+pub fn lower_typed_report_to_native_arenas(
     report: &TypedCheckReport,
-) -> Result<MorphismArena, MorphismLoweringError> {
+    clock_hz: u64,
+) -> Result<NativeArenas, MorphismLoweringError> {
     let definition = report
         .definitions()
         .iter()
@@ -82,15 +102,17 @@ pub fn lower_typed_report_to_morphism_arena(
         .iter()
         .map(|definition| definition.qualified_name())
         .collect();
-    lower_entry(definition, &definitions)
+    lower_entry(definition, &definitions, clock_hz)
 }
 
 fn lower_entry(
     definition: &TypedDefinition,
     definitions: &HashSet<&str>,
-) -> Result<MorphismArena, MorphismLoweringError> {
+    clock_hz: u64,
+) -> Result<NativeArenas, MorphismLoweringError> {
     let hir = definition.hir();
     let mut builder = MorphismArenaBuilder::new();
+    let mut value_builder = ValueExprArenaBuilder::new();
     let mut provenance = Vec::with_capacity(hir.nodes().len());
     for node in hir.nodes() {
         provenance.push(builder.intern_provenance(NativeProvenance::new(
@@ -112,6 +134,30 @@ fn lower_entry(
         let children = node_children(node, hir);
         let source_type = hir.facts()[node_id].source_type();
         let lowered = match node.kind() {
+            SourceHirKind::Constant => lower_literal(node)?,
+            SourceHirKind::Name if source_type == Some(&SourceType::Duration) => {
+                lower_duration_unit(node, clock_hz)
+            }
+            SourceHirKind::Subscript
+                if hir.facts()[node_id].availability() == ValueAvailability::Link =>
+            {
+                let slot = children
+                    .get(1)
+                    .and_then(|child| hir.nodes()[*child as usize].symbol())
+                    .unwrap_or("scan_value");
+                let value_type = source_type_to_value_type(source_type).ok_or_else(|| {
+                    lowering_error(node, "link-time value has no native scalar type")
+                })?;
+                Some(LoweredValue::Scalar(ScalarValue::Expr(
+                    value_builder.runtime_slot(slot, value_type),
+                )))
+            }
+            SourceHirKind::Binary if node.value_operation().is_some() => {
+                lower_value_operation(node, children, &values, source_type, &mut value_builder)?
+            }
+            SourceHirKind::Unary if node.value_operation().is_some() => {
+                lower_value_operation(node, children, &values, source_type, &mut value_builder)?
+            }
             SourceHirKind::Call => lower_call(
                 node_id,
                 node,
@@ -122,6 +168,7 @@ fn lower_entry(
                 &mut template_plans,
                 &mut published_templates,
                 &mut builder,
+                &mut value_builder,
                 provenance[node_id],
             )?,
             SourceHirKind::Dictionary => lower_dictionary(children, hir, &values)?,
@@ -167,8 +214,13 @@ fn lower_entry(
                 definition.qualified_name()
             ))
         })?;
-    builder
+    let morphisms = builder
         .finish(root)
+        .map_err(|error| MorphismLoweringError::new(error.to_string()))?;
+    let values = value_builder
+        .finish()
+        .map_err(|error| MorphismLoweringError::new(error.to_string()))?;
+    NativeArenas::new(morphisms, values)
         .map_err(|error| MorphismLoweringError::new(error.to_string()))
 }
 
@@ -183,6 +235,7 @@ fn lower_call(
     template_plans: &mut Vec<TemplatePlan>,
     published_templates: &mut Vec<Option<MorphismTemplateId>>,
     builder: &mut MorphismArenaBuilder,
+    value_builder: &mut ValueExprArenaBuilder,
     provenance: ProvenanceId,
 ) -> Result<Option<LoweredValue>, MorphismLoweringError> {
     let fact = &hir.facts()[node_id];
@@ -199,19 +252,32 @@ fn lower_call(
         // A definition-owned channel map is a contextual aggregate, not a
         // durable arena value. Its specialization contract is a completed
         // Morphism, so erase the aggregate at this definition boundary.
-        SourceType::ChannelBindings if definitions.contains(resolved) => Ok(Some(
-            LoweredValue::Morphism(builder.definition_ref(resolved, provenance)),
-        )),
+        SourceType::ChannelBindings if definitions.contains(resolved) => {
+            Ok(Some(LoweredValue::Morphism(builder.definition_ref(
+                resolved,
+                &call_arguments(children, values, value_builder, node)?,
+                provenance,
+            ))))
+        }
         SourceType::MorphismTemplate => {
             let id = TemplatePlanId(template_plans.len());
             template_plans.push(TemplatePlan {
-                kind: TemplatePlanKind::Operation(resolved.to_owned()),
+                kind: TemplatePlanKind::Operation {
+                    operation: resolved.to_owned(),
+                    arguments: call_arguments(children, values, value_builder, node)?,
+                },
                 provenance,
             });
             Ok(Some(LoweredValue::Template(id)))
         }
         SourceType::Morphism if is_identity(resolved) => {
-            Ok(Some(LoweredValue::Morphism(builder.wait(provenance))))
+            let duration = call_arguments(children, values, value_builder, node)?
+                .first()
+                .copied()
+                .ok_or_else(|| lowering_error(node, "identity requires a duration"))?;
+            Ok(Some(LoweredValue::Morphism(
+                builder.wait(duration, provenance),
+            )))
         }
         SourceType::Morphism if resolved == "rb1system.utils.dict_to_morphism" => {
             let bindings = children
@@ -257,12 +323,18 @@ fn lower_call(
             )?;
             Ok(Some(LoweredValue::Morphism(root)))
         }
-        SourceType::Morphism if definitions.contains(resolved) => Ok(Some(LoweredValue::Morphism(
-            builder.definition_ref(resolved, provenance),
-        ))),
-        SourceType::Morphism => Ok(Some(LoweredValue::Morphism(
-            builder.atomic(resolved, provenance),
-        ))),
+        SourceType::Morphism if definitions.contains(resolved) => {
+            Ok(Some(LoweredValue::Morphism(builder.definition_ref(
+                resolved,
+                &call_arguments(children, values, value_builder, node)?,
+                provenance,
+            ))))
+        }
+        SourceType::Morphism => Ok(Some(LoweredValue::Morphism(builder.atomic(
+            resolved,
+            &call_arguments(children, values, value_builder, node)?,
+            provenance,
+        )))),
         _ => Ok(None),
     }
 }
@@ -378,7 +450,7 @@ fn materialize_morphism_value(
             builder,
             provenance,
         ),
-        LoweredValue::Template(_) => Err(MorphismLoweringError::new(
+        LoweredValue::Template(_) | LoweredValue::Scalar(_) => Err(MorphismLoweringError::new(
             "unbound MorphismTemplate used where Morphism is required",
         )),
     }
@@ -428,7 +500,7 @@ fn instantiate_template(
             continue;
         }
         match &plans[plan.0].kind {
-            TemplatePlanKind::Operation(_) => {}
+            TemplatePlanKind::Operation { .. } => {}
             TemplatePlanKind::Serial { children, .. } | TemplatePlanKind::Parallel(children) => {
                 pending.extend(children.iter().copied())
             }
@@ -441,7 +513,10 @@ fn instantiate_template(
         }
         let plan = &plans[index];
         let node = match &plan.kind {
-            TemplatePlanKind::Operation(operation) => builder.atomic(operation, plan.provenance),
+            TemplatePlanKind::Operation {
+                operation,
+                arguments,
+            } => builder.atomic(operation, arguments, plan.provenance),
             TemplatePlanKind::Serial {
                 children,
                 boundaries,
@@ -467,6 +542,190 @@ fn instantiate_template(
     let template = builder.publish_template(body);
     published_templates[root.0] = Some(template);
     Ok(builder.instantiate(template, channel, plans[root.0].provenance))
+}
+
+fn lower_literal(node: &SourceHirNode) -> Result<Option<LoweredValue>, MorphismLoweringError> {
+    let value = match node.literal() {
+        Some(SourceLiteral::Bool(value)) => ScalarValue::Bool(*value),
+        Some(SourceLiteral::Int(value)) => ScalarValue::Int(value.parse().map_err(|_| {
+            lowering_error(
+                node,
+                format!("integer literal {value:?} does not fit Int64"),
+            )
+        })?),
+        Some(SourceLiteral::FloatBits(value)) => ScalarValue::Float(
+            ExactDecimal::from_f64_shortest(f64::from_bits(*value))
+                .ok_or_else(|| lowering_error(node, "invalid Float64 literal"))?,
+        ),
+        Some(SourceLiteral::String(value)) => ScalarValue::String(value.clone()),
+        Some(SourceLiteral::None) | None => return Ok(None),
+    };
+    Ok(Some(LoweredValue::Scalar(value)))
+}
+
+fn lower_duration_unit(node: &SourceHirNode, clock_hz: u64) -> Option<LoweredValue> {
+    let denominator = match node.symbol()? {
+        "s" => 1_u64,
+        "ms" => 1_000,
+        "us" => 1_000_000,
+        "ns" => 1_000_000_000,
+        _ => return None,
+    };
+    Some(LoweredValue::Scalar(ScalarValue::DurationCycles(
+        ExactDecimal::from_u64(clock_hz).checked_div(ExactDecimal::from_u64(denominator))?,
+    )))
+}
+
+fn lower_value_operation(
+    node: &SourceHirNode,
+    children: &[u32],
+    values: &[Option<LoweredValue>],
+    source_type: Option<&SourceType>,
+    builder: &mut ValueExprArenaBuilder,
+) -> Result<Option<LoweredValue>, MorphismLoweringError> {
+    let operands = children
+        .iter()
+        .filter_map(|child| match values[*child as usize].clone() {
+            Some(LoweredValue::Scalar(value)) => Some(value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let operation = node
+        .value_operation()
+        .ok_or_else(|| lowering_error(node, "value operation is absent"))?;
+    if operands.len() != children.len() {
+        return Ok(None);
+    }
+    if let Some(value) = fold_scalar_operation(operation, &operands) {
+        return Ok(Some(LoweredValue::Scalar(value)));
+    }
+    let value_type = source_type_to_value_type(source_type)
+        .ok_or_else(|| lowering_error(node, "value operation has no native result type"))?;
+    let children = operands
+        .iter()
+        .cloned()
+        .map(|value| scalar_to_expr(value, builder, node))
+        .collect::<Result<Vec<_>, _>>()?;
+    let kind = match operation {
+        ValueOperation::Add => ValueExprKind::Add,
+        ValueOperation::Subtract => ValueExprKind::Subtract,
+        ValueOperation::Multiply => ValueExprKind::Multiply,
+        ValueOperation::Divide => ValueExprKind::Divide,
+        ValueOperation::Negate => ValueExprKind::Negate,
+        ValueOperation::Positive => return Ok(Some(LoweredValue::Scalar(operands[0].clone()))),
+        ValueOperation::FloorDivide | ValueOperation::Modulo | ValueOperation::Power => {
+            return Err(lowering_error(
+                node,
+                format!("{} is not supported in ValueExpr yet", operation.as_str()),
+            ));
+        }
+    };
+    Ok(Some(LoweredValue::Scalar(ScalarValue::Expr(
+        builder.operation(kind, value_type, &children),
+    ))))
+}
+
+fn fold_scalar_operation(
+    operation: ValueOperation,
+    operands: &[ScalarValue],
+) -> Option<ScalarValue> {
+    use ScalarValue::{DurationCycles, Float, Int};
+    match (operation, operands) {
+        (ValueOperation::Add, [Int(left), Int(right)]) => left.checked_add(*right).map(Int),
+        (ValueOperation::Subtract, [Int(left), Int(right)]) => left.checked_sub(*right).map(Int),
+        (ValueOperation::Multiply, [Int(left), Int(right)]) => left.checked_mul(*right).map(Int),
+        (ValueOperation::Divide, [Int(left), Int(right)]) => ExactDecimal::from_i64(*left)
+            .checked_div(ExactDecimal::from_i64(*right))
+            .map(Float),
+        (ValueOperation::Add, [Float(left), Float(right)]) => left.checked_add(*right).map(Float),
+        (ValueOperation::Subtract, [Float(left), Float(right)]) => {
+            left.checked_sub(*right).map(Float)
+        }
+        (ValueOperation::Multiply, [Float(left), Float(right)]) => {
+            left.checked_mul(*right).map(Float)
+        }
+        (ValueOperation::Divide, [Float(left), Float(right)]) => {
+            left.checked_div(*right).map(Float)
+        }
+        (ValueOperation::Multiply, [DurationCycles(value), Int(scale)])
+        | (ValueOperation::Multiply, [Int(scale), DurationCycles(value)]) => value
+            .checked_mul(ExactDecimal::from_i64(*scale))
+            .map(DurationCycles),
+        (ValueOperation::Multiply, [DurationCycles(value), Float(scale)])
+        | (ValueOperation::Multiply, [Float(scale), DurationCycles(value)]) => {
+            value.checked_mul(*scale).map(DurationCycles)
+        }
+        (ValueOperation::Divide, [DurationCycles(value), Int(scale)]) => value
+            .checked_div(ExactDecimal::from_i64(*scale))
+            .map(DurationCycles),
+        (ValueOperation::Divide, [DurationCycles(value), Float(scale)]) => {
+            value.checked_div(*scale).map(DurationCycles)
+        }
+        (ValueOperation::Add, [DurationCycles(left), DurationCycles(right)]) => {
+            left.checked_add(*right).map(DurationCycles)
+        }
+        (ValueOperation::Subtract, [DurationCycles(left), DurationCycles(right)]) => {
+            left.checked_sub(*right).map(DurationCycles)
+        }
+        (ValueOperation::Negate, [Int(value)]) => value.checked_neg().map(Int),
+        (ValueOperation::Negate, [Float(value)]) => value.checked_neg().map(Float),
+        (ValueOperation::Negate, [DurationCycles(value)]) => {
+            value.checked_neg().map(DurationCycles)
+        }
+        (ValueOperation::Positive, [value]) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn call_arguments(
+    children: &[u32],
+    values: &[Option<LoweredValue>],
+    builder: &mut ValueExprArenaBuilder,
+    node: &SourceHirNode,
+) -> Result<Vec<ValueExprId>, MorphismLoweringError> {
+    children
+        .iter()
+        .skip(1)
+        .filter_map(|child| match values[*child as usize].clone() {
+            Some(LoweredValue::Scalar(value)) => Some(scalar_to_expr(value, builder, node)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn scalar_to_expr(
+    value: ScalarValue,
+    builder: &mut ValueExprArenaBuilder,
+    node: &SourceHirNode,
+) -> Result<ValueExprId, MorphismLoweringError> {
+    let payload = match value {
+        ScalarValue::Bool(value) => ValueExprPayload::Bool(value),
+        ScalarValue::Int(value) => ValueExprPayload::Int64(value),
+        ScalarValue::Float(value) => ValueExprPayload::Float64(value.to_f64()),
+        ScalarValue::DurationCycles(value) => {
+            let cycles = value.to_cycle_count().ok_or_else(|| {
+                lowering_error(
+                    node,
+                    "duration is not an exact non-negative target Cycle Count",
+                )
+            })?;
+            ValueExprPayload::DurationCycles(cycles)
+        }
+        ScalarValue::String(value) => ValueExprPayload::String(value),
+        ScalarValue::Expr(id) => return Ok(id),
+    };
+    Ok(builder.constant(payload))
+}
+
+fn source_type_to_value_type(source_type: Option<&SourceType>) -> Option<ValueExprType> {
+    match source_type? {
+        SourceType::Bool => Some(ValueExprType::Bool),
+        SourceType::Int64 => Some(ValueExprType::Int64),
+        SourceType::Float64 => Some(ValueExprType::Float64),
+        SourceType::Duration => Some(ValueExprType::Duration),
+        SourceType::String => Some(ValueExprType::String),
+        _ => None,
+    }
 }
 
 fn node_children<'a>(node: &SourceHirNode, hir: &'a TypedSourceHir) -> &'a [u32] {

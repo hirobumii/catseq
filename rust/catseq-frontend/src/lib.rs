@@ -34,7 +34,7 @@ pub use incremental::{
     check_typed_bundle_entry_summary_incremental_with_loader, check_typed_entry_incremental,
     check_typed_entry_summary_incremental,
 };
-pub use morphism_lowering::{MorphismLoweringError, lower_typed_report_to_morphism_arena};
+pub use morphism_lowering::{MorphismLoweringError, lower_typed_report_to_native_arenas};
 pub use names::{PathRoot, ResolvedPath, ScanSlotUse};
 pub use session::{
     CacheStatus, CompiledSourceSequence, SourceCompileError, SourceCompileOutcome,
@@ -42,7 +42,7 @@ pub use session::{
 };
 pub use source_hir::{
     DependencyRole, MorphismComposition, SemanticFact, SourceAnchor, SourceHirKind, SourceHirNode,
-    TypedSourceHir, ValueAvailability,
+    SourceLiteral, TypedSourceHir, ValueAvailability, ValueOperation,
 };
 pub use typed::{
     IncrementalStats, SourceType, TypeSignature, TypedCheckError, TypedCheckReport,

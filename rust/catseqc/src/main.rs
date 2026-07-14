@@ -6,14 +6,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use catseq_core::morphism_arena::MorphismArena;
+use catseq_core::native_arenas::NativeArenas;
 use catseq_frontend::{
     IncrementalStats, SemanticFact, SourceHirNode, TypeSignature, TypedCheckReport,
     TypedCheckSummary, TypedDefinition, TypedParameter,
     check_typed_bundle_entry_incremental_with_loader,
     check_typed_bundle_entry_summary_incremental_with_loader, check_typed_bundle_entry_with_loader,
     check_typed_entry, check_typed_entry_incremental, check_typed_entry_summary_incremental,
-    lower_typed_report_to_morphism_arena,
+    lower_typed_report_to_native_arenas,
+};
+use catseq_rtmq::{
+    CompileEnvironment, LinkBindings, OasmCallPlan, TargetProfile, compile_oasm_call_plan,
 };
 use serde::Serialize;
 use serde::ser::{SerializeSeq, SerializeStruct, Serializer};
@@ -35,6 +38,9 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     let mut output_format = command.default_output_format();
     let mut cache_dir = None::<PathBuf>;
     let mut source_root = None::<PathBuf>;
+    let mut compile_environment_path = None::<PathBuf>;
+    let mut target_profile_path = None::<PathBuf>;
+    let mut link_bindings_path = None::<PathBuf>;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--entry" => requested_entry = Some(args.next().ok_or_else(usage)?),
@@ -44,6 +50,15 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             }
             "--cache-dir" => cache_dir = Some(PathBuf::from(args.next().ok_or_else(usage)?)),
             "--source-root" => source_root = Some(PathBuf::from(args.next().ok_or_else(usage)?)),
+            "--compile-environment" => {
+                compile_environment_path = Some(PathBuf::from(args.next().ok_or_else(usage)?))
+            }
+            "--target-profile" => {
+                target_profile_path = Some(PathBuf::from(args.next().ok_or_else(usage)?))
+            }
+            "--link-bindings" => {
+                link_bindings_path = Some(PathBuf::from(args.next().ok_or_else(usage)?))
+            }
             _ => return Err(format!("unexpected argument {flag:?}\n{}", usage())),
         }
     }
@@ -54,6 +69,45 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     let source =
         fs::read_to_string(&path).map_err(|error| format!("cannot read {path}: {error}"))?;
     let requested = requested_entry.ok_or_else(|| format!("--entry is required\n{}", usage()))?;
+    let compile_environment = compile_environment_path
+        .as_ref()
+        .map(|path| {
+            let bytes = fs::read(path)
+                .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+            serde_json::from_slice::<CompileEnvironment>(&bytes).map_err(|error| {
+                format!(
+                    "cannot decode compile environment {}: {error}",
+                    path.display()
+                )
+            })
+        })
+        .transpose()?;
+    if command == CommandKind::Compile && compile_environment.is_none() {
+        return Err(format!("--compile-environment is required\n{}", usage()));
+    }
+    let target_profile = target_profile_path
+        .as_ref()
+        .map(|path| {
+            let bytes = fs::read(path)
+                .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+            serde_json::from_slice::<TargetProfile>(&bytes).map_err(|error| {
+                format!("cannot decode target profile {}: {error}", path.display())
+            })
+        })
+        .transpose()?;
+    if command == CommandKind::Compile && target_profile.is_none() {
+        return Err(format!("--target-profile is required\n{}", usage()));
+    }
+    let link_bindings = link_bindings_path
+        .as_ref()
+        .map(|path| {
+            let bytes = fs::read(path)
+                .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+            serde_json::from_slice::<LinkBindings>(&bytes)
+                .map_err(|error| format!("cannot decode link bindings {}: {error}", path.display()))
+        })
+        .transpose()?
+        .unwrap_or_else(LinkBindings::empty);
     let checked = match source_root {
         Some(source_root) => check_source_bundle(
             &source_root,
@@ -62,6 +116,11 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             &requested,
             cache_dir.as_deref(),
             command,
+            NativeCompileInputs {
+                environment: compile_environment.as_ref(),
+                target: target_profile.as_ref(),
+                link_bindings: &link_bindings,
+            },
         )?,
         None => match (command, cache_dir) {
             (CommandKind::Check, Some(cache_dir)) => CheckedOutput::Summary(
@@ -90,6 +149,26 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
                     .map_err(|error| error.to_string())?;
                 arena_output(report)?
             }
+            (CommandKind::Compile, Some(cache_dir)) => {
+                let report = check_typed_entry_incremental(&path, &source, &requested, &cache_dir)
+                    .map_err(|error| error.to_string())?;
+                compile_output(
+                    report,
+                    compile_environment.as_ref().expect("checked above"),
+                    target_profile.as_ref().expect("checked above"),
+                    &link_bindings,
+                )?
+            }
+            (CommandKind::Compile, None) => {
+                let report = check_typed_entry(&path, &source, &requested)
+                    .map_err(|error| error.to_string())?;
+                compile_output(
+                    report,
+                    compile_environment.as_ref().expect("checked above"),
+                    target_profile.as_ref().expect("checked above"),
+                    &link_bindings,
+                )?
+            }
         },
     };
     match (checked, output_format) {
@@ -99,15 +178,30 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         (CheckedOutput::Report(_), OutputFormat::Text) => {
             unreachable!("emit-hir text output is rejected before compilation")
         }
-        (CheckedOutput::Arena { report, arena }, OutputFormat::Json) => {
+        (CheckedOutput::Arena { report, program }, OutputFormat::Json) => {
             write_json(&ArenaReportJson {
                 report: &report,
-                arena: &arena.0,
-                lowering_time: arena.1,
+                program: &program.0,
+                lowering_time: program.1,
             })?
         }
         (CheckedOutput::Arena { .. }, OutputFormat::Text) => {
             unreachable!("emit-arena text output is rejected before compilation")
+        }
+        (
+            CheckedOutput::CallPlan {
+                report,
+                plan,
+                compile_time,
+            },
+            OutputFormat::Json,
+        ) => write_json(&CallPlanReportJson {
+            report: &report,
+            plan: &plan,
+            compile_time,
+        })?,
+        (CheckedOutput::CallPlan { .. }, OutputFormat::Text) => {
+            unreachable!("compile text output is rejected before compilation")
         }
     }
     Ok(())
@@ -118,17 +212,41 @@ enum CheckedOutput {
     Report(TypedCheckReport),
     Arena {
         report: TypedCheckReport,
-        arena: (MorphismArena, Duration),
+        program: (Box<NativeArenas>, Duration),
+    },
+    CallPlan {
+        report: TypedCheckReport,
+        plan: OasmCallPlan,
+        compile_time: Duration,
     },
 }
 
 fn arena_output(report: TypedCheckReport) -> Result<CheckedOutput, String> {
     let start = Instant::now();
-    let arena = lower_typed_report_to_morphism_arena(&report).map_err(|error| error.to_string())?;
+    let program = lower_typed_report_to_native_arenas(&report, 250_000_000)
+        .map_err(|error| error.to_string())?;
     let lowering_time = start.elapsed();
     Ok(CheckedOutput::Arena {
         report,
-        arena: (arena, lowering_time),
+        program: (Box::new(program), lowering_time),
+    })
+}
+
+fn compile_output(
+    report: TypedCheckReport,
+    environment: &CompileEnvironment,
+    target: &TargetProfile,
+    link_bindings: &LinkBindings,
+) -> Result<CheckedOutput, String> {
+    let start = Instant::now();
+    let program = lower_typed_report_to_native_arenas(&report, target.clock_hz())
+        .map_err(|error| error.to_string())?;
+    let plan = compile_oasm_call_plan(&program, environment, target, link_bindings)
+        .map_err(|error| error.to_string())?;
+    Ok(CheckedOutput::CallPlan {
+        report,
+        plan,
+        compile_time: start.elapsed(),
     })
 }
 
@@ -139,6 +257,7 @@ fn check_source_bundle(
     requested: &str,
     cache_dir: Option<&std::path::Path>,
     command: CommandKind,
+    compile_inputs: NativeCompileInputs<'_>,
 ) -> Result<CheckedOutput, String> {
     let entry_module = module_name(source_root, entry_path)?;
     let mut loaded = BTreeMap::from([(entry_module.clone(), entry_source)]);
@@ -196,7 +315,40 @@ fn check_source_bundle(
                     .map_err(|error| error.to_string())?;
             arena_output(report)
         }
+        (CommandKind::Compile, Some(cache_dir)) => {
+            let report = check_typed_bundle_entry_incremental_with_loader(
+                &entry_module,
+                requested,
+                cache_dir,
+                &mut loader,
+            )
+            .map_err(|error| error.to_string())?;
+            compile_output(
+                report,
+                compile_inputs.environment.expect("validated by caller"),
+                compile_inputs.target.expect("validated by caller"),
+                compile_inputs.link_bindings,
+            )
+        }
+        (CommandKind::Compile, None) => {
+            let report =
+                check_typed_bundle_entry_with_loader(&entry_module, requested, &mut loader)
+                    .map_err(|error| error.to_string())?;
+            compile_output(
+                report,
+                compile_inputs.environment.expect("validated by caller"),
+                compile_inputs.target.expect("validated by caller"),
+                compile_inputs.link_bindings,
+            )
+        }
     }
+}
+
+#[derive(Clone, Copy)]
+struct NativeCompileInputs<'a> {
+    environment: Option<&'a CompileEnvironment>,
+    target: Option<&'a TargetProfile>,
+    link_bindings: &'a LinkBindings,
 }
 
 fn print_text_summary(summary: &TypedCheckSummary) {
@@ -210,7 +362,7 @@ fn print_text_summary(summary: &TypedCheckSummary) {
 
 fn usage() -> String {
     String::from(
-        "usage: catseqc check <source.py> [--source-root <path>] [--entry <qualified-name>] [--format text|json] [--cache-dir <path>]\n       catseqc emit-hir <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]\n       catseqc emit-arena <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]",
+        "usage: catseqc check <source.py> [--source-root <path>] [--entry <qualified-name>] [--format text|json] [--cache-dir <path>]\n       catseqc emit-hir <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]\n       catseqc emit-arena <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]\n       catseqc compile <source.py> [--source-root <path>] --entry <qualified-name> --compile-environment <path> --target-profile <path> [--link-bindings <path>] [--format json] [--cache-dir <path>]",
     )
 }
 
@@ -266,6 +418,7 @@ enum CommandKind {
     Check,
     EmitHir,
     EmitArena,
+    Compile,
 }
 
 impl CommandKind {
@@ -274,6 +427,7 @@ impl CommandKind {
             "check" => Ok(Self::Check),
             "emit-hir" => Ok(Self::EmitHir),
             "emit-arena" => Ok(Self::EmitArena),
+            "compile" => Ok(Self::Compile),
             _ => Err(format!("unknown command {value:?}\n{}", usage())),
         }
     }
@@ -281,7 +435,7 @@ impl CommandKind {
     const fn default_output_format(self) -> OutputFormat {
         match self {
             Self::Check => OutputFormat::Text,
-            Self::EmitHir | Self::EmitArena => OutputFormat::Json,
+            Self::EmitHir | Self::EmitArena | Self::Compile => OutputFormat::Json,
         }
     }
 
@@ -290,6 +444,7 @@ impl CommandKind {
             Self::Check => "check",
             Self::EmitHir => "emit-hir",
             Self::EmitArena => "emit-arena",
+            Self::Compile => "compile",
         }
     }
 }
@@ -354,7 +509,7 @@ impl Serialize for HirReportJson<'_> {
 
 struct ArenaReportJson<'a> {
     report: &'a TypedCheckReport,
-    arena: &'a MorphismArena,
+    program: &'a NativeArenas,
     lowering_time: Duration,
 }
 
@@ -363,7 +518,7 @@ impl Serialize for ArenaReportJson<'_> {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("ArenaResponse", 9)?;
+        let mut state = serializer.serialize_struct("ArenaResponse", 10)?;
         state.serialize_field("schema_version", &1_u32)?;
         state.serialize_field("stage", "morphism_arena")?;
         state.serialize_field("entry", self.report.entry())?;
@@ -377,8 +532,32 @@ impl Serialize for ArenaReportJson<'_> {
                 .map(|definition| definition.hir().nodes().len())
                 .sum::<usize>(),
         )?;
-        state.serialize_field("morphism_arena", self.arena)?;
+        state.serialize_field("morphism_arena", self.program.morphisms())?;
+        state.serialize_field("value_expr_arena", self.program.values())?;
         state.serialize_field("arena_lowering_seconds", &self.lowering_time.as_secs_f64())?;
+        state.serialize_field("diagnostics", self.report.diagnostics())?;
+        state.serialize_field("incremental", &IncrementalJson(self.report.incremental()))?;
+        state.end()
+    }
+}
+
+struct CallPlanReportJson<'a> {
+    report: &'a TypedCheckReport,
+    plan: &'a OasmCallPlan,
+    compile_time: Duration,
+}
+
+impl Serialize for CallPlanReportJson<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("CallPlanResponse", 7)?;
+        state.serialize_field("schema_version", &1_u32)?;
+        state.serialize_field("stage", "oasm_call_plan")?;
+        state.serialize_field("entry", self.report.entry())?;
+        state.serialize_field("oasm_call_plan", self.plan)?;
+        state.serialize_field("native_compile_seconds", &self.compile_time.as_secs_f64())?;
         state.serialize_field("diagnostics", self.report.diagnostics())?;
         state.serialize_field("incremental", &IncrementalJson(self.report.incremental()))?;
         state.end()
@@ -531,7 +710,7 @@ impl Serialize for NodeJson<'_> {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SourceHirNode", 7)?;
+        let mut state = serializer.serialize_struct("SourceHirNode", 9)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("kind", self.node.kind().as_str())?;
         state.serialize_field("symbol", &self.node.symbol())?;
@@ -540,6 +719,14 @@ impl Serialize for NodeJson<'_> {
             &self
                 .node
                 .morphism_composition()
+                .map(|operation| operation.as_str()),
+        )?;
+        state.serialize_field("literal", &self.node.literal())?;
+        state.serialize_field(
+            "value_operation",
+            &self
+                .node
+                .value_operation()
                 .map(|operation| operation.as_str()),
         )?;
         state.serialize_field("edge_start", &self.node.edge_start())?;

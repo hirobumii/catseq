@@ -103,6 +103,7 @@ name = "catseq-rtmq"
 version = "0.3.0-dev.0"
 dependencies = [
  "catseq-core",
+ "serde",
 ]
 
 [[package]]

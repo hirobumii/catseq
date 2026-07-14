@@ -4,6 +4,13 @@ use std::collections::BTreeMap;
 
 use catseq_core::definitions::RuntimeValueId;
 
+pub mod oasm_call_plan;
+pub use oasm_call_plan::{
+    ChannelBinding, ChannelKind, CompileEnvironment, LinkBindings, OasmArgument, OasmBoardPlan,
+    OasmCall, OasmCallPlan, OasmCompileError, OasmEpochPlan, OasmFunction, TargetProfile,
+    compile_oasm_call_plan,
+};
+
 /// Stable identifier for one RTMQ board in a service hardware map.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct BoardId(pub u16);

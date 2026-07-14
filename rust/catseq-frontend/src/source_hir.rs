@@ -55,13 +55,51 @@ pub enum SourceHirKind {
 
 /// CatSeq operations whose identity must survive parsing for native lowering.
 ///
-/// Arithmetic operations will move to the Value Expression arena separately;
-/// this enum deliberately records only Morphism algebra at this boundary.
+/// Morphism algebra is recorded separately from scalar arithmetic so both can
+/// lower directly into their canonical arenas without retaining Python AST.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum MorphismComposition {
     AutoSerial,
     StrictSerial,
     Parallel,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SourceLiteral {
+    None,
+    Bool(bool),
+    Int(String),
+    FloatBits(u64),
+    String(String),
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ValueOperation {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    FloorDivide,
+    Modulo,
+    Power,
+    Negate,
+    Positive,
+}
+
+impl ValueOperation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Subtract => "subtract",
+            Self::Multiply => "multiply",
+            Self::Divide => "divide",
+            Self::FloorDivide => "floor_divide",
+            Self::Modulo => "modulo",
+            Self::Power => "power",
+            Self::Negate => "negate",
+            Self::Positive => "positive",
+        }
+    }
 }
 
 impl MorphismComposition {
@@ -106,6 +144,8 @@ pub struct SourceHirNode {
     kind: SourceHirKind,
     symbol: Option<String>,
     morphism_composition: Option<MorphismComposition>,
+    literal: Option<SourceLiteral>,
+    value_operation: Option<ValueOperation>,
     edge_start: u32,
     edge_count: u32,
     anchor: SourceAnchor,
@@ -122,6 +162,14 @@ impl SourceHirNode {
 
     pub const fn morphism_composition(&self) -> Option<MorphismComposition> {
         self.morphism_composition
+    }
+
+    pub const fn literal(&self) -> Option<&SourceLiteral> {
+        self.literal.as_ref()
+    }
+
+    pub const fn value_operation(&self) -> Option<ValueOperation> {
+        self.value_operation
     }
 
     pub const fn edge_start(&self) -> u32 {
@@ -540,6 +588,8 @@ pub(crate) fn lower_definition_hir(
                     kind: expression_kind(expression),
                     symbol: expression_symbol(expression),
                     morphism_composition: expression_morphism_composition(expression),
+                    literal: expression_literal(expression),
+                    value_operation: expression_value_operation(expression),
                     edge_start,
                     edge_count: child_ids.len() as u32,
                     anchor: anchor(module, expression.location.row, expression.location.column),
@@ -560,6 +610,8 @@ pub(crate) fn lower_definition_hir(
                     kind: statement_kind(statement),
                     symbol: None,
                     morphism_composition: None,
+                    literal: None,
+                    value_operation: None,
                     edge_start,
                     edge_count: child_ids.len() as u32,
                     anchor: anchor(module, statement.location.row, statement.location.column),
@@ -1184,6 +1236,41 @@ fn expression_morphism_composition(expression: &Expr) -> Option<MorphismComposit
         Operator::RShift => Some(MorphismComposition::AutoSerial),
         Operator::MatMult => Some(MorphismComposition::StrictSerial),
         Operator::BitOr => Some(MorphismComposition::Parallel),
+        _ => None,
+    }
+}
+
+fn expression_literal(expression: &Expr) -> Option<SourceLiteral> {
+    let ExprKind::Constant { value, .. } = &expression.node else {
+        return None;
+    };
+    match value {
+        Constant::None => Some(SourceLiteral::None),
+        Constant::Bool(value) => Some(SourceLiteral::Bool(*value)),
+        Constant::Int(value) => Some(SourceLiteral::Int(value.to_string())),
+        Constant::Float(value) => Some(SourceLiteral::FloatBits(value.to_bits())),
+        Constant::Str(value) => Some(SourceLiteral::String(value.to_string())),
+        _ => None,
+    }
+}
+
+fn expression_value_operation(expression: &Expr) -> Option<ValueOperation> {
+    match expression.node {
+        ExprKind::BinOp { op, .. } => match op {
+            Operator::Add => Some(ValueOperation::Add),
+            Operator::Sub => Some(ValueOperation::Subtract),
+            Operator::Mult => Some(ValueOperation::Multiply),
+            Operator::Div => Some(ValueOperation::Divide),
+            Operator::FloorDiv => Some(ValueOperation::FloorDivide),
+            Operator::Mod => Some(ValueOperation::Modulo),
+            Operator::Pow => Some(ValueOperation::Power),
+            _ => None,
+        },
+        ExprKind::UnaryOp { op, .. } => match op {
+            nac3ast::Unaryop::USub => Some(ValueOperation::Negate),
+            nac3ast::Unaryop::UAdd => Some(ValueOperation::Positive),
+            _ => None,
+        },
         _ => None,
     }
 }

@@ -14,8 +14,12 @@ use tree_sitter::{Node, Parser, Point, Tree};
 
 mod arena_lowering;
 mod hir;
+mod incremental;
+mod intrinsics;
 mod names;
 mod session;
+mod source_hir;
+mod typed;
 mod validate;
 
 pub use arena_lowering::{ArenaLoweringError, SourceArenaProgram, lower_sequence_hir};
@@ -23,10 +27,23 @@ pub use hir::{
     BinaryOperator, CompositionKind, ExpressionId, HirExpression, HirKind, KeywordArgument,
     Literal, LoweringError, SequenceHir, SourceSpan, UnaryOperator,
 };
+pub use incremental::{
+    IncrementalCheckError, check_typed_bundle_entry_incremental,
+    check_typed_bundle_entry_incremental_with_loader, check_typed_entry_incremental,
+};
 pub use names::{PathRoot, ResolvedPath, ScanSlotUse};
 pub use session::{
     CacheStatus, CompiledSourceSequence, SourceCompileError, SourceCompileOutcome,
     SourceCompilerSession,
+};
+pub use source_hir::{
+    DependencyRole, SemanticFact, SourceAnchor, SourceHirKind, SourceHirNode, TypedSourceHir,
+    ValueAvailability,
+};
+pub use typed::{
+    IncrementalStats, SourceType, TypeSignature, TypedCheckError, TypedCheckReport,
+    TypedDefinition, TypedParameter, check_typed_bundle_entry,
+    check_typed_bundle_entry_with_loader, check_typed_entry,
 };
 pub use validate::{TopologyContext, ValidationError};
 

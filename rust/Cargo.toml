@@ -5,12 +5,17 @@ resolver = "3"
 [workspace.package]
 version = "0.3.0-dev.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.86"
 
 [workspace.dependencies]
 catseq-core = { path = "catseq-core" }
 catseq-frontend = { path = "catseq-frontend" }
 catseq-rtmq = { path = "catseq-rtmq" }
+nac3ast = { git = "https://git.m-labs.hk/M-Labs/nac3.git", rev = "332e4212f3adfcb0e4c051f00164676363457771" }
+nac3parser = { git = "https://git.m-labs.hk/M-Labs/nac3.git", rev = "332e4212f3adfcb0e4c051f00164676363457771" }
 pyo3 = { version = "0.28.2" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha3 = "0.10"
 tree-sitter = "0.25.10"
 tree-sitter-python = "0.25.0"

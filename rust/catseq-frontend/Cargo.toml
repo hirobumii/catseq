@@ -9,5 +9,10 @@ name = "catseq_frontend"
 
 [dependencies]
 catseq-core.workspace = true
+nac3ast.workspace = true
+nac3parser.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha3.workspace = true
 tree-sitter.workspace = true
 tree-sitter-python.workspace = true

@@ -11,6 +11,7 @@ rust-version = "1.86"
 catseq-core = { path = "catseq-core" }
 catseq-frontend = { path = "catseq-frontend" }
 catseq-rtmq = { path = "catseq-rtmq" }
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 nac3ast = { git = "https://git.m-labs.hk/M-Labs/nac3.git", rev = "332e4212f3adfcb0e4c051f00164676363457771" }
 nac3parser = { git = "https://git.m-labs.hk/M-Labs/nac3.git", rev = "332e4212f3adfcb0e4c051f00164676363457771" }
 serde = { version = "1.0", features = ["derive"] }

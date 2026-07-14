@@ -96,11 +96,7 @@ jobs:
 
       - name: Install the pinned Rust toolchain
         run: |
-          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} \
-            --profile minimal \
-            --component rustfmt \
-            --component clippy \
-            --no-self-update
+          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal --component rustfmt --component clippy --no-self-update
           rustup default ${{ env.RUST_TOOLCHAIN }}
 
       - name: Check Rust formatting

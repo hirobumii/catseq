@@ -29,3 +29,6 @@ def test_ci_rust_toolchain_supports_the_workspace_and_installs_check_tools() -> 
     )[1].split("\n      - name:", 1)[0]
     assert "--component rustfmt" in install_step
     assert "--component clippy" in install_step
+    assert "\\\n" not in install_step, (
+        "the platform matrix uses both Bash and PowerShell; keep rustup cross-shell"
+    )

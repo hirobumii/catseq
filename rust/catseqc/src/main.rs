@@ -21,8 +21,31 @@ use catseq_rtmq::{
 use serde::Serialize;
 use serde::ser::{SerializeSeq, SerializeStruct, Serializer};
 
+const COMPILER_STACK_BYTES: usize = 16 * 1024 * 1024;
+
 fn main() -> ExitCode {
-    match run(env::args().skip(1)) {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    let compiler = std::thread::Builder::new()
+        .name("catseqc".into())
+        .stack_size(COMPILER_STACK_BYTES)
+        .spawn(move || run(args.into_iter()));
+    match compiler {
+        Ok(compiler) => match compiler.join() {
+            Ok(result) => run_exit_code(result),
+            Err(_) => {
+                eprintln!("catseqc: internal compiler thread panicked");
+                ExitCode::from(101)
+            }
+        },
+        Err(error) => {
+            eprintln!("catseqc: cannot start compiler thread: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn run_exit_code(result: Result<(), String>) -> ExitCode {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("catseqc: {message}");

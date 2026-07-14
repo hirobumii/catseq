@@ -40,7 +40,6 @@ __pycache__/
 /dist/
 /*.egg-info/
 /rust/target/
-/rust/catseqc/target/
 /catseq/_native*.so
 
 # 测试产物

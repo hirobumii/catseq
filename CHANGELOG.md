@@ -7,6 +7,8 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-15
+
 ### Added
 
 - Added the standalone Rust `catseqc` compiler with `check`, `emit-hir`,

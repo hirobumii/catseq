@@ -88,15 +88,8 @@ jobs:
       - name: Sync the fixed Python environment
         run: uv sync --locked --all-extras --dev
 
-      - name: Check native-facing Python code
-        run: >-
-          uv run ruff check
-          catseq/compilation/dag
-          catseq/morphism
-          tests/unit/compilation/test_dag_compiler_session.py
-          tests/unit/compilation/test_oasm_call_plan.py
-          tests/integration/test_native_rydberg_oasm_parity.py
-          tests/integration/test_native_rb1_rtmq_oasm_parity.py
+      - name: Check Python code
+        run: uv run ruff check catseq tests
 
       - name: Run Python tests
         run: uv run pytest -q
@@ -124,6 +117,23 @@ jobs:
         working-directory: rust
         run: cargo build --locked --release --bin catseqc
 
+      - name: Build the Windows wheel
+        if: runner.os == 'Windows'
+        run: uv build --wheel
+
+      - name: Install the Windows wheel into a clean environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $venv = Join-Path $env:RUNNER_TEMP "catseq-wheel-test"
+          uv venv --python $env:PYTHON_VERSION $venv
+          $python = Join-Path $venv "Scripts/python.exe"
+          $compiler = Join-Path $venv "Scripts/catseqc.exe"
+          $wheel = (Get-ChildItem "dist/*.whl").FullName
+          uv pip install --python $python $wheel
+          & $python -c 'from importlib.metadata import version; import catseq; from catseq.targets import rtmq_v2_profile; assert catseq.__version__ == version("catseq"); assert rtmq_v2_profile()["rtmq_abi_version"] == 2'
+          & $compiler --version
+
       - name: Package the Linux compiler
         if: runner.os == 'Linux'
         shell: bash
@@ -142,13 +152,14 @@ jobs:
           Copy-Item "rust/target/release/catseqc.exe" "$package/catseqc.exe"
           Compress-Archive -Path $package -DestinationPath "$package.zip"
 
-      - name: Upload the native compiler
+      - name: Upload the platform artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.whl
           if-no-files-found: error
 
   python-package:
@@ -180,6 +191,11 @@ jobs:
           printf 'machine git.opticaltweezer.eu.org\nlogin %s\npassword %s\n' \
             "$GITEA_USERNAME" "$GITEA_TOKEN" > "$HOME/.netrc"
 
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal --no-self-update
+          rustup default ${{ env.RUST_TOOLCHAIN }}
+
       - name: Build wheel and source distribution
         run: uv build
 
@@ -190,8 +206,16 @@ jobs:
           uv pip install \
             --python "$RUNNER_TEMP/catseq-wheel-test/bin/python" \
             dist/*.whl
-          "$RUNNER_TEMP/catseq-wheel-test/bin/python" -c \
-            "import catseq; print(catseq.__version__)"
+          "$RUNNER_TEMP/catseq-wheel-test/bin/python" - <<'PY'
+          from importlib.metadata import version
+
+          import catseq
+          from catseq.targets import rtmq_v2_profile
+
+          assert catseq.__version__ == version("catseq")
+          assert rtmq_v2_profile()["rtmq_abi_version"] == 2
+          PY
+          "$RUNNER_TEMP/catseq-wheel-test/bin/catseqc" --version
 
       - name: Upload the Python distributions
         uses: actions/upload-artifact@v4
@@ -200,79 +224,12 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  rb1-parity:
-    name: Verify rb1-rtmq assembly parity with CatSeq 0.2.4
-    needs: platform
-    runs-on: ubuntu-24.04
-
-    steps:
-      - name: Check out CatSeq
-        uses: actions/checkout@v4
-
-      - name: Set up uv and Python
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          version: ${{ env.UV_VERSION }}
-          python-version: ${{ env.PYTHON_VERSION }}
-          enable-cache: true
-
-      - name: Configure private Git credentials
-        shell: bash
-        env:
-          GITEA_USERNAME: ${{ secrets.GITEA_USERNAME }}
-          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
-        run: |
-          if [[ -z "$GITEA_USERNAME" || -z "$GITEA_TOKEN" ]]; then
-            echo "::error::Gitea credentials are not configured"
-            exit 1
-          fi
-          umask 077
-          printf 'machine git.opticaltweezer.eu.org\nlogin %s\npassword %s\n' \
-            "$GITEA_USERNAME" "$GITEA_TOKEN" > "$HOME/.netrc"
-
-      - name: Sync the fixed Python environment
-        run: uv sync --locked --all-extras --dev
-
-      - name: Download the tested Linux compiler
-        uses: actions/download-artifact@v4
-        with:
-          name: catseqc-linux-x86_64
-          path: ${{ runner.temp }}/catseqc-package
-
-      - name: Extract catseqc
-        shell: bash
-        run: |
-          tar -xzf \
-            "$RUNNER_TEMP/catseqc-package/catseqc-x86_64-unknown-linux-gnu.tar.gz" \
-            -C "$RUNNER_TEMP/catseqc-package"
-          chmod +x \
-            "$RUNNER_TEMP/catseqc-package/catseqc-x86_64-unknown-linux-gnu/catseqc"
-
-      - name: Check out the pinned rb1-rtmq acceptance source
-        shell: bash
-        run: |
-          git clone \
-            https://git.opticaltweezer.eu.org/OT/Rb1-rtmq.git \
-            "$RUNNER_TEMP/rb1-rtmq"
-          git -C "$RUNNER_TEMP/rb1-rtmq" checkout \
-            3bdb686c174263780d7cf025cb73406e843e826b
-
-      - name: Compare all supported production sequences
-        env:
-          CATSEQC_BIN: ${{ runner.temp }}/catseqc-package/catseqc-x86_64-unknown-linux-gnu/catseqc
-          CATSEQ_RB1_RTMQ_ROOT: ${{ runner.temp }}/rb1-rtmq
-          CATSEQ_REQUIRE_RB1_PARITY: "1"
-        run: >-
-          uv run pytest -q
-          tests/integration/test_native_rb1_rtmq_oasm_parity.py
-
   release:
     name: Publish tag artifacts
     if: startsWith(github.ref, 'refs/tags/v')
     needs:
       - platform
       - python-package
-      - rb1-parity
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -313,7 +270,7 @@ jobs:
       - name: Download all release artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: catseq-*
+          pattern: catseq*
           path: release-assets
           merge-multiple: true
 

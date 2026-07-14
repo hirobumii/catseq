@@ -7,10 +7,6 @@ rust-version.workspace = true
 [[bin]]
 name = "catseqc"
 path = "src/main.rs"
-bench = false
-
-[features]
-rb1-bench = []
 
 [dependencies]
 catseq-core.workspace = true
@@ -19,11 +15,3 @@ catseq-rtmq.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
-
-[dev-dependencies]
-criterion.workspace = true
-
-[[bench]]
-name = "rydberg_transfer"
-harness = false
-required-features = ["rb1-bench"]

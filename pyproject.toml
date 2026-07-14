@@ -4,9 +4,9 @@ build-backend = "maturin"
 
 [project]
 name = "catseq"
-version = "0.3.0.dev0"
+version = "0.3.0"
 description = "A Categorical Framework for Hardware Sequence Control"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "oasm @ git+https://git.opticaltweezer.eu.org/OT/oasm.git@33b6c2538509e70475b49de5bd5a13ef334d4387",
 ]

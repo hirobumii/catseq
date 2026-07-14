@@ -1453,3 +1453,97 @@ fn real_rydberg_transfer_reuses_the_definition_segmented_hir() {
         }
     }
 }
+
+#[test]
+fn emit_arena_returns_a_python_free_variadic_morphism_dag() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.morphism import Morphism, identity\n\nclass Experiment:\n    def sequence(self) -> Morphism:\n        return identity(1) >> identity(2) >> identity(3)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "Experiment.sequence",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let artifact: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(artifact["entry"], "Experiment.sequence");
+    assert_eq!(artifact["stage"], "morphism_arena");
+    let arena = &artifact["morphism_arena"];
+    let root = arena["root"].as_u64().unwrap() as usize;
+    assert_eq!(arena["nodes"][root]["kind"], "serial");
+    assert_eq!(arena["nodes"][root]["edge_count"], 3);
+    let forbidden = [
+        "source_call",
+        "deferred_apply",
+        "dictionary",
+        "aggregate",
+        "python_object",
+    ];
+    for node in arena["nodes"].as_array().unwrap() {
+        assert!(!forbidden.contains(&node["kind"].as_str().unwrap()));
+    }
+}
+
+#[test]
+fn real_rydberg_transfer_emits_a_definition_linked_morphism_arena() {
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../rb1-next")
+        .canonicalize();
+    let Ok(source_root) = source_root else {
+        return;
+    };
+    let entry_path = source_root.join("experiments/computing/rydberg_transfer.py");
+    if !entry_path.exists() {
+        return;
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            entry_path.to_str().unwrap(),
+            "--source-root",
+            source_root.to_str().unwrap(),
+            "--entry",
+            "RydbergTransferExp.build_sequence",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let artifact: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let arena = &artifact["morphism_arena"];
+    let nodes = arena["nodes"].as_array().unwrap();
+    let root = arena["root"].as_u64().unwrap() as usize;
+
+    assert_eq!(artifact["definition_count"], 47);
+    assert_eq!(artifact["typed_hir_node_count"], 4_176);
+    assert_eq!(nodes[root]["kind"], "serial");
+    assert_eq!(nodes[root]["edge_count"], 27);
+    assert_eq!(arena["templates"].as_array().unwrap().len(), 3);
+    assert!(nodes.iter().any(|node| node["kind"] == "atomic"));
+    assert!(nodes.iter().any(|node| node["kind"] == "parallel"));
+    assert!(nodes.iter().any(|node| node["kind"] == "instantiate"));
+    assert!(nodes.iter().any(|node| node["kind"] == "definition_ref"));
+    assert!(!nodes.iter().any(|node| node["kind"] == "source_call"));
+    assert!(!nodes.iter().any(|node| node["kind"] == "deferred_apply"));
+}

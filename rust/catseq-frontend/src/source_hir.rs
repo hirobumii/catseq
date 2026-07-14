@@ -53,6 +53,27 @@ pub enum SourceHirKind {
     Other,
 }
 
+/// CatSeq operations whose identity must survive parsing for native lowering.
+///
+/// Arithmetic operations will move to the Value Expression arena separately;
+/// this enum deliberately records only Morphism algebra at this boundary.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum MorphismComposition {
+    AutoSerial,
+    StrictSerial,
+    Parallel,
+}
+
+impl MorphismComposition {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AutoSerial => "auto_serial",
+            Self::StrictSerial => "strict_serial",
+            Self::Parallel => "parallel",
+        }
+    }
+}
+
 impl SourceHirKind {
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -84,6 +105,7 @@ impl SourceHirKind {
 pub struct SourceHirNode {
     kind: SourceHirKind,
     symbol: Option<String>,
+    morphism_composition: Option<MorphismComposition>,
     edge_start: u32,
     edge_count: u32,
     anchor: SourceAnchor,
@@ -96,6 +118,10 @@ impl SourceHirNode {
 
     pub fn symbol(&self) -> Option<&str> {
         self.symbol.as_deref()
+    }
+
+    pub const fn morphism_composition(&self) -> Option<MorphismComposition> {
+        self.morphism_composition
     }
 
     pub const fn edge_start(&self) -> u32 {
@@ -513,6 +539,7 @@ pub(crate) fn lower_definition_hir(
                 nodes.push(SourceHirNode {
                     kind: expression_kind(expression),
                     symbol: expression_symbol(expression),
+                    morphism_composition: expression_morphism_composition(expression),
                     edge_start,
                     edge_count: child_ids.len() as u32,
                     anchor: anchor(module, expression.location.row, expression.location.column),
@@ -532,6 +559,7 @@ pub(crate) fn lower_definition_hir(
                 nodes.push(SourceHirNode {
                     kind: statement_kind(statement),
                     symbol: None,
+                    morphism_composition: None,
                     edge_start,
                     edge_count: child_ids.len() as u32,
                     anchor: anchor(module, statement.location.row, statement.location.column),
@@ -1144,6 +1172,18 @@ fn expression_symbol(expression: &Expr) -> Option<String> {
     match &expression.node {
         ExprKind::Name { .. } | ExprKind::Attribute { .. } => expression_path(expression),
         ExprKind::Call { func, .. } => callable_path(func),
+        _ => None,
+    }
+}
+
+fn expression_morphism_composition(expression: &Expr) -> Option<MorphismComposition> {
+    let ExprKind::BinOp { op, .. } = expression.node else {
+        return None;
+    };
+    match op {
+        Operator::RShift => Some(MorphismComposition::AutoSerial),
+        Operator::MatMult => Some(MorphismComposition::StrictSerial),
+        Operator::BitOr => Some(MorphismComposition::Parallel),
         _ => None,
     }
 }

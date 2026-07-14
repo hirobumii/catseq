@@ -4,13 +4,16 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
+use catseq_core::morphism_arena::MorphismArena;
 use catseq_frontend::{
     IncrementalStats, SemanticFact, SourceHirNode, TypeSignature, TypedCheckReport,
     TypedCheckSummary, TypedDefinition, TypedParameter,
     check_typed_bundle_entry_incremental_with_loader,
     check_typed_bundle_entry_summary_incremental_with_loader, check_typed_bundle_entry_with_loader,
     check_typed_entry, check_typed_entry_incremental, check_typed_entry_summary_incremental,
+    lower_typed_report_to_morphism_arena,
 };
 use serde::Serialize;
 use serde::ser::{SerializeSeq, SerializeStruct, Serializer};
@@ -44,8 +47,8 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             _ => return Err(format!("unexpected argument {flag:?}\n{}", usage())),
         }
     }
-    if command == CommandKind::EmitHir && output_format != OutputFormat::Json {
-        return Err("emit-hir requires --format json".to_owned());
+    if command != CommandKind::Check && output_format != OutputFormat::Json {
+        return Err(format!("{} requires --format json", command.as_str()));
     }
 
     let source =
@@ -77,6 +80,16 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             (CommandKind::EmitHir, None) => CheckedOutput::Report(
                 check_typed_entry(&path, &source, &requested).map_err(|error| error.to_string())?,
             ),
+            (CommandKind::EmitArena, Some(cache_dir)) => {
+                let report = check_typed_entry_incremental(&path, &source, &requested, &cache_dir)
+                    .map_err(|error| error.to_string())?;
+                arena_output(report)?
+            }
+            (CommandKind::EmitArena, None) => {
+                let report = check_typed_entry(&path, &source, &requested)
+                    .map_err(|error| error.to_string())?;
+                arena_output(report)?
+            }
         },
     };
     match (checked, output_format) {
@@ -86,6 +99,16 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         (CheckedOutput::Report(_), OutputFormat::Text) => {
             unreachable!("emit-hir text output is rejected before compilation")
         }
+        (CheckedOutput::Arena { report, arena }, OutputFormat::Json) => {
+            write_json(&ArenaReportJson {
+                report: &report,
+                arena: &arena.0,
+                lowering_time: arena.1,
+            })?
+        }
+        (CheckedOutput::Arena { .. }, OutputFormat::Text) => {
+            unreachable!("emit-arena text output is rejected before compilation")
+        }
     }
     Ok(())
 }
@@ -93,6 +116,20 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
 enum CheckedOutput {
     Summary(TypedCheckSummary),
     Report(TypedCheckReport),
+    Arena {
+        report: TypedCheckReport,
+        arena: (MorphismArena, Duration),
+    },
+}
+
+fn arena_output(report: TypedCheckReport) -> Result<CheckedOutput, String> {
+    let start = Instant::now();
+    let arena = lower_typed_report_to_morphism_arena(&report).map_err(|error| error.to_string())?;
+    let lowering_time = start.elapsed();
+    Ok(CheckedOutput::Arena {
+        report,
+        arena: (arena, lowering_time),
+    })
 }
 
 fn check_source_bundle(
@@ -143,6 +180,22 @@ fn check_source_bundle(
             check_typed_bundle_entry_with_loader(&entry_module, requested, &mut loader)
                 .map_err(|error| error.to_string())?,
         )),
+        (CommandKind::EmitArena, Some(cache_dir)) => {
+            let report = check_typed_bundle_entry_incremental_with_loader(
+                &entry_module,
+                requested,
+                cache_dir,
+                &mut loader,
+            )
+            .map_err(|error| error.to_string())?;
+            arena_output(report)
+        }
+        (CommandKind::EmitArena, None) => {
+            let report =
+                check_typed_bundle_entry_with_loader(&entry_module, requested, &mut loader)
+                    .map_err(|error| error.to_string())?;
+            arena_output(report)
+        }
     }
 }
 
@@ -157,7 +210,7 @@ fn print_text_summary(summary: &TypedCheckSummary) {
 
 fn usage() -> String {
     String::from(
-        "usage: catseqc check <source.py> [--source-root <path>] [--entry <qualified-name>] [--format text|json] [--cache-dir <path>]\n       catseqc emit-hir <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]",
+        "usage: catseqc check <source.py> [--source-root <path>] [--entry <qualified-name>] [--format text|json] [--cache-dir <path>]\n       catseqc emit-hir <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]\n       catseqc emit-arena <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]",
     )
 }
 
@@ -212,6 +265,7 @@ enum OutputFormat {
 enum CommandKind {
     Check,
     EmitHir,
+    EmitArena,
 }
 
 impl CommandKind {
@@ -219,6 +273,7 @@ impl CommandKind {
         match value {
             "check" => Ok(Self::Check),
             "emit-hir" => Ok(Self::EmitHir),
+            "emit-arena" => Ok(Self::EmitArena),
             _ => Err(format!("unknown command {value:?}\n{}", usage())),
         }
     }
@@ -226,7 +281,15 @@ impl CommandKind {
     const fn default_output_format(self) -> OutputFormat {
         match self {
             Self::Check => OutputFormat::Text,
-            Self::EmitHir => OutputFormat::Json,
+            Self::EmitHir | Self::EmitArena => OutputFormat::Json,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Check => "check",
+            Self::EmitHir => "emit-hir",
+            Self::EmitArena => "emit-arena",
         }
     }
 }
@@ -285,6 +348,39 @@ impl Serialize for HirReportJson<'_> {
         state.serialize_field("definitions", &DefinitionsJson(report.definitions()))?;
         state.serialize_field("diagnostics", report.diagnostics())?;
         state.serialize_field("incremental", &IncrementalJson(report.incremental()))?;
+        state.end()
+    }
+}
+
+struct ArenaReportJson<'a> {
+    report: &'a TypedCheckReport,
+    arena: &'a MorphismArena,
+    lowering_time: Duration,
+}
+
+impl Serialize for ArenaReportJson<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ArenaResponse", 9)?;
+        state.serialize_field("schema_version", &1_u32)?;
+        state.serialize_field("stage", "morphism_arena")?;
+        state.serialize_field("entry", self.report.entry())?;
+        state.serialize_field("definition_count", &self.report.definitions().len())?;
+        state.serialize_field(
+            "typed_hir_node_count",
+            &self
+                .report
+                .definitions()
+                .iter()
+                .map(|definition| definition.hir().nodes().len())
+                .sum::<usize>(),
+        )?;
+        state.serialize_field("morphism_arena", self.arena)?;
+        state.serialize_field("arena_lowering_seconds", &self.lowering_time.as_secs_f64())?;
+        state.serialize_field("diagnostics", self.report.diagnostics())?;
+        state.serialize_field("incremental", &IncrementalJson(self.report.incremental()))?;
         state.end()
     }
 }
@@ -435,10 +531,17 @@ impl Serialize for NodeJson<'_> {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SourceHirNode", 6)?;
+        let mut state = serializer.serialize_struct("SourceHirNode", 7)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("kind", self.node.kind().as_str())?;
         state.serialize_field("symbol", &self.node.symbol())?;
+        state.serialize_field(
+            "morphism_composition",
+            &self
+                .node
+                .morphism_composition()
+                .map(|operation| operation.as_str()),
+        )?;
         state.serialize_field("edge_start", &self.node.edge_start())?;
         state.serialize_field("edge_count", &self.node.edge_count())?;
         state.serialize_field("anchor", &AnchorJson(self.node))?;

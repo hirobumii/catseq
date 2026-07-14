@@ -16,6 +16,7 @@ mod arena_lowering;
 mod hir;
 mod incremental;
 mod intrinsics;
+mod morphism_lowering;
 mod names;
 mod session;
 mod source_hir;
@@ -33,14 +34,15 @@ pub use incremental::{
     check_typed_bundle_entry_summary_incremental_with_loader, check_typed_entry_incremental,
     check_typed_entry_summary_incremental,
 };
+pub use morphism_lowering::{MorphismLoweringError, lower_typed_report_to_morphism_arena};
 pub use names::{PathRoot, ResolvedPath, ScanSlotUse};
 pub use session::{
     CacheStatus, CompiledSourceSequence, SourceCompileError, SourceCompileOutcome,
     SourceCompilerSession,
 };
 pub use source_hir::{
-    DependencyRole, SemanticFact, SourceAnchor, SourceHirKind, SourceHirNode, TypedSourceHir,
-    ValueAvailability,
+    DependencyRole, MorphismComposition, SemanticFact, SourceAnchor, SourceHirKind, SourceHirNode,
+    TypedSourceHir, ValueAvailability,
 };
 pub use typed::{
     IncrementalStats, SourceType, TypeSignature, TypedCheckError, TypedCheckReport,

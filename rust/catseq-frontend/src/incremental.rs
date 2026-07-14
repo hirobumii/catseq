@@ -18,8 +18,8 @@ use crate::{
     TypedDefinition, check_typed_bundle_entry_with_loader, check_typed_entry,
 };
 
-const CACHE_FORMAT_VERSION: u32 = 5;
-const FRONTEND_SEMANTIC_VERSION: u32 = 3;
+const CACHE_FORMAT_VERSION: u32 = 6;
+const FRONTEND_SEMANTIC_VERSION: u32 = 4;
 const DEP_GRAPH_FILE: &str = "dep-graph.json";
 const CURRENT_FILE: &str = "CURRENT";
 

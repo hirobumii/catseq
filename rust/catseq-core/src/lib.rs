@@ -2,3 +2,4 @@
 
 pub mod arena;
 pub mod definitions;
+pub mod morphism_arena;

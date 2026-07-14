@@ -17,8 +17,8 @@ use crate::{
     check_typed_bundle_entry_with_loader, check_typed_entry,
 };
 
-const CACHE_FORMAT_VERSION: u32 = 3;
-const FRONTEND_SEMANTIC_VERSION: u32 = 1;
+const CACHE_FORMAT_VERSION: u32 = 4;
+const FRONTEND_SEMANTIC_VERSION: u32 = 3;
 const DEP_GRAPH_FILE: &str = "dep-graph.json";
 const CURRENT_FILE: &str = "CURRENT";
 
@@ -479,7 +479,13 @@ fn semantic_graph(
             .hir()
             .facts()
             .iter()
-            .map(|fact| (fact.resolved_node(), fact.resolved_definition()))
+            .map(|fact| {
+                (
+                    fact.resolved_node(),
+                    fact.resolved_definition(),
+                    fact.resolved_definitions(),
+                )
+            })
             .collect();
         let resolve_key = stable_query_key("resolve-definition", &revision_identity);
         let resolve_result = fingerprint_json(&resolutions);

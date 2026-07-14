@@ -45,57 +45,61 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     let source =
         fs::read_to_string(&path).map_err(|error| format!("cannot read {path}: {error}"))?;
     let requested = requested_entry.ok_or_else(|| format!("--entry is required\n{}", usage()))?;
-    let report = match (source_root, cache_dir) {
-        (Some(source_root), None) => {
-            let entry_module = module_name(&source_root, PathBuf::from(&path).as_path())?;
-            let mut loaded = BTreeMap::from([(entry_module.clone(), source.clone())]);
-            let mut loader = |module: &str| -> Result<Option<String>, String> {
-                if let Some(source) = loaded.get(module) {
-                    return Ok(Some(source.clone()));
-                }
-                let source = load_source_module(&source_root, module)?;
-                if let Some(source) = &source {
-                    loaded.insert(module.to_owned(), source.clone());
-                }
-                Ok(source)
-            };
-            check_typed_bundle_entry_with_loader(&entry_module, &requested, &mut loader)
-                .map_err(|error| error.to_string())?
-        }
-        (Some(source_root), Some(cache_dir)) => {
-            let entry_module = module_name(&source_root, PathBuf::from(&path).as_path())?;
-            let mut loaded = BTreeMap::from([(entry_module.clone(), source.clone())]);
-            let mut loader = |module: &str| -> Result<Option<String>, String> {
-                if let Some(source) = loaded.get(module) {
-                    return Ok(Some(source.clone()));
-                }
-                let source = load_source_module(&source_root, module)?;
-                if let Some(source) = &source {
-                    loaded.insert(module.to_owned(), source.clone());
-                }
-                Ok(source)
-            };
-            check_typed_bundle_entry_incremental_with_loader(
-                &entry_module,
-                &requested,
-                &cache_dir,
-                &mut loader,
-            )
-            .map_err(|error| error.to_string())?
-        }
-        (None, Some(cache_dir)) => {
-            check_typed_entry_incremental(&path, &source, &requested, &cache_dir)
-                .map_err(|error| error.to_string())?
-        }
-        (None, None) => {
-            check_typed_entry(&path, &source, &requested).map_err(|error| error.to_string())?
-        }
+    let report = match source_root {
+        Some(source_root) => check_source_bundle(
+            &source_root,
+            PathBuf::from(&path).as_path(),
+            source,
+            &requested,
+            cache_dir.as_deref(),
+        )?,
+        None => match cache_dir {
+            Some(cache_dir) => {
+                check_typed_entry_incremental(&path, &source, &requested, &cache_dir)
+                    .map_err(|error| error.to_string())?
+            }
+            None => {
+                check_typed_entry(&path, &source, &requested).map_err(|error| error.to_string())?
+            }
+        },
     };
     match output_format {
         OutputFormat::Text => print_text_report(&report),
         OutputFormat::Json => println!("{}", report_json(&report)),
     }
     Ok(())
+}
+
+fn check_source_bundle(
+    source_root: &std::path::Path,
+    entry_path: &std::path::Path,
+    entry_source: String,
+    requested: &str,
+    cache_dir: Option<&std::path::Path>,
+) -> Result<TypedCheckReport, String> {
+    let entry_module = module_name(source_root, entry_path)?;
+    let mut loaded = BTreeMap::from([(entry_module.clone(), entry_source)]);
+    let mut loader = |module: &str| -> Result<Option<String>, String> {
+        if let Some(source) = loaded.get(module) {
+            return Ok(Some(source.clone()));
+        }
+        let source = load_source_module(source_root, module)?;
+        if let Some(source) = &source {
+            loaded.insert(module.to_owned(), source.clone());
+        }
+        Ok(source)
+    };
+    match cache_dir {
+        Some(cache_dir) => check_typed_bundle_entry_incremental_with_loader(
+            &entry_module,
+            requested,
+            cache_dir,
+            &mut loader,
+        )
+        .map_err(|error| error.to_string()),
+        None => check_typed_bundle_entry_with_loader(&entry_module, requested, &mut loader)
+            .map_err(|error| error.to_string()),
+    }
 }
 
 fn print_text_report(report: &TypedCheckReport) {
@@ -223,6 +227,7 @@ fn report_json(report: &TypedCheckReport) -> serde_json::Value {
                             "roles": fact.roles().iter().map(|role| role.as_str()).collect::<Vec<_>>(),
                             "resolved_node": fact.resolved_node(),
                             "resolved_definition": fact.resolved_definition(),
+                            "resolved_definitions": fact.resolved_definitions(),
                             "phase_frame": fact.phase_frame(),
                             "compile_value": fact.compile_value(),
                         })
@@ -243,7 +248,7 @@ fn report_json(report: &TypedCheckReport) -> serde_json::Value {
             "result_cache_loads": report.incremental().result_cache_loads(),
             "bytes_read": report.incremental().bytes_read(),
             "bytes_written": report.incremental().bytes_written(),
-            "fingerprint_nanos": report.incremental().fingerprint_nanos(),
+            "fingerprint_seconds": report.incremental().fingerprint_seconds(),
             "executed_by_kind": report.incremental().executed_by_kind(),
         },
     })

@@ -42,6 +42,8 @@ pub enum SourceHirKind {
     Aggregate,
     Compare,
     ConditionalExpression,
+    Lambda,
+    Comprehension,
     Assignment,
     Return,
     Expression,
@@ -65,6 +67,8 @@ impl SourceHirKind {
             Self::Aggregate => "aggregate",
             Self::Compare => "compare",
             Self::ConditionalExpression => "conditional_expression",
+            Self::Lambda => "lambda",
+            Self::Comprehension => "comprehension",
             Self::Assignment => "assignment",
             Self::Return => "return",
             Self::Expression => "expression",
@@ -146,6 +150,7 @@ pub struct SemanticFact {
     roles: Vec<DependencyRole>,
     resolved_node: Option<u32>,
     resolved_definition: Option<String>,
+    resolved_definitions: Vec<String>,
     phase_frame: Option<String>,
     compile_value: Option<String>,
 }
@@ -171,6 +176,10 @@ impl SemanticFact {
         self.resolved_definition.as_deref()
     }
 
+    pub fn resolved_definitions(&self) -> &[String] {
+        &self.resolved_definitions
+    }
+
     pub fn phase_frame(&self) -> Option<&str> {
         self.phase_frame.as_deref()
     }
@@ -182,7 +191,7 @@ impl SemanticFact {
 
 #[derive(Clone)]
 struct LocalBinding {
-    source_type: SourceType,
+    source_type: Option<SourceType>,
     value_node: u32,
     availability: ValueAvailability,
 }
@@ -217,6 +226,31 @@ impl TypedSourceHir {
         &self.facts
     }
 
+    pub(crate) fn referenced_attributes<'a>(
+        &'a self,
+        property_names: &'a HashSet<String>,
+    ) -> Vec<String> {
+        let mut attributes = Vec::new();
+        for node in &self.nodes {
+            let Some(path) = node
+                .symbol
+                .as_deref()
+                .filter(|_| node.kind == SourceHirKind::Attribute)
+            else {
+                continue;
+            };
+            let Some(property) = path.strip_prefix("self.") else {
+                continue;
+            };
+            if property_names.contains(property)
+                && !attributes.iter().any(|existing| existing == path)
+            {
+                attributes.push(path.to_owned());
+            }
+        }
+        attributes
+    }
+
     pub(crate) fn first_link_structural_use(&self) -> Option<&SourceAnchor> {
         self.nodes
             .iter()
@@ -231,12 +265,31 @@ impl TypedSourceHir {
     pub(crate) fn resolve_call(&mut self, source_path: &str, resolved: &str) {
         for (node, fact) in self.nodes.iter().zip(&mut self.facts) {
             if node.kind == SourceHirKind::Call && node.symbol.as_deref() == Some(source_path) {
-                fact.resolved_definition = Some(resolved.to_owned());
+                record_resolution(fact, resolved);
                 if let Some(source_type) =
                     intrinsics::return_type(resolved, fact.source_type.as_ref())
                 {
                     fact.source_type = Some(source_type);
                 }
+            }
+        }
+    }
+
+    pub(crate) fn resolve_attribute(&mut self, source_path: &str, resolved: &str) {
+        for (node, fact) in self.nodes.iter().zip(&mut self.facts) {
+            if node.kind == SourceHirKind::Attribute && node.symbol.as_deref() == Some(source_path)
+            {
+                record_resolution(fact, resolved);
+            }
+        }
+    }
+
+    pub(crate) fn resolve_opaque_atomic_call(&mut self, source_path: &str, resolved: &str) {
+        for (node, fact) in self.nodes.iter().zip(&mut self.facts) {
+            if node.kind == SourceHirKind::Call && node.symbol.as_deref() == Some(source_path) {
+                record_resolution(fact, resolved);
+                fact.source_type = Some(SourceType::Morphism);
+                fact.availability = ValueAvailability::Compile;
             }
         }
     }
@@ -255,10 +308,14 @@ impl TypedSourceHir {
         return_types: &HashMap<String, SourceType>,
     ) {
         for fact in &mut self.facts {
-            let Some(definition) = fact.resolved_definition.as_deref() else {
+            let mut resolved_types = fact
+                .resolved_definitions
+                .iter()
+                .filter_map(|definition| return_types.get(definition));
+            let Some(return_type) = resolved_types.next() else {
                 continue;
             };
-            if let Some(return_type) = return_types.get(definition) {
+            if resolved_types.all(|candidate| candidate == return_type) {
                 fact.source_type = Some(return_type.clone());
                 if matches!(
                     return_type,
@@ -266,6 +323,77 @@ impl TypedSourceHir {
                 ) {
                     fact.availability = ValueAvailability::Compile;
                 }
+            }
+        }
+        self.refresh_derived_facts();
+    }
+
+    fn refresh_derived_facts(&mut self) {
+        for node_id in 0..self.nodes.len() {
+            if let Some(resolved_node) = self.facts[node_id].resolved_node {
+                let resolved = self.facts[resolved_node as usize].clone();
+                self.facts[node_id].source_type = resolved.source_type;
+                self.facts[node_id].availability = resolved.availability;
+            }
+
+            let children = node_edges(&self.nodes[node_id], &self.edges);
+            let child_facts: Vec<_> = children
+                .iter()
+                .map(|child| self.facts[*child as usize].clone())
+                .collect();
+            let child_type = |index: usize| {
+                child_facts
+                    .get(index)
+                    .and_then(|fact| fact.source_type.clone())
+            };
+            let derived_type = match self.nodes[node_id].kind {
+                SourceHirKind::Return => child_type(0),
+                SourceHirKind::Assignment | SourceHirKind::Expression => {
+                    child_facts.last().and_then(|fact| fact.source_type.clone())
+                }
+                SourceHirKind::ConditionalExpression => child_type(1),
+                SourceHirKind::Call if child_type(0) == Some(SourceType::MorphismTemplate) => {
+                    Some(SourceType::Morphism)
+                }
+                SourceHirKind::Binary
+                    if child_facts
+                        .iter()
+                        .any(|fact| fact.source_type == Some(SourceType::Morphism)) =>
+                {
+                    Some(SourceType::Morphism)
+                }
+                SourceHirKind::Binary
+                    if !child_facts.is_empty()
+                        && child_facts
+                            .iter()
+                            .all(|fact| fact.source_type == Some(SourceType::MorphismTemplate)) =>
+                {
+                    Some(SourceType::MorphismTemplate)
+                }
+                _ => None,
+            };
+            if let Some(derived_type) = derived_type {
+                self.facts[node_id].source_type = Some(derived_type);
+            }
+            if self.nodes[node_id].kind == SourceHirKind::Call
+                && child_type(0) == Some(SourceType::MorphismTemplate)
+                && self.facts[node_id].resolved_definition.is_none()
+            {
+                record_resolution(&mut self.facts[node_id], "catseq.instantiate");
+            }
+            if matches!(
+                self.nodes[node_id].kind,
+                SourceHirKind::Return
+                    | SourceHirKind::Assignment
+                    | SourceHirKind::Expression
+                    | SourceHirKind::ConditionalExpression
+                    | SourceHirKind::Binary
+            ) {
+                self.facts[node_id].availability = child_facts
+                    .iter()
+                    .map(|fact| fact.availability)
+                    .max()
+                    .unwrap_or(ValueAvailability::Compile);
             }
         }
     }
@@ -288,6 +416,19 @@ impl TypedSourceHir {
             .filter(|(node, _)| node.kind == SourceHirKind::Return)
             .filter_map(|(node, fact)| Some((&node.anchor, fact.source_type.as_ref()?)))
             .find(|(_, found)| !return_types_compatible(expected, found))
+    }
+}
+
+fn record_resolution(fact: &mut SemanticFact, resolved: &str) {
+    if fact.resolved_definition.is_none() {
+        fact.resolved_definition = Some(resolved.to_owned());
+    }
+    if !fact
+        .resolved_definitions
+        .iter()
+        .any(|definition| definition == resolved)
+    {
+        fact.resolved_definitions.push(resolved.to_owned());
     }
 }
 
@@ -472,6 +613,7 @@ fn expression_children<'a>(
         ExprKind::UnaryOp { operand, .. } | ExprKind::Attribute { value: operand, .. } => {
             children.push(AstNode::Expression(operand));
         }
+        ExprKind::Lambda { body, .. } => children.push(AstNode::Expression(body)),
         ExprKind::IfExp { test, body, orelse } => {
             children.push(AstNode::Expression(test));
             children.push(AstNode::Expression(body));
@@ -497,22 +639,53 @@ fn expression_children<'a>(
             keywords,
         } => {
             children.push(AstNode::Expression(func));
-            children.extend(
-                args.iter()
-                    .filter(|argument| !is_erased_state_expression(argument, erased_state_names))
-                    .map(AstNode::Expression),
-            );
-            children.extend(
-                keywords
-                    .iter()
-                    .map(|keyword| keyword.node.value.as_ref())
-                    .filter(|argument| !is_erased_state_expression(argument, erased_state_names))
-                    .map(AstNode::Expression),
-            );
+            let compile_environment_load =
+                expression_path(func).is_some_and(|path| path == "np.load" || path == "numpy.load");
+            if !compile_environment_load {
+                children.extend(
+                    args.iter()
+                        .filter(|argument| {
+                            !is_erased_state_expression(argument, erased_state_names)
+                        })
+                        .map(AstNode::Expression),
+                );
+                children.extend(
+                    keywords
+                        .iter()
+                        .map(|keyword| keyword.node.value.as_ref())
+                        .filter(|argument| {
+                            !is_erased_state_expression(argument, erased_state_names)
+                        })
+                        .map(AstNode::Expression),
+                );
+            }
         }
         ExprKind::Subscript { value, slice, .. } => {
             children.push(AstNode::Expression(value));
             children.push(AstNode::Expression(slice));
+        }
+        ExprKind::ListComp { elt, generators }
+        | ExprKind::SetComp { elt, generators }
+        | ExprKind::GeneratorExp { elt, generators } => {
+            children.push(AstNode::Expression(elt));
+            for generator in generators {
+                children.push(AstNode::Expression(&generator.target));
+                children.push(AstNode::Expression(&generator.iter));
+                children.extend(generator.ifs.iter().map(AstNode::Expression));
+            }
+        }
+        ExprKind::DictComp {
+            key,
+            value,
+            generators,
+        } => {
+            children.push(AstNode::Expression(key));
+            children.push(AstNode::Expression(value));
+            for generator in generators {
+                children.push(AstNode::Expression(&generator.target));
+                children.push(AstNode::Expression(&generator.iter));
+                children.extend(generator.ifs.iter().map(AstNode::Expression));
+            }
         }
         _ => {}
     }
@@ -601,6 +774,11 @@ fn expression_kind(expression: &Expr) -> SourceHirKind {
         }
         ExprKind::Compare { .. } => SourceHirKind::Compare,
         ExprKind::IfExp { .. } => SourceHirKind::ConditionalExpression,
+        ExprKind::Lambda { .. } => SourceHirKind::Lambda,
+        ExprKind::ListComp { .. }
+        | ExprKind::SetComp { .. }
+        | ExprKind::DictComp { .. }
+        | ExprKind::GeneratorExp { .. } => SourceHirKind::Comprehension,
         _ => SourceHirKind::Other,
     }
 }
@@ -656,7 +834,7 @@ fn expression_fact(
                 .map_or(ValueAvailability::Compile, |binding| binding.availability);
             let source_type = locals
                 .get(&name)
-                .map(|binding| binding.source_type.clone())
+                .and_then(|binding| binding.source_type.clone())
                 .or_else(|| parameters.get(&name).cloned())
                 .or(match name.as_str() {
                     "us" | "ms" | "s" | "ns" => Some(SourceType::Duration),
@@ -725,8 +903,18 @@ fn expression_fact(
         ExprKind::List { .. } | ExprKind::Tuple { .. } | ExprKind::Set { .. } => {
             (Some(SourceType::FixedAggregate), joined_availability())
         }
+        ExprKind::ListComp { .. }
+        | ExprKind::SetComp { .. }
+        | ExprKind::DictComp { .. }
+        | ExprKind::GeneratorExp { .. } => {
+            (Some(SourceType::FixedAggregate), joined_availability())
+        }
+        ExprKind::Lambda { .. } => (
+            Some(SourceType::NativeRecord("Lambda".to_owned())),
+            ValueAvailability::Compile,
+        ),
         ExprKind::Call { func, .. } => {
-            let source_type = expression_path(func).and_then(|path| {
+            let source_type = callable_path(func).and_then(|path| {
                 intrinsics::return_type(&path, child_fact(1).and_then(SemanticFact::source_type))
             });
             let availability = if matches!(
@@ -747,6 +935,7 @@ fn expression_fact(
         roles: Vec::new(),
         resolved_node,
         resolved_definition: None,
+        resolved_definitions: Vec::new(),
         phase_frame,
         compile_value,
     }
@@ -801,15 +990,10 @@ fn statement_fact(
             StmtKind::AnnAssign { target, .. } => Some(target),
             _ => None,
         };
-        let value = children.last().copied().and_then(|value_node| {
-            facts
-                .get(value_node as usize)
-                .and_then(|fact| fact.source_type.clone())
-                .map(|source_type| LocalBinding {
-                    source_type,
-                    value_node,
-                    availability: facts[value_node as usize].availability,
-                })
+        let value = children.last().copied().map(|value_node| LocalBinding {
+            source_type: facts[value_node as usize].source_type.clone(),
+            value_node,
+            availability: facts[value_node as usize].availability,
         });
         if let (Some(target), Some(value)) = (target, value) {
             if let ExprKind::Name { id, .. } = &target.node {
@@ -834,6 +1018,7 @@ fn statement_fact(
         roles: Vec::new(),
         resolved_node: None,
         resolved_definition: None,
+        resolved_definitions: Vec::new(),
         phase_frame: None,
         compile_value: None,
     }
@@ -916,6 +1101,13 @@ fn expression_path(expression: &Expr) -> Option<String> {
     }
 }
 
+fn callable_path(expression: &Expr) -> Option<String> {
+    expression_path(expression).or_else(|| match &expression.node {
+        ExprKind::Attribute { attr, .. } => Some(attr.to_string()),
+        _ => None,
+    })
+}
+
 fn is_erased_state_assignment(statement: &Stmt, erased_state_names: &HashSet<String>) -> bool {
     let StmtKind::Assign { targets, value, .. } = &statement.node else {
         return false;
@@ -951,7 +1143,7 @@ fn is_legacy_state_initializer(expression: &Expr) -> bool {
 fn expression_symbol(expression: &Expr) -> Option<String> {
     match &expression.node {
         ExprKind::Name { .. } | ExprKind::Attribute { .. } => expression_path(expression),
-        ExprKind::Call { func, .. } => expression_path(func),
+        ExprKind::Call { func, .. } => callable_path(func),
         _ => None,
     }
 }

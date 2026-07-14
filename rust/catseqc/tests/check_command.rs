@@ -28,7 +28,7 @@ fn binary_discovers_requested_sequence_entry_from_source() {
         ])
         .output()
         .unwrap();
-    fs::remove_file(path).unwrap();
+    fs::remove_file(&path).unwrap();
 
     assert!(
         output.status.success(),
@@ -79,6 +79,67 @@ fn binary_rejects_python_outside_the_restricted_sequence_language() {
 }
 
 #[test]
+fn unsupported_expression_is_not_silently_dropped_from_hir() {
+    let path = source_file();
+    fs::write(&path, "def sequence() -> str:\n    return f'value={1}'\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("formatted string"), "{stderr}");
+    assert!(stderr.contains(":2:"), "{stderr}");
+}
+
+#[test]
+fn oasm_black_box_definition_is_an_opaque_atomic_boundary() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.morphism import Morphism\n\ndef sequence() -> Morphism:\n    return legacy_atomic()\n\ndef legacy_atomic() -> Morphism:\n    while True:\n        break\n    return oasm_black_box({})\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "check",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["definitions"].as_array().unwrap().len(), 1);
+    let definition = &report["definitions"][0];
+    let nodes = definition["hir"]["nodes"].as_array().unwrap();
+    let facts = definition["hir"]["facts"].as_array().unwrap();
+    let call = nodes
+        .iter()
+        .zip(facts)
+        .find(|(node, _)| node["kind"] == "call" && node["symbol"] == "legacy_atomic")
+        .unwrap();
+    assert_eq!(call.1["type"], "Morphism");
+    assert!(
+        call.1["resolved_definition"]
+            .as_str()
+            .unwrap()
+            .ends_with(".legacy_atomic")
+    );
+}
+
+#[test]
 fn binary_rejects_scan_values_that_change_channel_topology() {
     let path = source_file();
     fs::write(
@@ -117,7 +178,7 @@ fn binary_reports_the_entry_type_signature_as_structured_check_output() {
         ])
         .output()
         .unwrap();
-    fs::remove_file(path).unwrap();
+    fs::remove_file(&path).unwrap();
 
     assert!(
         output.status.success(),
@@ -238,8 +299,8 @@ fn unchanged_check_reuses_queries_from_the_previous_process() {
     assert!(second["incremental"]["bytes_read"].as_u64().unwrap() > 0);
     assert_eq!(second["incremental"]["bytes_written"], 0);
     assert!(
-        second["incremental"]["fingerprint_nanos"]
-            .as_u64()
+        second["incremental"]["fingerprint_seconds"]
+            .as_f64()
             .is_some()
     );
     assert!(second["incremental"]["executed_by_kind"].is_object());
@@ -396,6 +457,62 @@ fn reachable_service_singleton_resolves_to_its_compile_class_method() {
 }
 
 #[test]
+fn static_property_comprehension_expands_compile_instance_calls() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from functools import reduce\nfrom catseq.morphism import Morphism, identity\n\nclass ModuleA:\n    def init(self) -> Morphism:\n        return identity(1)\n\nclass ModuleB:\n    def init(self) -> Morphism:\n        return identity(2)\n\nmodule_a = ModuleA()\nmodule_b = ModuleB()\n\nclass Service:\n    @property\n    def module_list(self) -> list[ModuleA | ModuleB]:\n        return [module_a, module_b]\n\n    def init(self) -> Morphism:\n        values = [module.init() for module in self.module_list]\n        return reduce(lambda left, right: left | right, values)\n\nservice = Service()\n\ndef sequence() -> Morphism:\n    return service.init()\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "check",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(&path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let names: Vec<_> = report["definitions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|definition| definition["qualified_name"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "sequence".to_owned(),
+            format!("{}.Service.init", path.display()),
+            format!("{}.Service.module_list", path.display()),
+            format!("{}.ModuleA.init", path.display()),
+            format!("{}.ModuleB.init", path.display()),
+        ]
+    );
+    let service = &report["definitions"][1];
+    let (call, fact) = service["hir"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(service["hir"]["facts"].as_array().unwrap())
+        .find(|(node, _)| node["kind"] == "call" && node["symbol"] == "module.init")
+        .unwrap();
+    assert_eq!(call["kind"], "call");
+    assert_eq!(fact["resolved_definitions"].as_array().unwrap().len(), 2);
+    assert_eq!(fact["type"], "Morphism");
+}
+
+#[test]
 fn compile_discriminated_optional_annotation_has_a_native_source_type() {
     let path = source_file();
     fs::write(
@@ -486,6 +603,90 @@ fn unannotated_return_type_is_inferred_from_flat_hir() {
     );
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["definitions"][0]["return_type"], "Morphism");
+}
+
+#[test]
+fn unannotated_return_type_flows_across_a_resolved_definition_call() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.morphism import identity\n\ndef sequence():\n    return helper()\n\ndef helper():\n    return identity(1)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "check",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["definitions"][0]["return_type"], "Morphism");
+    assert_eq!(report["definitions"][1]["return_type"], "Morphism");
+    let entry_hir = &report["definitions"][0]["hir"];
+    let return_node = entry_hir["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["kind"] == "return")
+        .unwrap();
+    assert_eq!(
+        entry_hir["facts"][return_node["id"].as_u64().unwrap() as usize]["type"],
+        "Morphism"
+    );
+}
+
+#[test]
+fn unresolved_call_assignment_keeps_a_local_resolution_edge() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.morphism import identity\n\ndef sequence():\n    value = helper()\n    return value\n\ndef helper():\n    return identity(1)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "check",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["definitions"][0]["return_type"], "Morphism");
+    let entry_hir = &report["definitions"][0]["hir"];
+    let value_name = entry_hir["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(entry_hir["facts"].as_array().unwrap())
+        .find(|(node, fact)| {
+            node["kind"] == "name" && node["symbol"] == "value" && fact["resolved_node"].is_u64()
+        })
+        .unwrap();
+    assert!(value_name.1["resolved_node"].is_u64());
+    assert_eq!(value_name.1["type"], "Morphism");
 }
 
 #[test]
@@ -982,6 +1183,34 @@ fn incompatible_return_type_reports_a_source_anchored_diagnostic() {
 }
 
 #[test]
+fn incompatible_resolved_call_return_reports_a_type_mismatch() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.morphism import Morphism, identity\n\ndef sequence() -> int:\n    return helper()\n\ndef helper() -> Morphism:\n    return identity(1)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "check",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("expected Int64"), "{stderr}");
+    assert!(stderr.contains("found Morphism"), "{stderr}");
+    assert!(stderr.contains(":4:"), "{stderr}");
+}
+
+#[test]
 fn failed_check_preserves_the_last_successful_incremental_session() {
     let path = source_file();
     let valid_source = "from catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    return identity(1)\n";
@@ -1086,7 +1315,7 @@ fn real_rydberg_transfer_reuses_the_definition_segmented_hir() {
     fs::remove_dir_all(cache_dir).unwrap();
 
     assert_eq!(cold["entry"], "RydbergTransferExp.build_sequence");
-    assert_eq!(cold["definitions"].as_array().unwrap().len(), 29);
+    assert_eq!(cold["definitions"].as_array().unwrap().len(), 47);
     assert_eq!(warm["incremental"]["executed"], 0);
     assert!(warm["incremental"]["green"].as_u64().unwrap() > 100);
     assert_eq!(warm["definitions"], cold["definitions"]);

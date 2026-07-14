@@ -2,7 +2,7 @@
 
 use crate::typed::SourceType;
 
-pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 1;
+pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 2;
 
 #[derive(Clone, Copy)]
 enum ResultRule {
@@ -12,6 +12,7 @@ enum ResultRule {
     Int64,
     Bool,
     FixedAggregate,
+    NativeRecord(&'static str),
     ReplaceFirstArgument,
 }
 
@@ -119,6 +120,10 @@ const INTRINSICS: &[Intrinsic] = &[
         result: ResultRule::Float64,
     },
     Intrinsic {
+        leaf: "sqrt",
+        result: ResultRule::Float64,
+    },
+    Intrinsic {
         leaf: "float",
         result: ResultRule::Float64,
     },
@@ -138,9 +143,40 @@ const INTRINSICS: &[Intrinsic] = &[
         leaf: "range",
         result: ResultRule::FixedAggregate,
     },
+    Intrinsic {
+        leaf: "enumerate",
+        result: ResultRule::FixedAggregate,
+    },
+    Intrinsic {
+        leaf: "zip",
+        result: ResultRule::FixedAggregate,
+    },
+    Intrinsic {
+        leaf: "tuple",
+        result: ResultRule::FixedAggregate,
+    },
+    Intrinsic {
+        leaf: "ones_like",
+        result: ResultRule::FixedAggregate,
+    },
+    Intrinsic {
+        leaf: "mod",
+        result: ResultRule::Float64,
+    },
+    Intrinsic {
+        leaf: "sum",
+        result: ResultRule::Float64,
+    },
+    Intrinsic {
+        leaf: "StaticWaveform",
+        result: ResultRule::NativeRecord("StaticWaveform"),
+    },
 ];
 
 pub(crate) fn return_type(path: &str, first_argument: Option<&SourceType>) -> Option<SourceType> {
+    if path == "numpy.load" || path == "np.load" {
+        return Some(SourceType::NativeRecord("CalibrationSnapshot".to_owned()));
+    }
     let leaf = path.rsplit('.').next().unwrap_or(path);
     let intrinsic = INTRINSICS.iter().find(|intrinsic| intrinsic.leaf == leaf);
     if intrinsic.is_none() && path.starts_with("catseq.hardware.") {
@@ -154,6 +190,7 @@ pub(crate) fn return_type(path: &str, first_argument: Option<&SourceType>) -> Op
         ResultRule::Int64 => SourceType::Int64,
         ResultRule::Bool => SourceType::Bool,
         ResultRule::FixedAggregate => SourceType::FixedAggregate,
+        ResultRule::NativeRecord(schema) => SourceType::NativeRecord(schema.to_owned()),
         ResultRule::ReplaceFirstArgument => first_argument
             .cloned()
             .unwrap_or_else(|| SourceType::NativeRecord("dataclass".to_owned())),

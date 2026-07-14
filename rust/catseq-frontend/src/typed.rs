@@ -98,6 +98,7 @@ pub struct TypedDefinition {
     module: String,
     qualified_name: String,
     signature: TypeSignature,
+    return_type_is_explicit: bool,
     hir: TypedSourceHir,
 }
 
@@ -188,8 +189,8 @@ impl IncrementalStats {
         self.bytes_written
     }
 
-    pub const fn fingerprint_nanos(&self) -> u64 {
-        self.fingerprint_nanos
+    pub fn fingerprint_seconds(&self) -> f64 {
+        self.fingerprint_nanos as f64 / 1_000_000_000.0
     }
 
     pub fn executed_by_kind(&self) -> &BTreeMap<String, u64> {
@@ -280,6 +281,13 @@ pub enum TypedCheckError {
         line: usize,
         column: usize,
     },
+    UnsupportedExpression {
+        file_name: String,
+        definition: String,
+        expression: String,
+        line: usize,
+        column: usize,
+    },
     TypeMismatch {
         file_name: String,
         definition: String,
@@ -349,6 +357,16 @@ impl Display for TypedCheckError {
             } => write!(
                 formatter,
                 "unsupported reachable {statement} statement in {definition} at {file_name}:{line}:{column}"
+            ),
+            Self::UnsupportedExpression {
+                file_name,
+                definition,
+                expression,
+                line,
+                column,
+            } => write!(
+                formatter,
+                "unsupported reachable {expression} expression in {definition} at {file_name}:{line}:{column}"
             ),
             Self::TypeMismatch {
                 file_name,
@@ -455,15 +473,34 @@ where
         if module_name != entry_module || lexical_name != requested_entry {
             analysis.definition.qualified_name = format!("{module_name}.{lexical_name}");
         }
+        for source_property in analysis.property_reads {
+            let property = resolve_self_call(&lexical_name, &source_property);
+            let resolved = resolve_call_path(&module_name, &imports, &property);
+            analysis
+                .definition
+                .hir
+                .resolve_attribute(&source_property, &resolved);
+            if let Some((target_module, target_definition)) =
+                locate_source_definition(&resolved, &mut sources, loader)?
+            {
+                if !parsed.contains_key(&target_module) {
+                    let source = &sources[&target_module];
+                    parsed.insert(target_module.clone(), parse_module(&target_module, source)?);
+                }
+                if definition_exists(&parsed[&target_module], &target_definition) {
+                    pending.push_back((target_module, target_definition));
+                }
+            }
+        }
         for source_call in analysis.calls {
-            let call = resolve_self_call(&lexical_name, &source_call);
+            let call = resolve_self_call(&lexical_name, &source_call.target_path);
             let resolved = resolve_call_path(&module_name, &imports, &call);
             let resolved =
                 resolve_compile_instance_call(&mut sources, &mut parsed, loader, &resolved)?;
             analysis
                 .definition
                 .hir
-                .resolve_call(&source_call, &resolved);
+                .resolve_call(&source_call.source_path, &resolved);
             if resolved == "rb1system.utils.get_end_state" {
                 return Err(TypedCheckError::MigrationRequired {
                     file_name: module_name,
@@ -481,6 +518,17 @@ where
                     let source = &sources[&target_module];
                     parsed.insert(target_module.clone(), parse_module(&target_module, source)?);
                 }
+                if definition_contains_call(
+                    &parsed[&target_module],
+                    &target_definition,
+                    "oasm_black_box",
+                ) {
+                    analysis
+                        .definition
+                        .hir
+                        .resolve_opaque_atomic_call(&source_call.source_path, &resolved);
+                    continue;
+                }
                 if definition_exists(&parsed[&target_module], &target_definition) {
                     pending.push_back((target_module, target_definition));
                     continue;
@@ -492,7 +540,7 @@ where
             let anchor = analysis
                 .definition
                 .hir
-                .call_anchor(&source_call)
+                .call_anchor(&source_call.source_path)
                 .expect("a collected call must have a Source HIR node");
             return Err(TypedCheckError::ReachableHostCall {
                 file_name: module_name,
@@ -505,17 +553,48 @@ where
         definitions.push(analysis.definition);
     }
 
-    let return_types: HashMap<_, _> = definitions
-        .iter()
-        .map(|definition| {
-            (
-                format!("{}.{}", definition.module, definition.hir.definition()),
-                definition.signature.return_type.clone(),
-            )
-        })
-        .collect();
-    for definition in &mut definitions {
-        definition.hir.apply_definition_signatures(&return_types);
+    for _ in 0..=definitions.len() {
+        let return_types: HashMap<_, _> = definitions
+            .iter()
+            .map(|definition| {
+                (
+                    format!("{}.{}", definition.module, definition.hir.definition()),
+                    definition.signature.return_type.clone(),
+                )
+            })
+            .collect();
+        let mut changed = false;
+        for definition in &mut definitions {
+            definition.hir.apply_definition_signatures(&return_types);
+            if !definition.return_type_is_explicit
+                && let Some(inferred) = definition.hir.inferred_return_type()
+                && definition.signature.return_type != inferred
+            {
+                definition.signature.return_type = inferred;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for definition in &definitions {
+        if !definition.return_type_is_explicit {
+            continue;
+        }
+        if let Some((anchor, found)) = definition
+            .hir
+            .first_return_type_mismatch(definition.signature.return_type())
+        {
+            return Err(TypedCheckError::TypeMismatch {
+                file_name: definition.module.clone(),
+                definition: definition.qualified_name.clone(),
+                expected: Box::new(definition.signature.return_type().clone()),
+                found: Box::new(found.clone()),
+                line: anchor.line(),
+                column: anchor.column(),
+            });
+        }
     }
     let executed = parsed.len() as u64 + definitions.len() as u64;
     let mut queried_modules: Vec<_> = parsed.into_keys().collect();
@@ -553,6 +632,49 @@ fn definition_exists(statements: &[Stmt], requested: &str) -> bool {
     false
 }
 
+fn definition_contains_call(statements: &[Stmt], requested: &str, call_leaf: &str) -> bool {
+    let mut pending = vec![(statements, Vec::<String>::new())];
+    while let Some((statements, scope)) = pending.pop() {
+        for statement in statements {
+            match &statement.node {
+                StmtKind::ClassDef { name, body, .. } => {
+                    let mut nested = scope.clone();
+                    nested.push(name.to_string());
+                    pending.push((body, nested));
+                }
+                StmtKind::FunctionDef { name, body, .. } => {
+                    let mut qualified = scope.clone();
+                    qualified.push(name.to_string());
+                    if qualified.join(".") != requested {
+                        continue;
+                    }
+                    let mut statements: Vec<_> = body.iter().collect();
+                    let mut expressions = Vec::new();
+                    while let Some(statement) = statements.pop() {
+                        push_statement_analysis_children(
+                            statement,
+                            &mut statements,
+                            &mut expressions,
+                        );
+                    }
+                    while let Some(expression) = expressions.pop() {
+                        if let ExprKind::Call { func, .. } = &expression.node
+                            && callable_path(func)
+                                .is_some_and(|path| path.rsplit('.').next() == Some(call_leaf))
+                        {
+                            return true;
+                        }
+                        push_expression_analysis_children(expression, &mut expressions);
+                    }
+                    return false;
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
 fn parse_module(file_name: &str, source: &str) -> Result<Vec<Stmt>, TypedCheckError> {
     nac3parser::parser::parse_program(source, FileName::from(file_name.to_owned())).map_err(
         |error| TypedCheckError::Parse {
@@ -564,13 +686,21 @@ fn parse_module(file_name: &str, source: &str) -> Result<Vec<Stmt>, TypedCheckEr
 
 struct DefinitionAnalysis {
     definition: TypedDefinition,
-    calls: Vec<String>,
+    calls: Vec<ReachableCall>,
+    property_reads: Vec<String>,
+}
+
+struct ReachableCall {
+    source_path: String,
+    target_path: String,
 }
 
 #[derive(Default)]
 struct ClassFields {
     types: HashMap<String, SourceType>,
     values: HashMap<String, String>,
+    properties: HashSet<String>,
+    property_elements: HashMap<String, Vec<String>>,
 }
 
 fn find_definition(
@@ -636,27 +766,19 @@ fn find_definition(
                         column: anchor.column(),
                     });
                 }
-                if returns.is_some()
-                    && let Some((anchor, found)) =
-                        hir.first_return_type_mismatch(signature.return_type())
-                {
-                    return Err(TypedCheckError::TypeMismatch {
-                        file_name: file_name.to_owned(),
-                        definition: qualified_name,
-                        expected: Box::new(signature.return_type().clone()),
-                        found: Box::new(found.clone()),
-                        line: anchor.line(),
-                        column: anchor.column(),
-                    });
-                }
+                let property_reads = class_context.map_or_else(Vec::new, |fields| {
+                    hir.referenced_attributes(&fields.properties)
+                });
                 return Ok(Some(DefinitionAnalysis {
                     definition: TypedDefinition {
                         module: file_name.to_owned(),
                         signature,
                         qualified_name,
+                        return_type_is_explicit: returns.is_some(),
                         hir,
                     },
-                    calls: calls_in_statements(body, &erased_state_names),
+                    calls: calls_in_statements(body, &erased_state_names, class_context),
+                    property_reads,
                 }));
             }
             _ => {}
@@ -694,7 +816,82 @@ fn validate_restricted_statements(
             }
         }
     }
+    let mut pending_statements: Vec<_> = body.iter().collect();
+    let mut expressions = Vec::new();
+    while let Some(statement) = pending_statements.pop() {
+        push_statement_analysis_children(statement, &mut pending_statements, &mut expressions);
+    }
+    while let Some(expression) = expressions.pop() {
+        if !is_supported_expression(expression) {
+            return Err(TypedCheckError::UnsupportedExpression {
+                file_name: file_name.to_owned(),
+                definition: definition.to_owned(),
+                expression: expression_kind_name(&expression.node).to_owned(),
+                line: expression.location.row,
+                column: expression.location.column,
+            });
+        }
+        push_expression_analysis_children(expression, &mut expressions);
+    }
     Ok(())
+}
+
+const fn is_supported_expression(expression: &Expr) -> bool {
+    matches!(
+        &expression.node,
+        ExprKind::BoolOp { .. }
+            | ExprKind::NamedExpr { .. }
+            | ExprKind::BinOp { .. }
+            | ExprKind::UnaryOp { .. }
+            | ExprKind::Lambda { .. }
+            | ExprKind::IfExp { .. }
+            | ExprKind::Dict { .. }
+            | ExprKind::Set { .. }
+            | ExprKind::ListComp { .. }
+            | ExprKind::SetComp { .. }
+            | ExprKind::DictComp { .. }
+            | ExprKind::GeneratorExp { .. }
+            | ExprKind::Compare { .. }
+            | ExprKind::Call { .. }
+            | ExprKind::Constant { .. }
+            | ExprKind::Attribute { .. }
+            | ExprKind::Subscript { .. }
+            | ExprKind::Name { .. }
+            | ExprKind::List { .. }
+            | ExprKind::Tuple { .. }
+    )
+}
+
+const fn expression_kind_name(expression: &ExprKind) -> &'static str {
+    match expression {
+        ExprKind::BoolOp { .. } => "boolean operation",
+        ExprKind::NamedExpr { .. } => "named",
+        ExprKind::BinOp { .. } => "binary operation",
+        ExprKind::UnaryOp { .. } => "unary operation",
+        ExprKind::Lambda { .. } => "lambda",
+        ExprKind::IfExp { .. } => "conditional",
+        ExprKind::Dict { .. } => "dictionary",
+        ExprKind::Set { .. } => "set",
+        ExprKind::ListComp { .. } => "list comprehension",
+        ExprKind::SetComp { .. } => "set comprehension",
+        ExprKind::DictComp { .. } => "dictionary comprehension",
+        ExprKind::GeneratorExp { .. } => "generator",
+        ExprKind::Await { .. } => "await",
+        ExprKind::Yield { .. } => "yield",
+        ExprKind::YieldFrom { .. } => "yield from",
+        ExprKind::Compare { .. } => "comparison",
+        ExprKind::Call { .. } => "call",
+        ExprKind::FormattedValue { .. } => "formatted string value",
+        ExprKind::JoinedStr { .. } => "formatted string",
+        ExprKind::Constant { .. } => "constant",
+        ExprKind::Attribute { .. } => "attribute",
+        ExprKind::Subscript { .. } => "subscript",
+        ExprKind::Starred { .. } => "starred",
+        ExprKind::Name { .. } => "name",
+        ExprKind::List { .. } => "list",
+        ExprKind::Tuple { .. } => "tuple",
+        ExprKind::Slice { .. } => "slice",
+    }
 }
 
 const fn statement_kind_name(statement: &StmtKind) -> &'static str {
@@ -763,10 +960,39 @@ fn class_fields(statements: &[Stmt]) -> ClassFields {
                     fields.values.insert(id.to_string(), normalized);
                 }
             }
+            StmtKind::FunctionDef {
+                name,
+                body,
+                decorator_list,
+                ..
+            } if decorator_list.iter().any(|decorator| {
+                expression_path(decorator)
+                    .is_some_and(|path| path.rsplit('.').next() == Some("property"))
+            }) =>
+            {
+                fields.properties.insert(name.to_string());
+                if let Some(elements) = returned_static_elements(body) {
+                    fields.property_elements.insert(name.to_string(), elements);
+                }
+            }
             _ => {}
         }
     }
     fields
+}
+
+fn returned_static_elements(body: &[Stmt]) -> Option<Vec<String>> {
+    let value = body.iter().find_map(|statement| match &statement.node {
+        StmtKind::Return {
+            value: Some(value), ..
+        } => Some(value.as_ref()),
+        _ => None,
+    })?;
+    let elements = match &value.node {
+        ExprKind::List { elts, .. } | ExprKind::Tuple { elts, .. } => elts,
+        _ => return None,
+    };
+    elements.iter().map(expression_path).collect()
 }
 
 fn inferred_compile_value_type(expression: &Expr) -> Option<SourceType> {
@@ -1171,6 +1397,7 @@ fn push_expression_analysis_children<'a>(expression: &'a Expr, stack: &mut Vec<&
         ExprKind::UnaryOp { operand, .. } | ExprKind::Attribute { value: operand, .. } => {
             stack.push(operand);
         }
+        ExprKind::Lambda { body, .. } => stack.push(body),
         ExprKind::IfExp { test, body, orelse } => {
             stack.push(test);
             stack.push(body);
@@ -1189,6 +1416,29 @@ fn push_expression_analysis_children<'a>(expression: &'a Expr, stack: &mut Vec<&
         ExprKind::Subscript { value, slice, .. } => {
             stack.push(value);
             stack.push(slice);
+        }
+        ExprKind::ListComp { elt, generators }
+        | ExprKind::SetComp { elt, generators }
+        | ExprKind::GeneratorExp { elt, generators } => {
+            stack.push(elt);
+            for generator in generators {
+                stack.push(&generator.target);
+                stack.push(&generator.iter);
+                stack.extend(&generator.ifs);
+            }
+        }
+        ExprKind::DictComp {
+            key,
+            value,
+            generators,
+        } => {
+            stack.push(key);
+            stack.push(value);
+            for generator in generators {
+                stack.push(&generator.target);
+                stack.push(&generator.iter);
+                stack.extend(&generator.ifs);
+            }
         }
         _ => {}
     }
@@ -1225,10 +1475,21 @@ fn is_erased_state_expression(expression: &Expr, erased_names: &HashSet<String>)
         || matches!(&expression.node, ExprKind::Name { id, .. } if erased_names.contains(&id.to_string()))
 }
 
-fn calls_in_statements(statements: &[Stmt], erased_state_names: &HashSet<String>) -> Vec<String> {
+fn calls_in_statements(
+    statements: &[Stmt],
+    erased_state_names: &HashSet<String>,
+    class_context: Option<&ClassFields>,
+) -> Vec<ReachableCall> {
     let mut calls = Vec::new();
+    let bindings = HashMap::new();
     for statement in statements {
-        visit_statement_calls(statement, erased_state_names, &mut calls);
+        visit_statement_calls(
+            statement,
+            erased_state_names,
+            class_context,
+            &bindings,
+            &mut calls,
+        );
     }
     calls
 }
@@ -1236,28 +1497,54 @@ fn calls_in_statements(statements: &[Stmt], erased_state_names: &HashSet<String>
 fn visit_statement_calls(
     statement: &Stmt,
     erased_state_names: &HashSet<String>,
-    calls: &mut Vec<String>,
+    class_context: Option<&ClassFields>,
+    bindings: &HashMap<String, Vec<String>>,
+    calls: &mut Vec<ReachableCall>,
 ) {
     match &statement.node {
         StmtKind::Return {
             value: Some(value),
             ..
-        } => visit_expression_calls(value, erased_state_names, calls),
+        } => visit_expression_calls(
+            value,
+            erased_state_names,
+            class_context,
+            bindings,
+            calls,
+        ),
         StmtKind::Return { value: None, .. } => {}
         StmtKind::Assign { targets, value, .. }
             if targets.iter().any(|target| {
                 matches!(&target.node, ExprKind::Name { id, .. } if erased_state_names.contains(&id.to_string()))
             }) && is_legacy_state_initializer(value) => {}
         StmtKind::Assign { value, .. } | StmtKind::Expr { value, .. } => {
-            visit_expression_calls(value, erased_state_names, calls);
+            visit_expression_calls(
+                value,
+                erased_state_names,
+                class_context,
+                bindings,
+                calls,
+            );
         }
         StmtKind::AnnAssign {
             value: Some(value),
             ..
-        } => visit_expression_calls(value, erased_state_names, calls),
+        } => visit_expression_calls(
+            value,
+            erased_state_names,
+            class_context,
+            bindings,
+            calls,
+        ),
         StmtKind::AnnAssign { value: None, .. } => {}
         StmtKind::AugAssign { value, .. } => {
-            visit_expression_calls(value, erased_state_names, calls);
+            visit_expression_calls(
+                value,
+                erased_state_names,
+                class_context,
+                bindings,
+                calls,
+            );
         }
         StmtKind::If {
             test, body, orelse, ..
@@ -1265,17 +1552,41 @@ fn visit_statement_calls(
         | StmtKind::While {
             test, body, orelse, ..
         } => {
-            visit_expression_calls(test, erased_state_names, calls);
+            visit_expression_calls(
+                test,
+                erased_state_names,
+                class_context,
+                bindings,
+                calls,
+            );
             for statement in body.iter().chain(orelse) {
-                visit_statement_calls(statement, erased_state_names, calls);
+                visit_statement_calls(
+                    statement,
+                    erased_state_names,
+                    class_context,
+                    bindings,
+                    calls,
+                );
             }
         }
         StmtKind::For {
             iter, body, orelse, ..
         } => {
-            visit_expression_calls(iter, erased_state_names, calls);
+            visit_expression_calls(
+                iter,
+                erased_state_names,
+                class_context,
+                bindings,
+                calls,
+            );
             for statement in body.iter().chain(orelse) {
-                visit_statement_calls(statement, erased_state_names, calls);
+                visit_statement_calls(
+                    statement,
+                    erased_state_names,
+                    class_context,
+                    bindings,
+                    calls,
+                );
             }
         }
         _ => {}
@@ -1285,7 +1596,9 @@ fn visit_statement_calls(
 fn visit_expression_calls(
     expression: &Expr,
     erased_state_names: &HashSet<String>,
-    calls: &mut Vec<String>,
+    class_context: Option<&ClassFields>,
+    bindings: &HashMap<String, Vec<String>>,
+    calls: &mut Vec<ReachableCall>,
 ) {
     match &expression.node {
         ExprKind::Call {
@@ -1293,20 +1606,57 @@ fn visit_expression_calls(
             args,
             keywords,
         } => {
-            if let Some(path) = expression_path(func) {
-                calls.push(path);
+            let compile_environment_load =
+                expression_path(func).is_some_and(|path| path == "np.load" || path == "numpy.load");
+            if let Some(path) = callable_path(func) {
+                let mut segments = path.split('.');
+                let first = segments.next().unwrap_or(&path);
+                let remainder = segments.collect::<Vec<_>>().join(".");
+                if let Some(targets) = bindings.get(first) {
+                    calls.extend(targets.iter().map(|target| ReachableCall {
+                        source_path: path.clone(),
+                        target_path: if remainder.is_empty() {
+                            target.clone()
+                        } else {
+                            format!("{target}.{remainder}")
+                        },
+                    }));
+                } else {
+                    calls.push(ReachableCall {
+                        source_path: path.clone(),
+                        target_path: path,
+                    });
+                }
+            }
+            if compile_environment_load {
+                return;
+            }
+            if matches!(func.node, ExprKind::Call { .. }) {
+                visit_expression_calls(func, erased_state_names, class_context, bindings, calls);
             }
             for argument in args {
                 if is_erased_state_expression(argument, erased_state_names) {
                     continue;
                 }
-                visit_expression_calls(argument, erased_state_names, calls);
+                visit_expression_calls(
+                    argument,
+                    erased_state_names,
+                    class_context,
+                    bindings,
+                    calls,
+                );
             }
             for keyword in keywords {
                 if is_erased_state_expression(&keyword.node.value, erased_state_names) {
                     continue;
                 }
-                visit_expression_calls(&keyword.node.value, erased_state_names, calls);
+                visit_expression_calls(
+                    &keyword.node.value,
+                    erased_state_names,
+                    class_context,
+                    bindings,
+                    calls,
+                );
             }
         }
         ExprKind::BoolOp { values, .. }
@@ -1314,7 +1664,7 @@ fn visit_expression_calls(
         | ExprKind::Tuple { elts: values, .. }
         | ExprKind::Set { elts: values } => {
             for value in values {
-                visit_expression_calls(value, erased_state_names, calls);
+                visit_expression_calls(value, erased_state_names, class_context, bindings, calls);
             }
         }
         ExprKind::NamedExpr { target, value }
@@ -1323,41 +1673,119 @@ fn visit_expression_calls(
             right: value,
             ..
         } => {
-            visit_expression_calls(target, erased_state_names, calls);
-            visit_expression_calls(value, erased_state_names, calls);
+            visit_expression_calls(target, erased_state_names, class_context, bindings, calls);
+            visit_expression_calls(value, erased_state_names, class_context, bindings, calls);
         }
         ExprKind::UnaryOp { operand, .. } => {
-            visit_expression_calls(operand, erased_state_names, calls);
+            visit_expression_calls(operand, erased_state_names, class_context, bindings, calls);
+        }
+        ExprKind::Lambda { body, .. } => {
+            visit_expression_calls(body, erased_state_names, class_context, bindings, calls)
         }
         ExprKind::IfExp { test, body, orelse } => {
-            visit_expression_calls(test, erased_state_names, calls);
-            visit_expression_calls(body, erased_state_names, calls);
-            visit_expression_calls(orelse, erased_state_names, calls);
+            for expression in [test.as_ref(), body.as_ref(), orelse.as_ref()] {
+                visit_expression_calls(
+                    expression,
+                    erased_state_names,
+                    class_context,
+                    bindings,
+                    calls,
+                );
+            }
         }
         ExprKind::Dict { keys, values } => {
             for key in keys.iter().flatten() {
-                visit_expression_calls(key, erased_state_names, calls);
+                visit_expression_calls(key, erased_state_names, class_context, bindings, calls);
             }
             for value in values {
-                visit_expression_calls(value, erased_state_names, calls);
+                visit_expression_calls(value, erased_state_names, class_context, bindings, calls);
             }
         }
         ExprKind::Compare {
             left, comparators, ..
         } => {
-            visit_expression_calls(left, erased_state_names, calls);
+            visit_expression_calls(left, erased_state_names, class_context, bindings, calls);
             for comparator in comparators {
-                visit_expression_calls(comparator, erased_state_names, calls);
+                visit_expression_calls(
+                    comparator,
+                    erased_state_names,
+                    class_context,
+                    bindings,
+                    calls,
+                );
             }
         }
         ExprKind::Attribute { value, .. } => {
-            visit_expression_calls(value, erased_state_names, calls);
+            visit_expression_calls(value, erased_state_names, class_context, bindings, calls);
         }
         ExprKind::Subscript { value, slice, .. } => {
-            visit_expression_calls(value, erased_state_names, calls);
-            visit_expression_calls(slice, erased_state_names, calls);
+            visit_expression_calls(value, erased_state_names, class_context, bindings, calls);
+            visit_expression_calls(slice, erased_state_names, class_context, bindings, calls);
         }
+        ExprKind::ListComp { elt, generators }
+        | ExprKind::SetComp { elt, generators }
+        | ExprKind::GeneratorExp { elt, generators } => visit_comprehension_calls(
+            &[elt.as_ref()],
+            generators,
+            erased_state_names,
+            class_context,
+            bindings,
+            calls,
+        ),
+        ExprKind::DictComp {
+            key,
+            value,
+            generators,
+        } => visit_comprehension_calls(
+            &[key.as_ref(), value.as_ref()],
+            generators,
+            erased_state_names,
+            class_context,
+            bindings,
+            calls,
+        ),
         _ => {}
+    }
+}
+
+fn visit_comprehension_calls(
+    elements: &[&Expr],
+    generators: &[nac3ast::Comprehension],
+    erased_state_names: &HashSet<String>,
+    class_context: Option<&ClassFields>,
+    outer_bindings: &HashMap<String, Vec<String>>,
+    calls: &mut Vec<ReachableCall>,
+) {
+    let mut bindings = outer_bindings.clone();
+    for generator in generators {
+        visit_expression_calls(
+            &generator.iter,
+            erased_state_names,
+            class_context,
+            &bindings,
+            calls,
+        );
+        if let (ExprKind::Name { id, .. }, Some(iter_path), Some(class_context)) = (
+            &generator.target.node,
+            expression_path(&generator.iter),
+            class_context,
+        ) && let Some(property) = iter_path.strip_prefix("self.")
+            && let Some(targets) = class_context.property_elements.get(property)
+        {
+            bindings.insert(id.to_string(), targets.clone());
+        }
+        for condition in &generator.ifs {
+            visit_expression_calls(
+                condition,
+                erased_state_names,
+                class_context,
+                &bindings,
+                calls,
+            );
+        }
+    }
+    for element in elements {
+        visit_expression_calls(element, erased_state_names, class_context, &bindings, calls);
     }
 }
 
@@ -1555,4 +1983,11 @@ fn expression_path(expression: &Expr) -> Option<String> {
         } => Some("None".to_owned()),
         _ => None,
     }
+}
+
+fn callable_path(expression: &Expr) -> Option<String> {
+    expression_path(expression).or_else(|| match &expression.node {
+        ExprKind::Attribute { attr, .. } => Some(attr.to_string()),
+        _ => None,
+    })
 }

@@ -21,7 +21,7 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.12"
-  RUST_TOOLCHAIN: "1.86"
+  RUST_TOOLCHAIN: "1.88.0"
   UV_VERSION: "0.11.8"
 
 jobs:
@@ -96,7 +96,11 @@ jobs:
 
       - name: Install the pinned Rust toolchain
         run: |
-          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal --no-self-update
+          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} \
+            --profile minimal \
+            --component rustfmt \
+            --component clippy \
+            --no-self-update
           rustup default ${{ env.RUST_TOOLCHAIN }}
 
       - name: Check Rust formatting

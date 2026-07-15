@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
+import importlib
 import inspect
 import json
 import os
@@ -88,6 +89,17 @@ def compile_entry(
     target = rtmq_v2_profile()
     target_clock_hz = _target_clock_hz(target)
 
+    if compiler is None and not os.environ.get("CATSEQC_BIN"):
+        response = _compile_in_process(
+            source_path=source_path,
+            source_root=root,
+            entry=function.__qualname__,
+            environment=environment,
+            target=target,
+            link_bindings=bindings,
+        )
+        return _decode_result(response, target_clock_hz)
+
     with tempfile.TemporaryDirectory(prefix="catseqc-") as temporary:
         temporary_path = Path(temporary)
         environment_path = _json_input(
@@ -130,6 +142,44 @@ def compile_entry(
     except json.JSONDecodeError as error:
         raise CatSeqCompileError("catseqc returned invalid JSON") from error
     return _decode_result(response, target_clock_hz)
+
+
+def _compile_in_process(
+    *,
+    source_path: Path,
+    source_root: Path,
+    entry: str,
+    environment: JsonObject | str | Path,
+    target: JsonObject | str | Path,
+    link_bindings: JsonObject | str | Path,
+) -> object:
+    try:
+        _native = importlib.import_module("catseq._native")
+        request = {
+            "schema_version": 1,
+            "source_path": str(source_path),
+            "source_root": str(source_root),
+            "entry": entry,
+            "compile_environment": _json_payload(environment),
+            "target_profile": _json_payload(target),
+            "link_bindings": _json_payload(link_bindings),
+            "cache_dir": str(_cache_dir(source_root)),
+        }
+        encoded = json.dumps(request, separators=(",", ":")).encode()
+        response = _native.compile(encoded)
+    except (
+        ImportError,
+        AttributeError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as error:
+        raise CatSeqCompileError(str(error)) from error
+    try:
+        return json.loads(response)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise CatSeqCompileError("native compiler returned invalid JSON") from error
 
 
 def _bound_function(
@@ -282,6 +332,12 @@ def _target_clock_hz(target: JsonObject | str | Path) -> int:
     if not isinstance(clock_hz, int) or isinstance(clock_hz, bool) or clock_hz <= 0:
         raise ValueError("target clock_hz must be a positive integer")
     return clock_hz
+
+
+def _json_payload(source: JsonObject | str | Path) -> object:
+    if isinstance(source, (str, Path)):
+        return json.loads(Path(source).read_text())
+    return source
 
 
 def _json_input(source: JsonObject | str | Path, destination: Path) -> Path:

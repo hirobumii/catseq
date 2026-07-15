@@ -2,6 +2,8 @@ use std::fs;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use catseq_compiler::compile_json_request;
+
 fn source_file() -> std::path::PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -43,6 +45,45 @@ fn ttl_target_profile(source_path: &std::path::Path) -> std::path::PathBuf {
     )
     .unwrap();
     path
+}
+
+#[test]
+fn shared_compile_request_api_returns_an_oasm_call_plan() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    return identity(1)\n",
+    )
+    .unwrap();
+    let request = serde_json::to_vec(&serde_json::json!({
+        "schema_version": 1,
+        "source_path": path,
+        "source_root": path.parent().unwrap(),
+        "entry": "sequence",
+        "compile_environment": {"schema_version": 1, "channels": {}},
+        "target_profile": {
+            "schema_version": 1,
+            "rtmq_abi_version": 2,
+            "clock_hz": 250_000_000_u64,
+            "boards": {},
+            "operations": {}
+        },
+        "link_bindings": {
+            "schema_version": 1,
+            "runtime_values": {},
+            "environment_values": {}
+        }
+    }))
+    .unwrap();
+
+    let response = compile_json_request(&request).unwrap();
+    fs::remove_file(path).unwrap();
+    let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+
+    assert_eq!(response["schema_version"], 1);
+    assert_eq!(response["stage"], "oasm_call_plan");
+    assert_eq!(response["entry"], "sequence");
+    assert_eq!(response["logical_duration_cycles"], 1);
 }
 
 #[test]

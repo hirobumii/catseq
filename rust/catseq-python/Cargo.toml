@@ -1,15 +1,13 @@
 [package]
-name = "catseqc"
+name = "catseq-python"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
-[[bin]]
-name = "catseqc"
-path = "src/main.rs"
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
 
 [dependencies]
 catseq-compiler.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true
+pyo3 = { version = "0.24.2", features = ["extension-module"] }

@@ -1,5 +1,12 @@
 [workspace]
-members = ["catseq-core", "catseq-frontend", "catseq-rtmq", "catseqc"]
+members = [
+    "catseq-compiler",
+    "catseq-core",
+    "catseq-frontend",
+    "catseq-python",
+    "catseq-rtmq",
+    "catseqc",
+]
 resolver = "3"
 
 [workspace.package]
@@ -8,6 +15,7 @@ edition = "2024"
 rust-version = "1.88"
 
 [workspace.dependencies]
+catseq-compiler = { path = "catseq-compiler" }
 catseq-core = { path = "catseq-core" }
 catseq-frontend = { path = "catseq-frontend" }
 catseq-rtmq = { path = "catseq-rtmq" }

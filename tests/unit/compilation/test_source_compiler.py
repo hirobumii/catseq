@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 import subprocess
+import sys
+from types import ModuleType
 
 import pytest
 
@@ -85,6 +88,90 @@ def test_compile_entry_compiles_source_without_executing_the_bound_method(
     assert captured["target"]["rtmq_abi_version"] == 2
     assert result.logical_duration_cycles == 87500
     assert result.total_duration_us == pytest.approx(350.0)
+
+
+def test_compile_entry_uses_the_in_process_native_compiler_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    native = ModuleType("catseq._native")
+
+    def compile_request(request: bytes) -> bytes:
+        captured["request"] = json.loads(request)
+        return json.dumps(_response()).encode()
+
+    native.compile = compile_request  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "catseq._native", native)
+
+    def reject_subprocess(*args, **kwargs):
+        raise AssertionError("default compilation must not start catseqc")
+
+    monkeypatch.setattr("catseq.compilation.native.subprocess.run", reject_subprocess)
+
+    result = compile_entry(
+        _Experiment().build_sequence,
+        {"pulse_time_us": 0.35},
+        environment={"schema_version": 1, "channels": {}},
+        source_root=Path(__file__).parents[3],
+    )
+
+    request = captured["request"]
+    assert request["schema_version"] == 1
+    assert request["entry"] == "_Experiment.build_sequence"
+    assert request["compile_environment"] == {
+        "schema_version": 1,
+        "channels": {},
+    }
+    assert request["target_profile"]["rtmq_abi_version"] == 2
+    assert request["link_bindings"]["runtime_values"]["self.duration"] == 0.35
+    assert (
+        request["link_bindings"]["runtime_values"]['params["pulse_time_us"]']
+        == 0.35
+    )
+    assert result.logical_duration_cycles == 87500
+
+
+def test_compile_entry_reports_an_unavailable_native_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = importlib.import_module
+
+    def missing_native(name: str):
+        if name == "catseq._native":
+            raise ImportError("native extension is unavailable")
+        return original_import(name)
+
+    monkeypatch.setattr(
+        "catseq.compilation.native.importlib.import_module", missing_native
+    )
+
+    with pytest.raises(CatSeqCompileError, match="native extension is unavailable"):
+        compile_entry(
+            _Experiment().build_sequence,
+            {},
+            environment={"schema_version": 1, "channels": {}},
+            source_root=Path(__file__).parents[3],
+        )
+
+
+def test_compile_entry_wraps_native_compiler_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = ModuleType("catseq._native")
+
+    def reject_request(request: bytes) -> bytes:
+        raise RuntimeError("unsupported source expression")
+
+    native.compile = reject_request  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "catseq._native", native)
+
+    with pytest.raises(CatSeqCompileError, match="unsupported source expression"):
+        compile_entry(
+            _Experiment().build_sequence,
+            {},
+            environment={"schema_version": 1, "channels": {}},
+            source_root=Path(__file__).parents[3],
+        )
 
 
 def test_compile_result_converts_the_native_plan_to_oasm_calls(

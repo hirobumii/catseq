@@ -7,6 +7,22 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added the versioned compiler request as an in-process PyO3 API at
+  `catseq._native.compile()` while retaining the standalone native `catseqc`
+  release artifact.
+
+### Changed
+
+- Changed `compile_entry()` to use the PyO3 compiler by default, eliminating
+  compiler process startup and temporary environment, target, and binding JSON
+  files. An explicitly selected external compiler remains available for
+  diagnostics and compatibility testing.
+- Changed platform wheels to contain one native extension and install `catseqc`
+  as a console entry point over the same Rust CLI implementation, avoiding
+  duplicate compiler machine code in the wheel.
+
 ## [0.3.0] - 2026-07-15
 
 ### Added

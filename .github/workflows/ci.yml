@@ -89,7 +89,7 @@ jobs:
         run: uv sync --locked --all-extras --dev
 
       - name: Check Python code
-        run: uv run ruff check catseq tests
+        run: uv run ruff check catseq tests benchmarks
 
       - name: Run Python tests
         run: uv run pytest -q
@@ -131,7 +131,7 @@ jobs:
           $compiler = Join-Path $venv "Scripts/catseqc.exe"
           $wheel = (Get-ChildItem "dist/*.whl").FullName
           uv pip install --python $python $wheel
-          & $python -c 'from importlib.metadata import version; import catseq; from catseq.targets import rtmq_v2_profile; assert catseq.__version__ == version("catseq"); assert rtmq_v2_profile()["rtmq_abi_version"] == 2'
+          & $python tests/wheel_smoke.py
           & $compiler --version
 
       - name: Package the Linux compiler
@@ -196,8 +196,11 @@ jobs:
           rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal --no-self-update
           rustup default ${{ env.RUST_TOOLCHAIN }}
 
-      - name: Build wheel and source distribution
-        run: uv build
+      - name: Build the source distribution and rebuild its wheel
+        shell: bash
+        run: |
+          uv build --sdist --out-dir dist
+          uv build dist/catseq-*.tar.gz --wheel --out-dir dist
 
       - name: Install the wheel into a clean environment
         shell: bash
@@ -206,15 +209,7 @@ jobs:
           uv pip install \
             --python "$RUNNER_TEMP/catseq-wheel-test/bin/python" \
             dist/*.whl
-          "$RUNNER_TEMP/catseq-wheel-test/bin/python" - <<'PY'
-          from importlib.metadata import version
-
-          import catseq
-          from catseq.targets import rtmq_v2_profile
-
-          assert catseq.__version__ == version("catseq")
-          assert rtmq_v2_profile()["rtmq_abi_version"] == 2
-          PY
+          "$RUNNER_TEMP/catseq-wheel-test/bin/python" tests/wheel_smoke.py
           "$RUNNER_TEMP/catseq-wheel-test/bin/catseqc" --version
 
       - name: Upload the Python distributions

@@ -16,9 +16,10 @@ then lowers them through native HIR and Morphism arenas to a complete
 
 ## Installation
 
-Release wheels are platform-specific and include both the Python package and
-the native `catseqc` compiler. The supported release interpreter is Python
-3.12.
+Release wheels are platform-specific and include the Python package, its PyO3
+compiler extension, and the `catseqc` console command. Standalone native
+`catseqc` archives are also published for non-Python automation. The supported
+release interpreter is Python 3.12.
 
 For development from a checkout:
 
@@ -71,7 +72,8 @@ _, exp_sequence = execute_oasm_calls(calls, assembler_seq)
 ```
 
 `compile_entry()` does not call the bound method. It uses it to locate the
-source entry and to bind only restricted compile values. The result also
+source entry and to bind only restricted compile values, then sends a
+versioned, Python-free request to the in-process PyO3 compiler. The result also
 contains `logical_duration_cycles`, allowing a host such as `rb1-next.BaseExp`
 to preserve its existing execution timeout contract.
 
@@ -80,7 +82,7 @@ are intentionally removed. See [UPGRADING.md](UPGRADING.md).
 
 ## Compiler commands
 
-The packaged `catseqc` executable provides:
+The packaged `catseqc` command provides:
 
 ```text
 catseqc check
@@ -96,7 +98,7 @@ primarily for diagnostics, CI, and compiler development.
 
 ```bash
 uv run pytest -q
-uv run ruff check catseq tests
+uv run ruff check catseq tests benchmarks
 cargo test --locked --workspace --all-targets --manifest-path rust/Cargo.toml
 ```
 

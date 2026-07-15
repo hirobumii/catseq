@@ -19,9 +19,13 @@ dev = [
     "mypy"
 ]
 
+[project.scripts]
+catseqc = "catseq._native:run_cli"
+
 [tool.maturin]
-manifest-path = "rust/catseqc/Cargo.toml"
-bindings = "bin"
+manifest-path = "rust/catseq-python/Cargo.toml"
+bindings = "pyo3"
+module-name = "catseq._native"
 python-source = "."
 python-packages = ["catseq"]
 

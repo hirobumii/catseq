@@ -1,0 +1,16 @@
+[package]
+name = "catseq-compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "catseq_compiler"
+
+[dependencies]
+catseq-core.workspace = true
+catseq-frontend.workspace = true
+catseq-rtmq.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true

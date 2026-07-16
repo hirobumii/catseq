@@ -3,7 +3,7 @@ Execution helpers for OASM call streams.
 """
 
 from collections.abc import Mapping
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, TypeVar
 
 from .functions import (
     rwg_init,
@@ -92,6 +92,21 @@ _PLAN_FUNCTIONS = {
 }
 
 
+class _OASMAssembler(Protocol):
+    def clear(self) -> Any: ...
+
+    def __call__(
+        self,
+        address: str,
+        function: Callable[..., Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any: ...
+
+
+_AssemblerT = TypeVar("_AssemblerT", bound=_OASMAssembler)
+
+
 def _decode_plan_value(value: Any) -> Any:
     if isinstance(value, list):
         return tuple(_decode_plan_value(item) for item in value)
@@ -115,7 +130,7 @@ def _decode_plan_value(value: Any) -> Any:
     return fields
 
 
-def oasm_call_plan_to_calls(
+def decode_oasm_call_plan(
     plan: Mapping[str, Any],
     opaque_callables: Mapping[str, Callable[..., Any]] | None = None,
 ) -> Dict[OASMAddress, List[OASMCall]]:
@@ -172,6 +187,79 @@ def oasm_call_plan_to_calls(
     return calls_by_board
 
 
+def oasm_call_plan_to_calls(
+    plan: Mapping[str, Any],
+    opaque_callables: Mapping[str, Callable[..., Any]] | None = None,
+) -> Dict[OASMAddress, List[OASMCall]]:
+    """Compatibility name for :func:`decode_oasm_call_plan`."""
+
+    return decode_oasm_call_plan(plan, opaque_callables=opaque_callables)
+
+
+def assemble_oasm_calls(
+    calls_by_board: Mapping[OASMAddress, List[OASMCall]],
+    assembler_seq: _AssemblerT,
+    *,
+    clear: bool = True,
+    verbose: bool = False,
+) -> _AssemblerT:
+    """Submit decoded OASM calls to an explicitly supplied assembler.
+
+    Plan decoding is deliberately absent from this function.  The supplied
+    assembler owns all mutation, and assembler failures propagate to the
+    caller so compatibility adapters can choose their own error policy.
+    """
+    if clear:
+        assembler_seq.clear()
+
+    call_counter = 0
+    for board_adr, board_calls in calls_by_board.items():
+        print(
+            f"📋 Processing {len(board_calls)} calls "
+            f"for board '{board_adr.value}':"
+        )
+        for call in board_calls:
+            call_counter += 1
+            if call.dsl_func == OASMFunction.USER_DEFINED_FUNC:
+                user_func, user_args, user_kwargs = call.args
+                if verbose:
+                    print(
+                        f"  [{call_counter:02d}] Executing black-box function: "
+                        f"{user_func.__name__}"
+                    )
+                assembler_seq(
+                    call.adr.value,
+                    user_func,
+                    *user_args,
+                    **user_kwargs,
+                )
+                continue
+
+            function = OASM_FUNCTION_MAP.get(call.dsl_func)
+            if function is None:
+                raise ValueError(
+                    f"OASM function {call.dsl_func.name!r} is not registered"
+                )
+            kwargs = call.kwargs or {}
+            if verbose:
+                args_str = ", ".join(map(str, call.args))
+                kwargs_str = (
+                    ", ".join(f"{key}={value}" for key, value in kwargs.items())
+                    if kwargs
+                    else ""
+                )
+                params_str = ", ".join(filter(None, [args_str, kwargs_str]))
+                print(f"  [{call_counter:02d}] {function.__name__}({params_str})")
+            assembler_seq(
+                call.adr.value,
+                function,
+                *call.args,
+                **kwargs,
+            )
+
+    return assembler_seq
+
+
 def execute_oasm_calls(
     calls_by_board: Dict[OASMAddress, List[OASMCall]],
     assembler_seq: Optional[assembler]=None,
@@ -191,40 +279,12 @@ def execute_oasm_calls(
     if assembler_seq is not None and OASM_AVAILABLE:
         print("🔧 Generating actual RTMQ assembly...")
         try:
-            call_counter = 0
-            if clear:
-                assembler_seq.clear()
-
-            for board_adr, board_calls in calls_by_board.items():
-                print(f"📋 Processing {len(board_calls)} calls for board '{board_adr.value}':")
-                for call in board_calls:
-                    call_counter += 1
-                    if call.dsl_func == OASMFunction.USER_DEFINED_FUNC:
-                        user_func, user_args, user_kwargs = call.args
-                        if verbose:
-                            print(f"  [{call_counter:02d}] Executing black-box function: {user_func.__name__}")
-                        assembler_seq(call.adr.value, user_func, *user_args, **user_kwargs)
-                        continue
-
-                    func = OASM_FUNCTION_MAP.get(call.dsl_func)
-                    if func is None:
-                        print(f"Error: OASM function '{call.dsl_func.name}' not found in map.")
-                        return False, assembler_seq
-
-                    if verbose:
-                        args_str = ", ".join(map(str, call.args))
-                        kwargs_str = (
-                            ", ".join(f"{k}={v}" for k, v in call.kwargs.items())
-                            if call.kwargs
-                            else ""
-                        )
-                        params_str = ", ".join(filter(None, [args_str, kwargs_str]))
-                        print(f"  [{call_counter:02d}] {func.__name__}({params_str})")
-
-                    if call.kwargs:
-                        assembler_seq(call.adr.value, func, *call.args, **call.kwargs)
-                    else:
-                        assembler_seq(call.adr.value, func, *call.args)
+            assemble_oasm_calls(
+                calls_by_board,
+                assembler_seq,
+                clear=clear,
+                verbose=verbose,
+            )
 
             for board_adr in calls_by_board.keys():
                 board_name = board_adr.value

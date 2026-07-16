@@ -18,7 +18,7 @@ import hashlib
 from typing import Any
 
 from ..targets import rtmq_v2_profile
-from .execution import oasm_call_plan_to_calls
+from .execution import decode_oasm_call_plan
 from .types import OASMAddress, OASMCall
 
 
@@ -53,7 +53,7 @@ class OASMCompileResult:
     ) -> dict[OASMAddress, list[OASMCall]]:
         """Decode this plan into calls accepted by the existing OASM assembler."""
 
-        return oasm_call_plan_to_calls(
+        return decode_oasm_call_plan(
             self.oasm_call_plan,
             opaque_callables=opaque_callables,
         )

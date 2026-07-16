@@ -7,11 +7,14 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+The development version is `0.3.1.dev0` in Python metadata and the equivalent
+Cargo prerelease `0.3.1-dev.0` in Rust metadata.
+
 ### Added
 
-- Added the versioned compiler request as an in-process PyO3 API at
+- Added the versioned compiler request as the byte-oriented in-process PyO3 API
   `catseq._native.compile()` while retaining the standalone native `catseqc`
-  release artifact.
+  release artifact over the same Rust compiler core.
 
 ### Changed
 
@@ -22,6 +25,9 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Changed platform wheels to contain one native extension and install `catseqc`
   as a console entry point over the same Rust CLI implementation, avoiding
   duplicate compiler machine code in the wheel.
+- Consolidated current compiler status in
+  `docs/dev/0.3_native_compiler.md`; older milestone plans are historical and
+  no longer define the production path.
 
 ## [0.3.0] - 2026-07-15
 

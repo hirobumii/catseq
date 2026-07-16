@@ -9,10 +9,12 @@ CatSeq is a categorical timing-composition language and native compiler for
 RTMQ hardware sequences.
 
 CatSeq 0.3 preserves the Python `Morphism`, `MorphismDef`, `>>`, `@`, `|`, and
-channel-dictionary syntax. Production compilation is source based: `catseqc`
-parses one `build_sequence` entry and its reachable service/module definitions,
-then lowers them through native HIR and Morphism arenas to a complete
-`OASMCallPlan`. It never imports or executes the experiment module.
+channel-dictionary syntax. Production compilation is source based: the public
+`compile_entry()` facade sends a versioned request to the in-process PyO3
+extension, which parses one `build_sequence` entry and its reachable
+service/module definitions and lowers them to a complete `OASMCallPlan`. It
+never imports or executes the experiment module. The `catseqc` command is a
+diagnostic and automation adapter over the same Rust compiler core.
 
 ## Installation
 
@@ -91,8 +93,9 @@ catseqc emit-arena
 catseqc compile
 ```
 
-The Python facade is the stable application API; the command-line interface is
-primarily for diagnostics, CI, and compiler development.
+The Python facade and its `OASMCompileResult` are the stable application seam.
+The command-line interface is primarily for diagnostics, CI, compiler
+development, and explicit external-compiler compatibility checks.
 
 ## Development checks
 
@@ -102,6 +105,6 @@ uv run ruff check catseq tests benchmarks
 cargo test --locked --workspace --all-targets --manifest-path rust/Cargo.toml
 ```
 
-Architecture and accepted decisions are documented in
-[docs/dev/0.3_native_compiler.md](docs/dev/0.3_native_compiler.md) and
-[docs/adr](docs/adr).
+The authoritative implementation status is
+[docs/dev/0.3_native_compiler.md](docs/dev/0.3_native_compiler.md). Accepted
+decisions are recorded in [docs/adr](docs/adr).

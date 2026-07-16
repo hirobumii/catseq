@@ -32,7 +32,7 @@ from .time_utils import (
 )
 from .types import Board, Channel, ChannelType, State
 
-__version__ = "0.3.0"
+__version__ = "0.3.1.dev0"
 
 __all__ = [
     "Board",

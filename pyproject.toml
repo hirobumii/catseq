@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "catseq"
-version = "0.3.0"
+version = "0.3.1.dev0"
 description = "A Categorical Framework for Hardware Sequence Control"
 requires-python = ">=3.12,<3.13"
 dependencies = [

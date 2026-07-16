@@ -1,57 +1,12 @@
-# CatSeq 开发任务清单
+# CatSeq work tracking
 
-## 已完成任务 ✅
+This file is intentionally not a project checklist. The former list described
+the removed Python compiler and had contradictory completed and pending items.
 
-### 复合时间戳系统和全局同步
-- [x] **讨论和设计全局同步操作的时间戳行为** - 已完成复合时间戳设计讨论
-- [x] **实现 (epoch, time_offset) 复合时间戳系统** - 完成时间戳数据结构和跨 epoch 违规检查
-- [x] **实现编译器中的动态主机等待时间计算** - 成功实现动态等待时间计算，测试通过
-- [x] **添加 GLOBAL_SYNC 操作类型** - 已添加同步操作类型
+Use [`docs/dev/0.3_native_compiler.md`](docs/dev/0.3_native_compiler.md) for the
+authoritative current compiler status, production path, and bounded cleanup
+work. Historical milestone plans under `docs/dev/` are labelled explicitly and
+must not be treated as the active backlog.
 
-### 编译器架构改进
-- [x] **移除编译器的自动同步逻辑** - 已成功移除自动同步，测试通过
-- [x] **修正编译器返回类型为按板卡分组** - 编译器现在按板卡返回 OASM 调用 `Dict[OASMAddress, List[OASMCall]]`
-- [x] **修复 unit tests 以适应新的编译器返回格式** - 已修复基础编译器测试，现在通过
-- [x] **修复最后两个编译器通过测试失败** - 成功修复编译器测试中的字典格式问题
-
-### MorphismDef 多通道支持
-- [x] **实现 MorphismDef 多通道支持** - 完成了基本多通道支持，但需要修复链式调用问题
-
-### MorphismDef 链式调用修复
-- [x] **修复 MorphismDef 链式调用问题** - 修复了链式 `>>` 操作符在复杂场景下的状态推断和组合逻辑
-
-## 待处理任务 🔄
-
-### 架构重构：硬件解耦
-- [ ] **重构硬件抽象层**: 将编译器核心与具体的硬件地址解耦。
-  - **问题**: `OASMAddress` 枚举在库中硬编码了板卡名称，限制了通用性。
-  - **方案**: 移除 `OASMAddress`，在编译器内部统一使用用户定义的 `Board.id` 字符串。最终的地址映射由用户在调用编译器时通过 `assembler` 配置来完成。
-
-## 技术债务和优化 💡
-
-### 潜在改进项目
-- [ ] **扩展状态推导优化** - 当前的 `>>` 操作符已实现基本状态推导，可扩展到更复杂场景
-- [ ] **多通道状态一致性验证** - 跨多通道的状态一致性检查
-- [ ] **错误恢复和建议系统** - 改进错误处理和用户友好的建议
-
-### 编译器完善
-- [ ] **完善编译器接口和 OASM 代码生成** - 进一步优化代码生成效率
-- [ ] **添加更多测试用例和错误处理** - 增强测试覆盖率和边界情况处理
-
-## 架构验证 ✨
-
-当前实现完美体现了 Monoidal Category 的数学结构：
-- **Objects**: 完整系统状态（Channel->State 映射）
-- **Morphisms**: 物理过程（时间演化）
-- **串行组合** (`@`): 严格的函数复合
-- **并行组合** (`|`): 张量积，通道独立
-- **Identity**: 自动时长补齐
-
-## 下一步优先级 🎯
-
-1. **修复 MorphismDef 链式调用问题** - 解决 `>>` 操作符的剩余问题
-2. **验证复杂场景** - 测试更复杂的多通道、多板卡场景
-3. **性能优化** - 优化编译器性能，特别是大型序列的处理
-
----
-*最后更新: 2025-09-03*
+New implementation work should have a scoped acceptance contract and should be
+tracked in the repository issue tracker when issue tracking is in use.

@@ -71,7 +71,7 @@ Run the relevant focused tests while editing, then before commit run:
 uv run ruff check catseq tests benchmarks
 uv run pytest -q
 cargo fmt --all --check --manifest-path rust/Cargo.toml
-cargo clippy --locked --workspace --all-targets --manifest-path rust/Cargo.toml -- -D warnings
+cargo +1.88.0 clippy --locked --workspace --all-targets --manifest-path rust/Cargo.toml -- -D warnings
 cargo test --locked --workspace --all-targets --manifest-path rust/Cargo.toml
 git diff --check
 ```

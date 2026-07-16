@@ -11,9 +11,9 @@ are context only and are labelled as such.
 Applications call `catseq.compilation.compile_entry()`. It identifies the
 source entry and restricted argument bindings without executing the entry, then
 sends a versioned, Python-free request to `catseq._native.compile(bytes)`. The
-PyO3 extension and `catseqc` both call the same Rust `compile_json_request()`
-implementation. The compiler emits a versioned `OASMCallPlan`; Python adapts
-that plan to the host-owned OASM assembler.
+PyO3 extension calls `compile_json_request()`; `catseqc` invokes the CLI layer
+from the same Rust compiler library. The compiler emits a versioned
+`OASMCallPlan`; Python adapts that plan to the host-owned OASM assembler.
 
 The in-process PyO3 route is the default production path. `catseqc` is the CLI
 adapter for diagnostics, CI, standalone automation, and explicit compatibility

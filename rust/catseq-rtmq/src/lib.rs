@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 
 use catseq_core::definitions::RuntimeValueId;
 
+pub mod download;
+pub mod isa;
 pub mod oasm_call_plan;
 pub use oasm_call_plan::{
     ChannelBinding, ChannelKind, CompileEnvironment, LinkBindings, OasmArgument, OasmBoardPlan,

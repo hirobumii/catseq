@@ -1,10 +1,32 @@
 //! Link-time Value Expression evaluation and OASM argument materialization.
 
 use catseq_core::exact_decimal::ExactDecimal;
+use catseq_core::morphism_arena::{MorphismArena, MorphismPayload};
 use catseq_core::native_arenas::NativeArenas;
 use catseq_core::value_expr::{ValueExprId, ValueExprKind, ValueExprPayload};
 
-use super::{DurationQuantization, LinkBindings, OasmArgument, OasmCompileError};
+use super::model::{DurationQuantization, LinkBindings, OasmArgument, OasmCompileError};
+
+pub(super) fn bool_argument(program: &NativeArenas, id: ValueExprId) -> Option<bool> {
+    match program.values().payload(id).ok().flatten() {
+        Some(ValueExprPayload::Bool(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+pub(super) fn atomic_bool_argument(
+    arena: &MorphismArena,
+    payload: &MorphismPayload,
+    program: &NativeArenas,
+    index: usize,
+) -> bool {
+    arena
+        .payload_arguments(payload)
+        .ok()
+        .and_then(|arguments| arguments.get(index))
+        .and_then(|id| bool_argument(program, *id))
+        .unwrap_or(false)
+}
 
 pub(super) fn json_argument(
     program: &NativeArenas,

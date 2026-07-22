@@ -1,14 +1,15 @@
-//! RTMQ ABI instruction occupancy used only during target scheduling.
+//! RTMQ ABI timing policy used during target scheduling.
 
 use super::atomic_lowering::optional_json_number;
-use super::{DirectEvent, OasmArgument, OasmCompileError, OasmFunction};
+use super::model::{DirectEvent, OasmArgument, OasmCompileError, OasmFunction};
+
+pub(super) const GLOBAL_SYNC_MARGIN_CYCLES: u64 = 100;
 
 pub(super) fn oasm_call_cost(event: &DirectEvent) -> Result<u64, OasmCompileError> {
-    let fixed = match event.function {
-        OasmFunction::LoopBegin | OasmFunction::LoopEnd | OasmFunction::UserDefinedFunc => 0,
-        OasmFunction::TtlConfig => 2,
-        OasmFunction::TtlSet => 1,
-        OasmFunction::RwgInit => 53,
+    if let Some(cost) = fixed_oasm_call_cost(event.function) {
+        return Ok(cost);
+    }
+    Ok(match event.function {
         OasmFunction::RwgSetCarrier => rwg_set_carrier_cost(event)?,
         OasmFunction::RwgRfSwitch => event
             .args
@@ -16,19 +17,31 @@ pub(super) fn oasm_call_cost(event: &DirectEvent) -> Result<u64, OasmCompileErro
             .and_then(unsigned_argument)
             .map_or(1, |mask| u64::from(mask.count_ones())),
         OasmFunction::RwgLoadWaveform => return rwg_load_waveform_cost(event),
-        OasmFunction::RwgPlay => 15,
-        OasmFunction::WaitMaster => 8,
-        OasmFunction::TrigSlave => 17,
-        OasmFunction::RspInit => 11,
-        OasmFunction::RspSetCarrier => 37,
-        OasmFunction::RspPidConfig => 39,
-        OasmFunction::RspPidStart => 3,
-        OasmFunction::RspPidHold => 2,
-        OasmFunction::RspPidRelease | OasmFunction::RspPidRelink => 15,
-        OasmFunction::RspRfConfig => 13,
-        OasmFunction::Wait => 0,
-    };
-    Ok(fixed)
+        _ => unreachable!("fixed OASM calls returned above"),
+    })
+}
+
+pub(super) const fn fixed_oasm_call_cost(function: OasmFunction) -> Option<u64> {
+    match function {
+        OasmFunction::LoopBegin | OasmFunction::LoopEnd | OasmFunction::UserDefinedFunc => Some(0),
+        OasmFunction::TtlConfig => Some(2),
+        OasmFunction::TtlSet => Some(1),
+        OasmFunction::RwgInit => Some(53),
+        OasmFunction::RwgSetCarrier | OasmFunction::RwgRfSwitch | OasmFunction::RwgLoadWaveform => {
+            None
+        }
+        OasmFunction::RwgPlay => Some(15),
+        OasmFunction::WaitMaster => Some(8),
+        OasmFunction::TrigSlave => Some(17),
+        OasmFunction::RspInit => Some(11),
+        OasmFunction::RspSetCarrier => Some(37),
+        OasmFunction::RspPidConfig => Some(39),
+        OasmFunction::RspPidStart => Some(3),
+        OasmFunction::RspPidHold => Some(2),
+        OasmFunction::RspPidRelease | OasmFunction::RspPidRelink => Some(15),
+        OasmFunction::RspRfConfig => Some(13),
+        OasmFunction::Wait => Some(0),
+    }
 }
 
 fn rwg_set_carrier_cost(event: &DirectEvent) -> Result<u64, OasmCompileError> {

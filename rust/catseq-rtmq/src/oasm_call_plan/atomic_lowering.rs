@@ -6,11 +6,13 @@ use catseq_core::exact_decimal::ExactDecimal;
 use catseq_core::native_arenas::NativeArenas;
 use catseq_core::value_expr::{RwgWaveformDerivation, ValueExprId, ValueExprPayload};
 
-use super::value_eval::{eval_duration_cycles, json_argument, json_value, value_to_oasm_argument};
-use super::{
+use super::model::{
     AtomicLowering, AtomicTargetSchema, ChannelBinding, ChannelKind, DirectEvent,
     DurationQuantization, EventOrder, OasmArgument, OasmCompileError, OasmFunction,
-    RwgChannelState, RwgPlayTransition, TargetBoard, TtlEvent, bool_argument,
+    RwgChannelState, RwgPlayTransition, TargetBoard, TtlEvent,
+};
+use super::value_eval::{
+    bool_argument, eval_duration_cycles, json_argument, json_value, value_to_oasm_argument,
 };
 
 #[allow(clippy::too_many_arguments)]

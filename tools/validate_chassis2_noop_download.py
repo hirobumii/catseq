@@ -8,6 +8,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import time
 
 from catseq.compilation import (
     AssembledOASMBoard,
@@ -32,18 +33,18 @@ FIXTURE = (
 INTERFACE = "eno1"
 EXPECTED_SOURCE_MAC = bytes.fromhex("60cf84a7bbff")
 EXPECTED_CHASSIS2_MAC = bytes.fromhex("60cf84a7bc01")
-HOST_NODE = 20
+HOST_NODE = 21
 CHANNEL = 0
 BOARD_BINDINGS = (("rwg0", 2), ("rwg1", 5))
 INSTRUCTION_CAPACITY_WORDS = 131_072
 CAP_NET_RAW = 13
-APPROVED_ICH_SHA256 = "c1d8db32da90e15240757339c479e21c6a1e225f16b119c549da55bf3a72692a"
+APPROVED_ICH_SHA256 = "01a6507ace878c2684b066c640d21d1ae116fab83e679b0a94a4bb1735338994"
 APPROVED_LOADER_SHA256 = (
-    "cd06d87a8ec249f9e8a87fc19d528dfdbd18be6cefba8bae4e4f2bd8b53b28b0"
+    "466bcedeccc47c0922d7242af8186ac7958844e6274ad69393ef72344cacd9f9"
 )
 APPROVED_WRITES = {
-    2: "c53e308b1e54f3cbd3c54747a2be10201dfeb8cff3302e54fba0c6e967020fe2",
-    5: "a59eaca59e7a7fd3c1b3e9b75669548e16fd7381d37844c05b97a47619329fb0",
+    2: "6a9a8b971df191966a6108346af61c22c5af192fab50eacaba4ac850807ea090",
+    5: "ec25ba503d40ac7bae99f65dc5777d041b73599e6bcad0d698ca589dee5755ae",
 }
 
 
@@ -188,9 +189,11 @@ def main() -> None:
         flush=True,
     )
 
+    runtime_started = time.perf_counter_ns()
     try:
         success = execute_oasm_program(program, config)
     except CatSeqRuntimeError as error:
+        runtime_ms = (time.perf_counter_ns() - runtime_started) / 1_000_000
         print(
             json.dumps(
                 {
@@ -199,6 +202,7 @@ def main() -> None:
                     "certainty": error.execution_certainty,
                     "board_evidence": error.board_evidence,
                     "device_exceptions": error.device_exceptions,
+                    "runtime_ms": round(runtime_ms, 3),
                     "message": str(error),
                 },
                 indent=2,
@@ -206,6 +210,7 @@ def main() -> None:
             file=sys.stderr,
         )
         raise
+    runtime_ms = (time.perf_counter_ns() - runtime_started) / 1_000_000
 
     expected_evidence = {address: "succeeded" for address, _ in BOARD_BINDINGS}
     if success.board_evidence != expected_evidence:
@@ -222,6 +227,7 @@ def main() -> None:
                 "board_evidence": success.board_evidence,
                 "results": success.results,
                 "device_exceptions": {},
+                "runtime_ms": round(runtime_ms, 3),
             },
             indent=2,
         )

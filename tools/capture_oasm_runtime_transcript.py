@@ -27,6 +27,7 @@ CATSEQ_NEAREST_RELEASE_TAG = "v0.2.4"
 CATSEQ_REFERENCE_BRANCH = "origin/release/0.2"
 OASM_COMMIT = "33b6c2538509e70475b49de5bd5a13ef334d4387"
 OASM_PACKAGE_VERSION = "0.1.21.post1"
+DEFAULT_HOST_NODE = 21
 
 
 def _sha256_words(words: list[int]) -> str:
@@ -88,11 +89,11 @@ class _RecordingInterface(base_intf):
         return {}
 
 
-def _capture_download() -> tuple[
+def _capture_download(host_node: int) -> tuple[
     _RecordingInterface, list[int], int, dict[str, dict[str, int]]
 ]:
     interface = _RecordingInterface()
-    interface.nod_adr = 20
+    interface.nod_adr = host_node
     interface.loc_chn = 0
 
     captured_ich_words: list[int] | None = None
@@ -162,12 +163,16 @@ def _capture_download() -> tuple[
     return interface, captured_ich_words, exception_handler_word, sections
 
 
-def capture_transcript() -> dict[str, Any]:
+def capture_transcript(
+    *, host_node: int = DEFAULT_HOST_NODE
+) -> dict[str, Any]:
     """Capture the deterministic transcript without opening a device."""
 
+    if not 0 <= host_node <= 0xFFFF:
+        raise ValueError(f"host node must fit the RTLink address field: {host_node}")
     _verify_oracle()
     interface, ich_words, exception_handler_word, loader_sections = (
-        _capture_download()
+        _capture_download(host_node)
     )
     loader_words = interface.programs[0]
     frame_size = rtmq2.C_BASE.RTLK["N_BYT"]
@@ -220,7 +225,7 @@ def capture_transcript() -> dict[str, Any]:
             "execution_mode": "download",
             "core": "rwg",
             "program": "nop(2)",
-            "host_node": 20,
+            "host_node": host_node,
             "channel": 0,
             "tag": 0,
             "destination_nodes": [2, 5],
@@ -248,6 +253,12 @@ def capture_transcript() -> dict[str, Any]:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--host-node",
+        type=lambda value: int(value, 0),
+        default=DEFAULT_HOST_NODE,
+        help=f"RTLink reply node encoded by OASM (default: {DEFAULT_HOST_NODE})",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         help="create a new transcript fixture instead of writing to stdout",
@@ -257,7 +268,10 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-    rendered = json.dumps(capture_transcript(), indent=2) + "\n"
+    rendered = json.dumps(
+        capture_transcript(host_node=args.host_node),
+        indent=2,
+    ) + "\n"
     if args.output is None:
         print(rendered, end="")
         return

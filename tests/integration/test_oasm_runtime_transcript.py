@@ -49,19 +49,22 @@ def test_frozen_oasm_two_board_download_transcript_is_reproducible() -> None:
         },
     }
     assert recorded["input"]["destination_nodes"] == [2, 5]
-    assert recorded["input"]["host_node"] == 20
+    assert recorded["input"]["host_node"] == 21
     assert recorded["input"]["channel"] == 0
     assert recorded["input"]["tag"] == 0
 
     ich = recorded["ich_program"]
     assert ich["word_count"] == 62
     assert ich["exception_handler_word"] == 20
+    assert ich["sha256"] == (
+        "01a6507ace878c2684b066c640d21d1ae116fab83e679b0a94a4bb1735338994"
+    )
     assert len(ich["words"]) == 62
 
     loader = recorded["loader_program"]
     assert loader["word_count"] == 199
     assert loader["sha256"] == (
-        "cd06d87a8ec249f9e8a87fc19d528dfdbd18be6cefba8bae4e4f2bd8b53b28b0"
+        "466bcedeccc47c0922d7242af8186ac7958844e6274ad69393ef72344cacd9f9"
     )
     assert loader["sections"] == {
         "loader_prologue": {"start": 0, "end": 6},
@@ -76,7 +79,7 @@ def test_frozen_oasm_two_board_download_transcript_is_reproducible() -> None:
     assert [write["node"] for write in rtlink["writes"]] == [2, 5]
     assert [write["frame_count"] for write in rtlink["writes"]] == [100, 100]
     assert [write["sha256"] for write in rtlink["writes"]] == [
-        "c53e308b1e54f3cbd3c54747a2be10201dfeb8cff3302e54fba0c6e967020fe2",
-        "a59eaca59e7a7fd3c1b3e9b75669548e16fd7381d37844c05b97a47619329fb0",
+        "6a9a8b971df191966a6108346af61c22c5af192fab50eacaba4ac850807ea090",
+        "ec25ba503d40ac7bae99f65dc5777d041b73599e6bcad0d698ca589dee5755ae",
     ]
     assert all(len(write["frames"]) == 100 for write in rtlink["writes"])

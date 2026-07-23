@@ -31,6 +31,7 @@ mod linux {
     pub(crate) struct RawEthernetTransport {
         config: RawSocketConfig,
         descriptor: Option<OwnedFd>,
+        interface_index: Option<i32>,
         envelope: Option<TransportEnvelope>,
     }
 
@@ -39,6 +40,7 @@ mod linux {
             Self {
                 config,
                 descriptor: None,
+                interface_index: None,
                 envelope: None,
             }
         }
@@ -140,6 +142,7 @@ mod linux {
                 )));
             }
             self.descriptor = Some(descriptor);
+            self.interface_index = Some(interface_index as i32);
             self.envelope = Some(envelope);
             Ok(envelope)
         }
@@ -148,9 +151,23 @@ mod linux {
             let descriptor = self
                 .descriptor()
                 .map_err(|error| SendError::not_accepted(error.0))?;
+            let interface_index = self.interface_index.ok_or_else(|| {
+                SendError::not_accepted("raw socket has no bound interface".to_owned())
+            })?;
             let bytes = Self::ethernet_bytes(packet);
-            // SAFETY: buffer is valid for `bytes.len()` and descriptor is open.
-            let sent = unsafe { libc::send(descriptor, bytes.as_ptr().cast(), bytes.len(), 0) };
+            let address = send_address(interface_index, packet.destination_mac);
+            // SAFETY: the buffer and initialized sockaddr_ll remain valid for
+            // the duration of the call, and descriptor is open.
+            let sent = unsafe {
+                libc::sendto(
+                    descriptor,
+                    bytes.as_ptr().cast(),
+                    bytes.len(),
+                    0,
+                    (&raw const address).cast(),
+                    size_of::<libc::sockaddr_ll>() as libc::socklen_t,
+                )
+            };
             if sent < 0 {
                 let error = io::Error::last_os_error();
                 return if error.kind() == io::ErrorKind::WouldBlock {
@@ -243,6 +260,7 @@ mod linux {
 
         fn close(&mut self) {
             drop(self.descriptor.take());
+            self.interface_index = None;
         }
     }
 
@@ -298,6 +316,17 @@ mod linux {
             .expect("six MAC bytes"))
     }
 
+    fn send_address(interface_index: i32, destination_mac: [u8; 6]) -> libc::sockaddr_ll {
+        // SAFETY: zero is a valid initialization for sockaddr_ll.
+        let mut address: libc::sockaddr_ll = unsafe { zeroed() };
+        address.sll_family = libc::AF_PACKET as u16;
+        address.sll_protocol = ETHER_TYPE.to_be();
+        address.sll_ifindex = interface_index;
+        address.sll_halen = destination_mac.len() as u8;
+        address.sll_addr[..destination_mac.len()].copy_from_slice(&destination_mac);
+        address
+    }
+
     fn random_marker() -> Result<[u8; 8], TransportError> {
         let mut marker = [0_u8; 8];
         let mut filled = 0;
@@ -351,6 +380,20 @@ mod linux {
             assert_eq!(&bytes[14..22], &[9; 8]);
             assert_eq!(&bytes[22..46], &[0; 24]);
             assert_eq!(&bytes[46..], &[0xaa, 0xbb]);
+        }
+
+        #[test]
+        fn packet_send_destination_targets_the_interface_and_chassis_mac() {
+            let destination_mac = [0x60, 0xcf, 0x84, 0xa7, 0xbc, 0x01];
+
+            let address = send_address(17, destination_mac);
+
+            assert_eq!(address.sll_family, libc::AF_PACKET as u16);
+            assert_eq!(address.sll_protocol, ETHER_TYPE.to_be());
+            assert_eq!(address.sll_ifindex, 17);
+            assert_eq!(address.sll_halen, destination_mac.len() as u8);
+            assert_eq!(&address.sll_addr[..6], &destination_mac);
+            assert_eq!(&address.sll_addr[6..], &[0, 0]);
         }
     }
 }

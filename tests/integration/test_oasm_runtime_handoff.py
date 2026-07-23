@@ -30,7 +30,7 @@ FIXTURE = (
 
 def test_oasm_calls_assemble_into_an_immutable_native_program() -> None:
     interface = sim_intf()
-    interface.nod_adr = 20
+    interface.nod_adr = 21
     interface.loc_chn = 0
     sequence = assembler(
         run_cfg(interface, [2], chn=7),
@@ -60,7 +60,7 @@ def test_oasm_calls_assemble_into_an_immutable_native_program() -> None:
 
     assert isinstance(first, _native.AssembledOASMProgram)
     assert first.schema_version == 1
-    assert first.reply_node == 20
+    assert first.reply_node == 21
     assert first.reply_channel == 0
     assert first.boards[0].address == "rwg0"
     assert first.boards[0].exception_handler_word == 20

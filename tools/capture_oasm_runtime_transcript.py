@@ -89,16 +89,18 @@ class _RecordingInterface(base_intf):
 
 
 def _capture_download() -> tuple[
-    _RecordingInterface, list[int], dict[str, dict[str, int]]
+    _RecordingInterface, list[int], int, dict[str, dict[str, int]]
 ]:
     interface = _RecordingInterface()
     interface.nod_adr = 20
     interface.loc_chn = 0
 
     captured_ich_words: list[int] | None = None
+    exception_handler_word: int | None = None
     ich_loader_start: int | None = None
     ich_loader_end: int | None = None
     original_ich_download = rtmq2.ich_dnld
+    original_intf_send = rtmq2.intf_send
 
     def recording_ich_download(payloads: list[int], start: int = 0) -> None:
         nonlocal captured_ich_words, ich_loader_start, ich_loader_end
@@ -109,10 +111,21 @@ def _capture_download() -> tuple[
         original_ich_download(payloads, start)
         ich_loader_end = len(rtmq2.asm)
 
+    def recording_intf_send(*args: Any, **kwargs: Any) -> None:
+        nonlocal exception_handler_word
+        if kwargs.get("info") == 1:
+            if exception_handler_word is not None:
+                raise RuntimeError(
+                    "the oracle unexpectedly emitted multiple exception handlers"
+                )
+            exception_handler_word = len(rtmq2.asm[:])
+        original_intf_send(*args, **kwargs)
+
     def noop_program() -> None:
         rtmq2.nop(2)
 
     rtmq2.ich_dnld = recording_ich_download
+    rtmq2.intf_send = recording_intf_send
     try:
         runner = rtmq2.run_cfg(
             interface,
@@ -125,11 +138,14 @@ def _capture_download() -> tuple[
         runner(noop_program)()
     finally:
         rtmq2.ich_dnld = original_ich_download
+        rtmq2.intf_send = original_intf_send
 
     if captured_ich_words is None:
         raise RuntimeError("the oracle did not generate an ICH program")
     if ich_loader_start is None or ich_loader_end is None:
         raise RuntimeError("the oracle did not expose the ICH loader boundary")
+    if exception_handler_word is None:
+        raise RuntimeError("the oracle did not expose the exception handler word")
     if len(interface.programs) != 2 or interface.programs[0] != interface.programs[1]:
         raise RuntimeError("the two nodes did not receive one identical loader program each")
     if interface.monitor_calls != [[2, 5]]:
@@ -143,14 +159,16 @@ def _capture_download() -> tuple[
         "ich_download": {"start": ich_loader_start, "end": ich_loader_end},
         "launch": {"start": ich_loader_end, "end": loader_word_count},
     }
-    return interface, captured_ich_words, sections
+    return interface, captured_ich_words, exception_handler_word, sections
 
 
 def capture_transcript() -> dict[str, Any]:
     """Capture the deterministic transcript without opening a device."""
 
     _verify_oracle()
-    interface, ich_words, loader_sections = _capture_download()
+    interface, ich_words, exception_handler_word, loader_sections = (
+        _capture_download()
+    )
     loader_words = interface.programs[0]
     frame_size = rtmq2.C_BASE.RTLK["N_BYT"]
 
@@ -209,6 +227,7 @@ def capture_transcript() -> dict[str, Any]:
         },
         "ich_program": {
             "word_count": len(ich_words),
+            "exception_handler_word": exception_handler_word,
             "sha256": _sha256_words(ich_words),
             "words": [f"{word:08x}" for word in ich_words],
         },

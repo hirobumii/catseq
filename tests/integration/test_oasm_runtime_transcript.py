@@ -55,6 +55,7 @@ def test_frozen_oasm_two_board_download_transcript_is_reproducible() -> None:
 
     ich = recorded["ich_program"]
     assert ich["word_count"] == 62
+    assert ich["exception_handler_word"] == 20
     assert len(ich["words"]) == 62
 
     loader = recorded["loader_program"]

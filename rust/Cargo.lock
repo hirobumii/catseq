@@ -114,6 +114,7 @@ name = "catseq-python"
 version = "0.3.1-dev.0"
 dependencies = [
  "catseq-compiler",
+ "catseq-runtime",
  "pyo3",
 ]
 
@@ -125,6 +126,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "catseq-runtime"
+version = "0.3.1-dev.0"
 
 [[package]]
 name = "catseqc"

@@ -31,6 +31,7 @@
   },
   "ich_program": {
     "word_count": 62,
+    "exception_handler_word": 20,
     "sha256": "c1d8db32da90e15240757339c479e21c6a1e225f16b119c549da55bf3a72692a",
     "words": [
       "00d00000",

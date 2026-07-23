@@ -10,4 +10,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 catseq-compiler.workspace = true
+catseq-runtime.workspace = true
 pyo3 = { version = "0.24.2", features = ["extension-module"] }

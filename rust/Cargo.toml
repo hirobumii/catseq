@@ -4,6 +4,7 @@ members = [
     "catseq-core",
     "catseq-frontend",
     "catseq-python",
+    "catseq-runtime",
     "catseq-rtmq",
     "catseqc",
 ]
@@ -18,6 +19,7 @@ rust-version = "1.88"
 catseq-compiler = { path = "catseq-compiler" }
 catseq-core = { path = "catseq-core" }
 catseq-frontend = { path = "catseq-frontend" }
+catseq-runtime = { path = "catseq-runtime" }
 catseq-rtmq = { path = "catseq-rtmq" }
 nac3ast = { git = "https://git.m-labs.hk/M-Labs/nac3.git", rev = "332e4212f3adfcb0e4c051f00164676363457771" }
 nac3parser = { git = "https://git.m-labs.hk/M-Labs/nac3.git", rev = "332e4212f3adfcb0e4c051f00164676363457771" }

@@ -3,6 +3,8 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
+mod runtime;
+
 #[pyfunction]
 fn compile<'py>(py: Python<'py>, request: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
     let request = request.to_vec();
@@ -39,5 +41,6 @@ fn run_cli(py: Python<'_>) -> PyResult<i32> {
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(compile, module)?)?;
     module.add_function(wrap_pyfunction!(run_cli, module)?)?;
+    runtime::register(module)?;
     Ok(())
 }

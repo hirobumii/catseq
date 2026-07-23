@@ -7,14 +7,27 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-The development version is `0.3.1.dev0` in Python metadata and the equivalent
-Cargo prerelease `0.3.1-dev.0` in Rust metadata.
+## [0.3.1] - 2026-07-24
 
 ### Added
 
-- Added the versioned compiler request as the byte-oriented in-process PyO3 API
-  `catseq._native.compile()` while retaining the standalone native `catseqc`
-  release artifact over the same Rust compiler core.
+- Added an in-process PyO3 compiler backend for the public `compile_entry()`
+  facade while retaining the standalone native `catseqc` release artifact over
+  the same Rust compiler core.
+- Added `assemble_oasm_calls()`, which populates the supplied OASM assembler
+  contexts, clearing them by default, then finalizes copies into an immutable,
+  Rust-owned `AssembledOASMProgram`. It performs no network or device I/O, and
+  appends runtime completion instructions only to the copied contexts.
+- Added configurable Linux raw-Ethernet execution through
+  `execute_oasm_program()`, `LinuxRawEthernetRuntimeConfig`, and
+  `BoardEndpoint`. The one-shot execution call downloads and runs one assembled
+  program, then monitors every configured board; there is no separate public
+  download-only operation. It returns `OASMRuntimeSuccess` only after every
+  board reaches a trusted terminal completion.
+- Added structured runtime outcomes and `CatSeqRuntimeError` evidence, including
+  execution certainty, per-board execution evidence, device exceptions, and
+  diagnostic details. Runtime failures raise `CatSeqRuntimeError` with the
+  native `OASMRuntimeFailure` evidence attached.
 
 ### Changed
 
@@ -25,9 +38,31 @@ Cargo prerelease `0.3.1-dev.0` in Rust metadata.
 - Changed platform wheels to contain one native extension and install `catseqc`
   as a console entry point over the same Rust CLI implementation, avoiding
   duplicate compiler machine code in the wheel.
+- Moved Download-loader materialization, RTLink framing, retry handling, raw
+  Ethernet transmission, and completion monitoring into Rust. OASM remains the
+  instruction encoder but no longer owns the supported network execution path.
+- Made Linux physical execution use `AF_PACKET/SOCK_RAW` without pcap. The
+  invoking process needs `CAP_NET_RAW`; root or `sudo` is not otherwise part of
+  the interface contract.
 - Consolidated current compiler status in
   `docs/dev/0.3_native_compiler.md`; older milestone plans are historical and
   no longer define the production path.
+
+### Fixed
+
+- Fixed Linux raw-Ethernet transmission on connectionless `AF_PACKET` sockets
+  by providing the selected interface and destination explicitly for every
+  frame.
+
+### Removed
+
+- Removed `execute_oasm_calls()`, which combined OASM assembler population with
+  an implicit mock fallback. Callers now explicitly convert
+  `OASMCompileResult` to OASM calls and assemble an in-memory program with
+  `assemble_oasm_calls()`.
+- Removed supported execution through OASM `assembler.run()` or
+  `sequence.run()`. Physical execution now uses `execute_oasm_program()` and is
+  owned by the Rust runtime.
 
 ## [0.3.0] - 2026-07-15
 

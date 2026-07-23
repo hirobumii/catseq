@@ -26,6 +26,22 @@ pub enum OasmAddress {
 }
 
 impl OasmAddress {
+    const ALL: [Self; 13] = [
+        Self::Main,
+        Self::Rwg0,
+        Self::Rwg1,
+        Self::Rwg2,
+        Self::Rwg3,
+        Self::Rwg4,
+        Self::Rwg5,
+        Self::Rsp6,
+        Self::Rsp7,
+        Self::Rwg8,
+        Self::Rwg9,
+        Self::Rsp10,
+        Self::Rsp11,
+    ];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Main => "main",
@@ -55,25 +71,15 @@ impl FromStr for OasmAddress {
     type Err = RuntimeContractError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "main" => Ok(Self::Main),
-            "rwg0" => Ok(Self::Rwg0),
-            "rwg1" => Ok(Self::Rwg1),
-            "rwg2" => Ok(Self::Rwg2),
-            "rwg3" => Ok(Self::Rwg3),
-            "rwg4" => Ok(Self::Rwg4),
-            "rwg5" => Ok(Self::Rwg5),
-            "rsp6" => Ok(Self::Rsp6),
-            "rsp7" => Ok(Self::Rsp7),
-            "rwg8" => Ok(Self::Rwg8),
-            "rwg9" => Ok(Self::Rwg9),
-            "rsp10" => Ok(Self::Rsp10),
-            "rsp11" => Ok(Self::Rsp11),
-            _ => Err(RuntimeContractError::new(
-                RuntimeContractErrorCode::UnknownBoardAddress,
-                format!("unknown OASM board address {value:?}"),
-            )),
-        }
+        Self::ALL
+            .into_iter()
+            .find(|address| address.as_str() == value)
+            .ok_or_else(|| {
+                RuntimeContractError::new(
+                    RuntimeContractErrorCode::UnknownBoardAddress,
+                    format!("unknown OASM board address {value:?}"),
+                )
+            })
     }
 }
 

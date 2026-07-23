@@ -21,9 +21,8 @@ def test_runtime_handoff_uses_frozen_native_classes() -> None:
         [endpoint],
     )
 
-    _native.validate_runtime_handoff(program, config)
-
     assert type(program).__module__ == "catseq._native"
+    assert not hasattr(_native, "validate_runtime_handoff")
     assert not dataclasses.is_dataclass(program)
     assert program.schema_version == 1
     assert program.reply_node == 20

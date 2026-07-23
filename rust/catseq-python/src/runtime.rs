@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use catseq_runtime::{
     AssembledOasmBoard, AssembledOasmProgram, BoardEndpoint, LinuxRawEthernetRuntimeConfig,
-    OasmAddress, RuntimeContractError, validate_runtime_handoff as validate_handoff,
+    OasmAddress, RuntimeContractError,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -207,14 +207,6 @@ impl PyLinuxRawEthernetRuntimeConfig {
     }
 }
 
-#[pyfunction]
-fn validate_runtime_handoff(
-    program: &PyAssembledOasmProgram,
-    config: &PyLinuxRawEthernetRuntimeConfig,
-) -> PyResult<()> {
-    validate_handoff(&program.inner, &config.inner).map_err(contract_error)
-}
-
 fn parse_address(value: &str) -> PyResult<OasmAddress> {
     OasmAddress::from_str(value).map_err(contract_error)
 }
@@ -228,6 +220,5 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAssembledOasmProgram>()?;
     module.add_class::<PyBoardEndpoint>()?;
     module.add_class::<PyLinuxRawEthernetRuntimeConfig>()?;
-    module.add_function(wrap_pyfunction!(validate_runtime_handoff, module)?)?;
     Ok(())
 }

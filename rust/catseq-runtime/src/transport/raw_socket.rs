@@ -14,7 +14,7 @@ mod linux {
     use std::ffi::CString;
     use std::io;
     use std::mem::{size_of, zeroed};
-    use std::os::fd::RawFd;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
     use std::time::Instant;
 
     use crate::model::derive_destination_mac;
@@ -30,7 +30,7 @@ mod linux {
     #[derive(Debug)]
     pub(crate) struct RawEthernetTransport {
         config: RawSocketConfig,
-        descriptor: Option<RawFd>,
+        descriptor: Option<OwnedFd>,
         envelope: Option<TransportEnvelope>,
     }
 
@@ -45,6 +45,8 @@ mod linux {
 
         fn descriptor(&self) -> Result<RawFd, TransportError> {
             self.descriptor
+                .as_ref()
+                .map(AsRawFd::as_raw_fd)
                 .ok_or_else(|| TransportError("raw socket is not open".to_owned()))
         }
 
@@ -64,8 +66,10 @@ mod linux {
 
     impl Transport for RawEthernetTransport {
         fn open(&mut self) -> Result<TransportEnvelope, TransportError> {
-            if let (Some(_), Some(envelope)) = (self.descriptor, self.envelope) {
-                return Ok(envelope);
+            if self.descriptor.is_some() {
+                return self
+                    .envelope
+                    .ok_or_else(|| TransportError("raw socket has no envelope".to_owned()));
             }
             let interface = CString::new(self.config.interface.as_str())
                 .map_err(|_| TransportError("interface name contains NUL".to_owned()))?;
@@ -98,20 +102,23 @@ mod linux {
             };
 
             // SAFETY: syscall arguments are constants and create an owned descriptor.
-            let descriptor = unsafe {
+            let raw_descriptor = unsafe {
                 libc::socket(
                     libc::AF_PACKET,
                     libc::SOCK_RAW,
                     i32::from(ETHER_TYPE.to_be()),
                 )
             };
-            if descriptor < 0 {
+            if raw_descriptor < 0 {
                 return Err(TransportError(format!(
                     "cannot open AF_PACKET/SOCK_RAW on {:?}: {}",
                     self.config.interface,
                     io::Error::last_os_error()
                 )));
             }
+            // SAFETY: the successful socket call returned a new descriptor
+            // owned by this scope.
+            let descriptor = unsafe { OwnedFd::from_raw_fd(raw_descriptor) };
             // SAFETY: zero is a valid initialization for sockaddr_ll.
             let mut address: libc::sockaddr_ll = unsafe { zeroed() };
             address.sll_family = libc::AF_PACKET as u16;
@@ -120,15 +127,13 @@ mod linux {
             // SAFETY: pointer and length describe the initialized sockaddr_ll.
             let result = unsafe {
                 libc::bind(
-                    descriptor,
+                    descriptor.as_raw_fd(),
                     (&raw const address).cast(),
                     size_of::<libc::sockaddr_ll>() as libc::socklen_t,
                 )
             };
             if result < 0 {
                 let error = io::Error::last_os_error();
-                // SAFETY: descriptor is owned and open here.
-                unsafe { libc::close(descriptor) };
                 return Err(TransportError(format!(
                     "cannot bind raw socket to {:?}: {error}",
                     self.config.interface
@@ -237,10 +242,7 @@ mod linux {
         }
 
         fn close(&mut self) {
-            if let Some(descriptor) = self.descriptor.take() {
-                // SAFETY: descriptor was owned by this transport and is closed once.
-                unsafe { libc::close(descriptor) };
-            }
+            drop(self.descriptor.take());
         }
     }
 
@@ -252,13 +254,16 @@ mod linux {
 
     fn interface_mac(interface: &CString) -> Result<[u8; 6], TransportError> {
         // SAFETY: syscall arguments are constants and create an owned descriptor.
-        let descriptor = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
-        if descriptor < 0 {
+        let raw_descriptor = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+        if raw_descriptor < 0 {
             return Err(TransportError(format!(
                 "cannot open interface-query socket: {}",
                 io::Error::last_os_error()
             )));
         }
+        // SAFETY: the successful socket call returned a new descriptor owned
+        // by this scope.
+        let descriptor = unsafe { OwnedFd::from_raw_fd(raw_descriptor) };
         // SAFETY: zero is a valid initialization for ifreq.
         let mut request: libc::ifreq = unsafe { zeroed() };
         for (target, source) in request
@@ -270,10 +275,14 @@ mod linux {
         }
         // SAFETY: request contains a NUL-terminated interface name and points to
         // writable storage for the ioctl result.
-        let result = unsafe { libc::ioctl(descriptor, libc::SIOCGIFHWADDR, &raw mut request) };
+        let result = unsafe {
+            libc::ioctl(
+                descriptor.as_raw_fd(),
+                libc::SIOCGIFHWADDR,
+                &raw mut request,
+            )
+        };
         let error = io::Error::last_os_error();
-        // SAFETY: descriptor is owned and open here.
-        unsafe { libc::close(descriptor) };
         if result < 0 {
             return Err(TransportError(format!(
                 "cannot read source MAC for {interface:?}: {error}"
@@ -366,20 +375,26 @@ impl RawEthernetTransport {
 impl Transport for RawEthernetTransport {
     fn open(&mut self) -> Result<TransportEnvelope, TransportError> {
         Err(TransportError(format!(
-            "Linux AF_PACKET runtime is unsupported on this platform (interface {:?})",
-            self.config.interface
+            "Linux AF_PACKET runtime is unsupported on this platform \
+             (interface {:?}, destination MAC {:?})",
+            self.config.interface, self.config.destination_mac
         )))
     }
 
     fn send(&mut self, _packet: &WirePacket) -> Result<(), super::SendError> {
-        unreachable!("unsupported transport never opens")
+        Err(super::SendError {
+            rejection: super::SendRejection::AcceptanceUnknown,
+            message: "unsupported transport cannot send".to_owned(),
+        })
     }
 
     fn receive(
         &mut self,
         _deadline: std::time::Instant,
     ) -> Result<Option<WirePacket>, super::ReceiveError> {
-        unreachable!("unsupported transport never opens")
+        Err(super::ReceiveError(
+            "unsupported transport cannot receive".to_owned(),
+        ))
     }
 
     fn close(&mut self) {}

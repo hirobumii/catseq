@@ -33,8 +33,13 @@ result = compile_entry(
     environment=environment,
 )
 calls = result.to_oasm_calls(opaque_callables=opaque_callables)
-execute_oasm_calls(calls, assembler_seq)
+program = assemble_oasm_calls(calls, assembler_seq)
+success = execute_oasm_program(program, runtime_config)
 ```
+
+`runtime_config` is a native `LinuxRawEthernetRuntimeConfig` containing the
+interface and explicit logical-board-to-node bindings. Assembly has no device
+side effects; only `execute_oasm_program()` opens the Rust raw-Ethernet runtime.
 
 The installed platform wheel contains `catseqc`; callers should use the Python
 `compile_entry()` facade rather than locating or invoking the executable

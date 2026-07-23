@@ -92,20 +92,30 @@ impl RuntimeFailureCode {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeviceExceptionReport {
-    pub exception_flags: u32,
-    pub instruction_address: Option<u32>,
+    exception_flags: u32,
+    instruction_address: Option<u32>,
+}
+
+impl DeviceExceptionReport {
+    pub const fn exception_flags(&self) -> u32 {
+        self.exception_flags
+    }
+
+    pub const fn instruction_address(&self) -> Option<u32> {
+        self.instruction_address
+    }
 }
 
 /// Stable semantic runtime failure. Diagnostic text is not used for control flow.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeFailure {
-    pub schema_version: u32,
-    pub code: RuntimeFailureCode,
-    pub message: String,
-    pub execution_certainty: ExecutionCertainty,
-    pub board_evidence: BTreeMap<OasmAddress, BoardExecutionState>,
-    pub device_exceptions: BTreeMap<OasmAddress, DeviceExceptionReport>,
-    pub details: BTreeMap<String, String>,
+    schema_version: u32,
+    code: RuntimeFailureCode,
+    message: String,
+    execution_certainty: ExecutionCertainty,
+    board_evidence: BTreeMap<OasmAddress, BoardExecutionState>,
+    device_exceptions: BTreeMap<OasmAddress, DeviceExceptionReport>,
+    details: BTreeMap<String, String>,
 }
 
 impl RuntimeFailure {
@@ -143,6 +153,34 @@ impl RuntimeFailure {
         }
         Ok(())
     }
+
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    pub const fn code(&self) -> RuntimeFailureCode {
+        self.code
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub const fn execution_certainty(&self) -> ExecutionCertainty {
+        self.execution_certainty
+    }
+
+    pub fn board_evidence(&self) -> &BTreeMap<OasmAddress, BoardExecutionState> {
+        &self.board_evidence
+    }
+
+    pub fn device_exceptions(&self) -> &BTreeMap<OasmAddress, DeviceExceptionReport> {
+        &self.device_exceptions
+    }
+
+    pub fn details(&self) -> &BTreeMap<String, String> {
+        &self.details
+    }
 }
 
 impl Display for RuntimeFailure {
@@ -156,9 +194,9 @@ impl Error for RuntimeFailure {}
 /// A successful run proves every board reached a trusted success terminal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeSuccess {
-    pub schema_version: u32,
-    pub board_evidence: BTreeMap<OasmAddress, BoardExecutionState>,
-    pub results: BTreeMap<OasmAddress, Vec<u32>>,
+    schema_version: u32,
+    board_evidence: BTreeMap<OasmAddress, BoardExecutionState>,
+    results: BTreeMap<OasmAddress, Vec<u32>>,
 }
 
 impl RuntimeSuccess {
@@ -175,6 +213,18 @@ impl RuntimeSuccess {
             return Err("runtime success requires succeeded evidence for every board");
         }
         Ok(())
+    }
+
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    pub fn board_evidence(&self) -> &BTreeMap<OasmAddress, BoardExecutionState> {
+        &self.board_evidence
+    }
+
+    pub fn results(&self) -> &BTreeMap<OasmAddress, Vec<u32>> {
+        &self.results
     }
 }
 
@@ -213,6 +263,16 @@ fn execute_with_transport<T: Transport>(
         .collect::<BTreeMap<_, _>>();
     let mut exceptions = BTreeMap::new();
     let prepared = prepare(program, config, &evidence, &exceptions)?;
+    let deadline = Instant::now()
+        .checked_add(Duration::from_millis(config.timeout_ms()))
+        .ok_or_else(|| {
+            RuntimeFailure::new(
+                RuntimeFailureCode::TopologyInvalid,
+                "runtime timeout cannot be represented by the monotonic clock",
+                evidence.clone(),
+                exceptions.clone(),
+            )
+        })?;
 
     let envelope = transport.open().map_err(|error| {
         RuntimeFailure::new(
@@ -235,6 +295,7 @@ fn execute_with_transport<T: Transport>(
         monitor(
             program,
             config,
+            deadline,
             envelope,
             transport,
             &mut evidence,
@@ -392,12 +453,12 @@ fn outbound_packet(envelope: TransportEnvelope, frame: RtlinkFrame) -> WirePacke
 fn monitor<T: Transport>(
     program: &AssembledOasmProgram,
     config: &LinuxRawEthernetRuntimeConfig,
+    deadline: Instant,
     envelope: TransportEnvelope,
     transport: &mut T,
     evidence: &mut BTreeMap<OasmAddress, BoardExecutionState>,
     exceptions: &mut BTreeMap<OasmAddress, DeviceExceptionReport>,
 ) -> Result<RuntimeSuccess, RuntimeFailure> {
-    let deadline = Instant::now() + Duration::from_millis(config.timeout_ms());
     let mut exception_addresses = BTreeMap::<OasmAddress, u32>::new();
     let mut results = BTreeMap::<OasmAddress, Vec<u32>>::new();
     loop {
@@ -442,11 +503,14 @@ fn monitor<T: Transport>(
         if !envelope_is_attributable(envelope, &packet) {
             continue;
         }
-        let frame = RtlinkFrame::decode(&packet.payload)
-            .map_err(|error| protocol_failure(error.to_string(), evidence, exceptions))?;
-        if frame.channel() != program.reply_channel() || frame.node() != program.reply_node() {
+        let Some((channel, node)) = RtlinkFrame::route(&packet.payload) else {
+            continue;
+        };
+        if channel != program.reply_channel() || node != program.reply_node() {
             continue;
         }
+        let frame = RtlinkFrame::decode(&packet.payload)
+            .map_err(|error| protocol_failure(error.to_string(), evidence, exceptions))?;
         apply_frame(
             config,
             frame,
@@ -501,7 +565,7 @@ fn apply_frame(
                     board,
                     DeviceExceptionReport {
                         exception_flags: payload[1],
-                        instruction_address: exception_addresses.get(&board).copied(),
+                        instruction_address: exception_addresses.remove(&board),
                     },
                 );
             }
@@ -517,6 +581,11 @@ fn apply_frame(
             return Ok(());
         };
         if payload[1] == 0 && argument_count == 0 {
+            if exception_addresses.contains_key(&board) {
+                return Err(format!(
+                    "board {board} reported success after an exception address"
+                ));
+            }
             if evidence[&board] == BoardExecutionState::DeviceFailed {
                 return Err(format!(
                     "board {board} reported success after device failure"
@@ -875,8 +944,9 @@ mod tests {
         let mut loopback = completion(2);
         loopback.loopback_marker = OUTGOING_MARKER;
         loopback.payload = vec![1];
-        let wrong_reply =
+        let mut wrong_reply =
             incoming(RtlinkFrame::new(0, REPLY_CHANNEL + 1, 20, OPERATION_TAG, [2, 0]).unwrap());
+        wrong_reply.payload.truncate(6);
         let mut transport = InMemoryTransport::with_received(
             envelope(),
             [unrelated, loopback, wrong_reply, completion(2)],
@@ -890,7 +960,7 @@ mod tests {
         let one = program(&[OasmAddress::Rwg0]);
         let one_topology = config(&[(OasmAddress::Rwg0, 2)]);
         let malformed = WirePacket {
-            payload: vec![1, 2, 3],
+            payload: completion(2).payload[..6].to_vec(),
             ..completion(2)
         };
         let mut transport = InMemoryTransport::with_received(envelope(), [malformed]);
@@ -906,6 +976,22 @@ mod tests {
         assert_eq!(
             failure.board_evidence[&OasmAddress::Rwg0],
             BoardExecutionState::Succeeded
+        );
+    }
+
+    #[test]
+    fn pending_exception_address_cannot_be_discarded_by_success() {
+        let one = program(&[OasmAddress::Rwg0]);
+        let topology = config(&[(OasmAddress::Rwg0, 2)]);
+        let mut transport =
+            InMemoryTransport::with_received(envelope(), [exception_address(2, 17), completion(2)]);
+
+        let failure = execute_with_transport(&one, &topology, &mut transport, 100).unwrap_err();
+
+        assert_eq!(failure.code, RuntimeFailureCode::ProtocolViolation);
+        assert_eq!(
+            failure.board_evidence[&OasmAddress::Rwg0],
+            BoardExecutionState::LaunchSubmitted
         );
     }
 

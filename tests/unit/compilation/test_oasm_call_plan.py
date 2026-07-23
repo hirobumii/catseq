@@ -1,4 +1,5 @@
 from catseq.compilation.execution import (
+    OASM_FUNCTION_MAP,
     _submit_oasm_calls,
     decode_oasm_call_plan,
 )
@@ -140,3 +141,9 @@ def test_typed_oasm_calls_are_submitted_to_the_explicit_assembler():
     assert result is assembler
     assert assembler.cleared is True
     assert assembler.invocations == [("main", "wait_mu", (25,), {})]
+
+
+def test_every_typed_oasm_function_has_a_registered_assembler_callable():
+    expected = set(OASMFunction) - {OASMFunction.USER_DEFINED_FUNC}
+
+    assert set(OASM_FUNCTION_MAP) == expected

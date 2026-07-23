@@ -2,4 +2,4 @@
 
 mod rtlink;
 
-pub use rtlink::{FRAME_BYTES, RtlinkFrame, RtlinkFrameError, encode_word_stream};
+pub(crate) use rtlink::{RtlinkFrame, encode_word_stream};

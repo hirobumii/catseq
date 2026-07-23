@@ -11,7 +11,9 @@ mod raw_socket;
 
 pub(crate) use raw_socket::{RawEthernetTransport, RawSocketConfig};
 
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const ETHER_TYPE: u16 = 0xface;
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const OASM_PADDING_BYTES: usize = 32;
 
 /// Ethernet facts resolved once when a transport opens.
@@ -46,6 +48,7 @@ pub(crate) struct SendError {
     pub message: String,
 }
 
+#[cfg(any(target_os = "linux", test))]
 impl SendError {
     pub(crate) fn not_accepted(message: impl Into<String>) -> Self {
         Self {

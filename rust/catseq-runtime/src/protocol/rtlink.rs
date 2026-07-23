@@ -50,10 +50,12 @@ impl RtlinkFrame {
         self.flag
     }
 
+    #[cfg(test)]
     pub const fn channel(self) -> u8 {
         self.channel
     }
 
+    #[cfg(test)]
     pub const fn node(self) -> u16 {
         self.node
     }
@@ -64,6 +66,16 @@ impl RtlinkFrame {
 
     pub const fn payload(self) -> [u32; 2] {
         self.payload
+    }
+
+    /// Read only the route fields needed to reject unrelated traffic before
+    /// validating the rest of an RTLink payload.
+    pub(crate) fn route(bytes: &[u8]) -> Option<(u8, u16)> {
+        let header = decode_header(bytes)?;
+        Some((
+            ((header >> 36) & 0x1f) as u8,
+            ((header >> 20) & 0xffff) as u16,
+        ))
     }
 
     pub fn encode(self) -> [u8; FRAME_BYTES] {
@@ -94,9 +106,7 @@ impl RtlinkFrame {
                 "RTLink header has nonzero padding bits",
             ));
         }
-        let mut header_bytes = [0_u8; 8];
-        header_bytes[2..].copy_from_slice(&bytes[..6]);
-        let header = u64::from_be_bytes(header_bytes);
+        let header = decode_header(bytes).expect("validated RTLink frame has a header");
         let flag = ((header >> 41) & 0x7) as u8;
         let channel = ((header >> 36) & 0x1f) as u8;
         let node = ((header >> 20) & 0xffff) as u16;
@@ -151,3 +161,111 @@ impl Display for RtlinkFrameError {
 }
 
 impl Error for RtlinkFrameError {}
+
+fn decode_header(bytes: &[u8]) -> Option<u64> {
+    let header = bytes.get(..6)?;
+    let mut header_bytes = [0_u8; 8];
+    header_bytes[2..].copy_from_slice(header);
+    Some(u64::from_be_bytes(header_bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use catseq_rtmq::download::{DownloadLoaderConfig, materialize_download_loader};
+    use serde_json::Value;
+
+    use super::*;
+
+    #[test]
+    fn rust_loader_and_rtlink_match_every_frozen_oasm_download_byte() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/oasm_parity/v1/runtime/two_board_noop_download.json"
+        ))
+        .unwrap();
+        let ich_words = hex_words(&fixture["ich_program"]["words"]);
+        let exception_handler_word = fixture["ich_program"]["exception_handler_word"]
+            .as_u64()
+            .unwrap() as u32;
+        let loader = materialize_download_loader(
+            &ich_words,
+            DownloadLoaderConfig {
+                instruction_capacity_words: 131_072,
+                exception_handler_word,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            loader.words(),
+            hex_words(&fixture["loader_program"]["words"])
+        );
+        assert_eq!(loader.loader_prologue_range(), 0..6);
+        assert_eq!(loader.ich_download_range(), 6..193);
+        assert_eq!(loader.launch_range(), 193..199);
+
+        for write in fixture["rtlink"]["writes"].as_array().unwrap() {
+            let node = write["node"].as_u64().unwrap() as u16;
+            let expected = write["frames"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|frame| frame.as_str().unwrap())
+                .collect::<Vec<_>>();
+            let actual = encode_word_stream(4, 0, node, 0, loader.words())
+                .unwrap()
+                .into_iter()
+                .map(|frame| hex(&frame.encode()))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+            for encoded in actual {
+                let decoded = RtlinkFrame::decode(&decode_hex(&encoded)).unwrap();
+                assert_eq!(
+                    (decoded.flag(), decoded.channel(), decoded.node()),
+                    (4, 0, node)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn odd_word_stream_is_zero_padded_without_changing_header() {
+        let frames = encode_word_stream(4, 7, 5, 0, &[1, 2, 3]).unwrap();
+
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].payload(), [1, 2]);
+        assert_eq!(frames[1].payload(), [3, 0]);
+        assert_eq!(
+            (frames[1].flag(), frames[1].channel(), frames[1].node()),
+            (4, 7, 5)
+        );
+    }
+
+    #[test]
+    fn route_can_be_read_before_full_frame_validation() {
+        let encoded = RtlinkFrame::new(0, 3, 20, 0xffff, [2, 0]).unwrap().encode();
+
+        assert_eq!(RtlinkFrame::route(&encoded[..6]), Some((3, 20)));
+        assert_eq!(RtlinkFrame::route(&encoded[..5]), None);
+    }
+
+    fn hex_words(value: &Value) -> Vec<u32> {
+        value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|word| u32::from_str_radix(word.as_str().unwrap(), 16).unwrap())
+            .collect()
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    fn decode_hex(value: &str) -> Vec<u8> {
+        value
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
+}

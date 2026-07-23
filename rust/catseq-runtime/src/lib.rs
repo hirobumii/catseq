@@ -2,7 +2,7 @@
 
 mod execution;
 mod model;
-pub mod protocol;
+mod protocol;
 mod transport;
 
 pub use execution::{

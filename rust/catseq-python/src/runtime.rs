@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use catseq_runtime::{
     AssembledOasmBoard, AssembledOasmProgram, BoardEndpoint, LinuxRawEthernetRuntimeConfig,
-    OasmAddress, RuntimeContractError,
+    OasmAddress, RuntimeContractError, RuntimeFailure, RuntimeSuccess,
+    execute_oasm_program as execute_runtime,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -207,6 +209,108 @@ impl PyLinuxRawEthernetRuntimeConfig {
     }
 }
 
+#[pyclass(name = "OASMRuntimeSuccess", module = "catseq._native", frozen)]
+pub(crate) struct PyOasmRuntimeSuccess {
+    inner: RuntimeSuccess,
+}
+
+#[pymethods]
+impl PyOasmRuntimeSuccess {
+    #[getter]
+    fn schema_version(&self) -> u32 {
+        self.inner.schema_version
+    }
+
+    #[getter]
+    fn board_evidence(&self) -> BTreeMap<String, String> {
+        self.inner
+            .board_evidence
+            .iter()
+            .map(|(address, state)| (address.as_str().to_owned(), state.as_str().to_owned()))
+            .collect()
+    }
+
+    #[getter]
+    fn results(&self) -> BTreeMap<String, Vec<u32>> {
+        self.inner
+            .results
+            .iter()
+            .map(|(address, words)| (address.as_str().to_owned(), words.clone()))
+            .collect()
+    }
+}
+
+#[pyclass(name = "OASMRuntimeFailure", module = "catseq._native", frozen)]
+pub(crate) struct PyOasmRuntimeFailure {
+    inner: RuntimeFailure,
+}
+
+#[pymethods]
+impl PyOasmRuntimeFailure {
+    #[getter]
+    fn schema_version(&self) -> u32 {
+        self.inner.schema_version
+    }
+
+    #[getter]
+    fn code(&self) -> &'static str {
+        self.inner.code.as_str()
+    }
+
+    #[getter]
+    fn message(&self) -> &str {
+        &self.inner.message
+    }
+
+    #[getter]
+    fn execution_certainty(&self) -> &'static str {
+        self.inner.execution_certainty.as_str()
+    }
+
+    #[getter]
+    fn board_evidence(&self) -> BTreeMap<String, String> {
+        self.inner
+            .board_evidence
+            .iter()
+            .map(|(address, state)| (address.as_str().to_owned(), state.as_str().to_owned()))
+            .collect()
+    }
+
+    #[getter]
+    fn device_exceptions(&self) -> BTreeMap<String, (u32, Option<u32>)> {
+        self.inner
+            .device_exceptions
+            .iter()
+            .map(|(address, report)| {
+                (
+                    address.as_str().to_owned(),
+                    (report.exception_flags, report.instruction_address),
+                )
+            })
+            .collect()
+    }
+
+    #[getter]
+    fn details(&self) -> BTreeMap<String, String> {
+        self.inner.details.clone()
+    }
+}
+
+#[pyfunction]
+fn execute_oasm_program(
+    py: Python<'_>,
+    program: PyRef<'_, PyAssembledOasmProgram>,
+    config: PyRef<'_, PyLinuxRawEthernetRuntimeConfig>,
+) -> PyResult<Py<PyAny>> {
+    let program = program.inner.clone();
+    let config = config.inner.clone();
+    let outcome = py.allow_threads(move || execute_runtime(&program, &config));
+    match outcome {
+        Ok(inner) => Ok(Py::new(py, PyOasmRuntimeSuccess { inner })?.into_any()),
+        Err(inner) => Ok(Py::new(py, PyOasmRuntimeFailure { inner })?.into_any()),
+    }
+}
+
 fn parse_address(value: &str) -> PyResult<OasmAddress> {
     OasmAddress::from_str(value).map_err(contract_error)
 }
@@ -220,5 +324,67 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAssembledOasmProgram>()?;
     module.add_class::<PyBoardEndpoint>()?;
     module.add_class::<PyLinuxRawEthernetRuntimeConfig>()?;
+    module.add_class::<PyOasmRuntimeSuccess>()?;
+    module.add_class::<PyOasmRuntimeFailure>()?;
+    module.add_function(wrap_pyfunction!(execute_oasm_program, module)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use catseq_runtime::{
+        BoardExecutionState, ExecutionCertainty, RuntimeFailureCode, RuntimeSuccess,
+    };
+
+    use super::*;
+
+    #[test]
+    fn successful_native_outcome_decodes_without_a_socket() {
+        let outcome = PyOasmRuntimeSuccess {
+            inner: RuntimeSuccess {
+                schema_version: 1,
+                board_evidence: BTreeMap::from([(
+                    OasmAddress::Rwg0,
+                    BoardExecutionState::Succeeded,
+                )]),
+                results: BTreeMap::from([(OasmAddress::Rwg0, vec![7, 11])]),
+            },
+        };
+
+        assert_eq!(
+            outcome.board_evidence(),
+            BTreeMap::from([("rwg0".to_owned(), "succeeded".to_owned())])
+        );
+        assert_eq!(
+            outcome.results(),
+            BTreeMap::from([("rwg0".to_owned(), vec![7, 11])])
+        );
+    }
+
+    #[test]
+    fn failed_native_outcome_keeps_structured_evidence() {
+        let outcome = PyOasmRuntimeFailure {
+            inner: RuntimeFailure {
+                schema_version: 1,
+                code: RuntimeFailureCode::CompletionTimeout,
+                message: "deadline".to_owned(),
+                execution_certainty: ExecutionCertainty::Indeterminate,
+                board_evidence: BTreeMap::from([(
+                    OasmAddress::Rwg0,
+                    BoardExecutionState::LaunchSubmitted,
+                )]),
+                device_exceptions: BTreeMap::new(),
+                details: BTreeMap::new(),
+            },
+        };
+
+        assert_eq!(outcome.code(), "completion_timeout");
+        assert_eq!(outcome.execution_certainty(), "indeterminate");
+        assert_eq!(
+            outcome.board_evidence(),
+            BTreeMap::from([("rwg0".to_owned(), "launch_submitted".to_owned())])
+        );
+    }
 }

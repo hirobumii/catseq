@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Validate the frozen two-board no-op Download case on RTMQ chassis 2."""
+"""Download the frozen two-board no-op to chassis 2 through Rust."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import sys
-from typing import Any
 
-from oasm.dev.rwg import C_RWG
-import oasm.rtmq2 as rtmq2
-from oasm.rtmq2.intf import eth_intf
-
-from capture_oasm_runtime_transcript import capture_transcript
+from catseq.compilation import (
+    AssembledOASMBoard,
+    AssembledOASMProgram,
+    BoardEndpoint,
+    CatSeqRuntimeError,
+    LinuxRawEthernetRuntimeConfig,
+    execute_oasm_program,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -30,58 +33,32 @@ EXPECTED_SOURCE_MAC = bytes.fromhex("60cf84a7bbff")
 EXPECTED_CHASSIS2_MAC = bytes.fromhex("60cf84a7bc01")
 HOST_NODE = 20
 CHANNEL = 0
-DESTINATION_NODES = [2, 5]
+BOARD_BINDINGS = (("rwg0", 2), ("rwg1", 5))
+INSTRUCTION_CAPACITY_WORDS = 131_072
+CAP_NET_RAW = 13
 
 
 def _format_mac(mac: bytes) -> str:
     return ":".join(f"{byte:02x}" for byte in mac)
 
 
-class _ValidatedChassis2Interface(eth_intf):
-    def __init__(self, expected_buffers: list[bytes]) -> None:
-        super().__init__(INTERFACE)
-        self.expected_buffers = expected_buffers
-        self.validated_writes = 0
-        self.completed: set[tuple[int, int]] = set()
-        self.exceptions: list[dict[str, Any]] = []
-
-    def _dev_wr(self, frame: bytes) -> None:
-        index = self.validated_writes
-        if index >= len(self.expected_buffers):
-            raise RuntimeError("refusing an unexpected additional RTLink write")
-        expected = self.expected_buffers[index]
-        if bytes(frame) != expected:
-            raise RuntimeError(
-                f"refusing RTLink write {index}: bytes differ from the frozen fixture"
-            )
-        self.validated_writes += 1
-        super()._dev_wr(frame)
-
-    def _proc_oper(self, chn: int, payload: list[int]) -> tuple[int, bool]:
-        address, finished = super()._proc_oper(chn, payload)
-        if finished:
-            self.completed.add((chn, address))
-        return address, finished
-
-    def _proc_info(self, payload: list[int]) -> tuple[int, int, bool]:
-        channel, address, is_exception = super()._proc_info(payload)
-        if is_exception:
-            self.exceptions.append(
-                {
-                    "channel": channel,
-                    "node": address,
-                    "flag": payload[1],
-                }
-            )
-        return channel, address, is_exception
+def _effective_capabilities() -> int:
+    for line in Path("/proc/self/status").read_text().splitlines():
+        if line.startswith("CapEff:"):
+            return int(line.split()[1], 16)
+    raise RuntimeError("cannot read effective Linux capabilities")
 
 
-def _load_and_verify_fixture() -> tuple[dict[str, Any], list[bytes]]:
+def _read_interface_mac() -> bytes:
+    path = Path("/sys/class/net") / INTERFACE / "address"
+    try:
+        return bytes.fromhex(path.read_text().strip().replace(":", ""))
+    except FileNotFoundError as error:
+        raise RuntimeError(f"refusing missing interface {INTERFACE!r}") from error
+
+
+def _load_and_verify_fixture() -> tuple[dict[str, object], list[int]]:
     fixture = json.loads(FIXTURE.read_text())
-    freshly_recorded = capture_transcript()
-    if freshly_recorded != fixture:
-        raise RuntimeError("frozen fixture differs from a fresh pinned-OASM capture")
-
     expected_input = {
         "execution_mode": "download",
         "core": "rwg",
@@ -89,60 +66,83 @@ def _load_and_verify_fixture() -> tuple[dict[str, Any], list[bytes]]:
         "host_node": HOST_NODE,
         "channel": CHANNEL,
         "tag": 0,
-        "destination_nodes": DESTINATION_NODES,
+        "destination_nodes": [node for _, node in BOARD_BINDINGS],
     }
-    if fixture["input"] != expected_input:
+    if fixture["schema_version"] != 1 or fixture["input"] != expected_input:
         raise RuntimeError("fixture is not the authorized chassis-2 no-op case")
+    words = [int(word, 16) for word in fixture["ich_program"]["words"]]
+    encoded_words = b"".join(word.to_bytes(4, "big") for word in words)
+    if hashlib.sha256(encoded_words).hexdigest() != fixture["ich_program"]["sha256"]:
+        raise RuntimeError("frozen ICH words do not match their recorded SHA-256")
+    if fixture["ich_program"]["exception_handler_word"] != 20:
+        raise RuntimeError("frozen exception handler is not the pinned OASM entry")
+    return fixture, words
 
-    expected_buffers = [
-        b"".join(bytes.fromhex(frame) for frame in write["frames"])
-        for write in fixture["rtlink"]["writes"]
-    ]
-    return fixture, expected_buffers
+
+def _preflight() -> tuple[dict[str, object], list[int]]:
+    fixture, words = _load_and_verify_fixture()
+    source_mac = _read_interface_mac()
+    if source_mac != EXPECTED_SOURCE_MAC:
+        raise RuntimeError(
+            f"refusing unknown {INTERFACE} source MAC {_format_mac(source_mac)}"
+        )
+    if EXPECTED_CHASSIS2_MAC != (
+        int.from_bytes(source_mac, "big") + 2
+    ).to_bytes(6, "big"):
+        raise RuntimeError("chassis-2 destination is not source MAC + 2")
+    if not (_effective_capabilities() & (1 << CAP_NET_RAW)):
+        raise RuntimeError(
+            "CAP_NET_RAW is not effective; run this explicit validation with "
+            "an authorized capability or root"
+        )
+    return fixture, words
 
 
 def main() -> None:
-    fixture, expected_buffers = _load_and_verify_fixture()
-    interface = _ValidatedChassis2Interface(expected_buffers)
-
-    if interface.src != EXPECTED_SOURCE_MAC:
-        raise RuntimeError(
-            f"refusing unknown {INTERFACE} source MAC {_format_mac(interface.src)}"
-        )
-    if interface.dst != EXPECTED_CHASSIS2_MAC:
-        raise RuntimeError(
-            f"refusing non-chassis-2 destination MAC {_format_mac(interface.dst)}"
-        )
-    derived_destination = (int.from_bytes(interface.src, "big") + 2).to_bytes(
-        6, "big"
+    fixture, words = _preflight()
+    program = AssembledOASMProgram(
+        1,
+        HOST_NODE,
+        CHANNEL,
+        [
+            AssembledOASMBoard(
+                address,
+                words,
+                fixture["ich_program"]["exception_handler_word"],
+            )
+            for address, _ in BOARD_BINDINGS
+        ],
     )
-    if interface.dst != derived_destination:
-        raise RuntimeError("chassis-2 destination is not source MAC + 2")
-
-    interface.nod_adr = HOST_NODE
-    interface.loc_chn = CHANNEL
-    interface.dev_tot = 0.1
-    runner = rtmq2.run_cfg(
-        interface,
-        DESTINATION_NODES,
-        mon=DESTINATION_NODES,
-        chn=CHANNEL,
-        tag=0,
-        core=C_RWG,
+    config = LinuxRawEthernetRuntimeConfig(
+        1,
+        INTERFACE,
+        list(EXPECTED_CHASSIS2_MAC),
+        2_000,
+        [
+            BoardEndpoint(
+                address,
+                node,
+                CHANNEL,
+                INSTRUCTION_CAPACITY_WORDS,
+            )
+            for address, node in BOARD_BINDINGS
+        ],
     )
-
-    def noop_program() -> None:
-        rtmq2.nop(2)
-
     print(
         json.dumps(
             {
                 "event": "hardware_preflight_passed",
+                "runtime": "catseq Rust AF_PACKET",
                 "interface": INTERFACE,
-                "source_mac": _format_mac(interface.src),
-                "destination_mac": _format_mac(interface.dst),
-                "host_node": HOST_NODE,
-                "destination_nodes": DESTINATION_NODES,
+                "source_mac": _format_mac(EXPECTED_SOURCE_MAC),
+                "destination_mac": _format_mac(EXPECTED_CHASSIS2_MAC),
+                "reply_node": HOST_NODE,
+                "reply_channel": CHANNEL,
+                "boards": [
+                    {"address": address, "node": node, "channel": CHANNEL}
+                    for address, node in BOARD_BINDINGS
+                ],
+                "ich_sha256": fixture["ich_program"]["sha256"],
                 "loader_sha256": fixture["loader_program"]["sha256"],
             }
         ),
@@ -150,39 +150,40 @@ def main() -> None:
         flush=True,
     )
 
-    interface.open()
     try:
-        interface.flush()
-        runner(noop_program, tout=2.0)()
-    finally:
-        interface.close()
-
-    if interface.validated_writes != len(expected_buffers):
-        raise RuntimeError(
-            "not all frozen RTLink writes were sent: "
-            f"{interface.validated_writes}/{len(expected_buffers)}"
+        success = execute_oasm_program(program, config)
+    except CatSeqRuntimeError as error:
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "code": error.code,
+                    "certainty": error.execution_certainty,
+                    "board_evidence": error.board_evidence,
+                    "device_exceptions": error.device_exceptions,
+                    "message": str(error),
+                },
+                indent=2,
+            ),
+            file=sys.stderr,
         )
-    if interface.exceptions:
-        raise RuntimeError(f"device exception reports: {interface.exceptions!r}")
-    expected_completions = {(CHANNEL, node) for node in DESTINATION_NODES}
-    if interface.completed != expected_completions:
+        raise
+
+    expected_evidence = {address: "succeeded" for address, _ in BOARD_BINDINGS}
+    if success.board_evidence != expected_evidence:
         raise RuntimeError(
             "incomplete chassis-2 result: "
-            f"expected {sorted(expected_completions)!r}, "
-            f"got {sorted(interface.completed)!r}"
+            f"expected {expected_evidence!r}, got {success.board_evidence!r}"
         )
-
     print(
         json.dumps(
             {
                 "status": "passed",
                 "case": fixture["case"],
-                "validated_writes": interface.validated_writes,
-                "completed": [
-                    {"channel": channel, "node": node}
-                    for channel, node in sorted(interface.completed)
-                ],
-                "exceptions": interface.exceptions,
+                "runtime": "catseq Rust AF_PACKET",
+                "board_evidence": success.board_evidence,
+                "results": success.results,
+                "device_exceptions": {},
             },
             indent=2,
         )

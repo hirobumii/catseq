@@ -62,7 +62,13 @@ The host application owns its hardware channel map, opaque callable registry,
 and OASM assembler. CatSeq ships the fixed RTMQ target profile:
 
 ```python
-from catseq.compilation import compile_entry, execute_oasm_calls
+from catseq.compilation import (
+    BoardEndpoint,
+    LinuxRawEthernetRuntimeConfig,
+    assemble_oasm_calls,
+    compile_entry,
+    execute_oasm_program,
+)
 
 result = compile_entry(
     experiment.build_sequence,
@@ -70,7 +76,15 @@ result = compile_entry(
     environment=environment,
 )
 calls = result.to_oasm_calls(opaque_callables=opaque_callables)
-_, exp_sequence = execute_oasm_calls(calls, assembler_seq)
+program = assemble_oasm_calls(calls, assembler_seq)
+runtime = LinuxRawEthernetRuntimeConfig(
+    1,
+    "eno1",
+    None,  # defaults to interface MAC + 2
+    2_000,
+    [BoardEndpoint("rwg0", 2, 0, 131_072)],
+)
+success = execute_oasm_program(program, runtime)
 ```
 
 `compile_entry()` does not call the bound method. It uses it to locate the
@@ -78,6 +92,11 @@ source entry and to bind only restricted compile values, then sends a
 versioned, Python-free request to the in-process PyO3 compiler. The result also
 contains `logical_duration_cycles`, allowing a host such as `rb1-next.BaseExp`
 to preserve its existing execution timeout contract.
+
+`assemble_oasm_calls()` only encodes an immutable in-memory ICH program.
+`execute_oasm_program()` passes that Rust-owned value directly through PyO3 to
+the Rust Download/RTLink runtime. Physical execution is Linux-only, uses
+`AF_PACKET/SOCK_RAW` without pcap, and requires `CAP_NET_RAW`.
 
 The 0.2 `compile_to_oasm_calls(morphism, ...)` API and Python compiler passes
 are intentionally removed. See [UPGRADING.md](UPGRADING.md).

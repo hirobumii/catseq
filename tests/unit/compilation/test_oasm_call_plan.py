@@ -1,5 +1,5 @@
 from catseq.compilation.execution import (
-    assemble_oasm_calls,
+    _submit_oasm_calls,
     decode_oasm_call_plan,
 )
 from catseq.compilation.types import OASMAddress, OASMCall, OASMFunction
@@ -135,7 +135,7 @@ def test_typed_oasm_calls_are_submitted_to_the_explicit_assembler():
     }
     assembler = RecordingAssembler()
 
-    result = assemble_oasm_calls(calls, assembler)
+    result = _submit_oasm_calls(calls, assembler)
 
     assert result is assembler
     assert assembler.cleared is True

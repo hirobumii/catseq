@@ -2,10 +2,12 @@
 
 from .compilation import (
     CatSeqCompileError,
+    CatSeqRuntimeError,
     OASMCall,
     OASMCompileResult,
+    assemble_oasm_calls,
     compile_entry,
-    execute_oasm_calls,
+    execute_oasm_program,
 )
 from .morphism import (
     CompilerDefinition,
@@ -37,6 +39,7 @@ __version__ = "0.3.1.dev0"
 __all__ = [
     "Board",
     "CatSeqCompileError",
+    "CatSeqRuntimeError",
     "Channel",
     "ChannelType",
     "CompilerDefinition",
@@ -49,10 +52,11 @@ __all__ = [
     "State",
     "atomic_morphism",
     "arena_build",
+    "assemble_oasm_calls",
     "compile_entry",
     "cycles_to_time",
     "cycles_to_us",
-    "execute_oasm_calls",
+    "execute_oasm_program",
     "identity",
     "ms",
     "morphism_template",

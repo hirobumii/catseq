@@ -3,6 +3,14 @@ import dataclasses
 import pytest
 
 from catseq import _native
+from catseq.compilation import (
+    AssembledOASMBoard,
+    AssembledOASMProgram,
+    BoardEndpoint,
+    CatSeqRuntimeError,
+    LinuxRawEthernetRuntimeConfig,
+    execute_oasm_program,
+)
 
 
 def test_runtime_handoff_uses_frozen_native_classes() -> None:
@@ -45,3 +53,39 @@ def test_native_constructors_surface_rust_contract_errors() -> None:
 
     with pytest.raises(ValueError, match="exceeds five bits"):
         _native.BoardEndpoint("main", 2, 32, 1024)
+
+
+def test_runtime_types_are_direct_public_aliases_of_native_classes() -> None:
+    assert AssembledOASMBoard is _native.AssembledOASMBoard
+    assert AssembledOASMProgram is _native.AssembledOASMProgram
+    assert BoardEndpoint is _native.BoardEndpoint
+    assert LinuxRawEthernetRuntimeConfig is _native.LinuxRawEthernetRuntimeConfig
+
+
+def test_native_runtime_failure_is_structured_and_facade_raises_typed_error() -> None:
+    board = AssembledOASMBoard("rwg0", [0x00D00000, 0x00D00000], 1)
+    program = AssembledOASMProgram(1, 20, 3, [board])
+    endpoint = BoardEndpoint("rwg0", 2, 7, 1024)
+    config = LinuxRawEthernetRuntimeConfig(
+        1,
+        "catseq-interface-that-does-not-exist",
+        [2, 0, 0, 0, 0, 4],
+        10,
+        [endpoint],
+    )
+
+    native_failure = _native.execute_oasm_program(program, config)
+
+    assert isinstance(native_failure, _native.OASMRuntimeFailure)
+    assert native_failure.code == "transport_open_failed"
+    assert native_failure.execution_certainty == "not_started"
+    assert native_failure.board_evidence == {"rwg0": "not_dispatched"}
+    assert native_failure.device_exceptions == {}
+    assert native_failure.details == {}
+
+    with pytest.raises(CatSeqRuntimeError) as caught:
+        execute_oasm_program(program, config)
+
+    assert caught.value.failure.code == "transport_open_failed"
+    assert caught.value.code == "transport_open_failed"
+    assert caught.value.execution_certainty == "not_started"

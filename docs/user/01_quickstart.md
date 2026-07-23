@@ -49,7 +49,13 @@ The host application supplies its channel map (`environment`). CatSeq selects
 its packaged, versioned RTMQ target profile automatically:
 
 ```python
-from catseq.compilation import compile_entry, execute_oasm_calls
+from catseq.compilation import (
+    BoardEndpoint,
+    LinuxRawEthernetRuntimeConfig,
+    assemble_oasm_calls,
+    compile_entry,
+    execute_oasm_program,
+)
 
 result = compile_entry(
     experiment.build_sequence,
@@ -58,7 +64,15 @@ result = compile_entry(
 )
 
 calls = result.to_oasm_calls(opaque_callables=opaque_callables)
-_, exp_sequence = execute_oasm_calls(calls, assembler_seq)
+program = assemble_oasm_calls(calls, assembler_seq)
+runtime = LinuxRawEthernetRuntimeConfig(
+    1,
+    "eno1",
+    None,
+    2_000,
+    [BoardEndpoint("rwg0", 2, 0, 131_072)],
+)
+success = execute_oasm_program(program, runtime)
 print(result.logical_duration_cycles)
 ```
 
@@ -68,3 +82,7 @@ by `catseqc`; arbitrary host lifecycle code is not compiled.
 
 The old `compile_to_oasm_calls(morphism, ...)` API is removed in 0.3. Native
 compiler diagnostics and RTMQ lowering tests now own that behavior.
+
+Assembly is pure and returns an immutable Rust/PyO3 value; it does not return
+an OASM sequence to run later. Execution is Linux-only and requires
+`CAP_NET_RAW`; Rust uses `AF_PACKET/SOCK_RAW` directly and does not use pcap.

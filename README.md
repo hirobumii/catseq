@@ -120,7 +120,7 @@ development, and explicit external-compiler compatibility checks.
 
 ```bash
 uv run pytest -q
-uv run ruff check catseq tests benchmarks
+uv run ruff check catseq tests tools benchmarks
 cargo fmt --all --manifest-path rust/Cargo.toml -- --check
 cargo +1.88.0 clippy --locked --workspace --all-targets \
   --manifest-path rust/Cargo.toml -- -D warnings

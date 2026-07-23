@@ -89,7 +89,7 @@ jobs:
         run: uv sync --locked --all-extras --dev
 
       - name: Check Python code
-        run: uv run ruff check catseq tests benchmarks
+        run: uv run ruff check catseq tests tools benchmarks
 
       - name: Run Python tests
         run: uv run pytest -q

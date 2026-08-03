@@ -84,8 +84,8 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   invoking process needs `CAP_NET_RAW`; root or `sudo` is not otherwise part of
   the interface contract.
 - Consolidated current compiler status in
-  `docs/dev/0.3_native_compiler.md`; older milestone plans are historical and
-  no longer define the production path.
+  `docs/development/0.3_native_compiler.md`; older milestone plans are
+  historical and no longer define the production path.
 
 ### Fixed
 

@@ -1,6 +1,9 @@
 # CatSeq compilation and execution API redesign
 
-Status: 0.3.2 implementation complete; BaseExp migration remains downstream
+Document class: current design
+
+Status: 0.3.2 compiler/runtime implementation complete; `catseq.experiment`
+clean-port plan accepted
 
 ## Goal
 
@@ -41,7 +44,7 @@ runtime margin, with an explicit override reserved for exceptional cases.
 | RTMQ instruction encoding | none | private Python OASM adapter |
 | Physical board routes and reply endpoint | Ethernet Runtime | Rust, exposed through PyO3 |
 | RTLink, Ethernet transport, monitoring | Ethernet Runtime | Rust runtime |
-| Experiment lifecycle | BaseExp | Python framework using Compiler and Runtime |
+| Experiment lifecycle | `catseq.experiment.base_exp.BaseExp` | CatSeq Python framework using supplied collaborators |
 
 Python locates the bound source entry and invokes the pinned OASM encoder. It
 does not duplicate runtime schemas, schedule calls, validate topology, or send
@@ -93,10 +96,13 @@ objects once; callers do not construct schema-versioned dictionaries.
 
 ## BaseExp integration
 
-BaseExp composes the two low-level services without exposing their setup to an
-experiment subclass:
+`catseq.experiment.base_exp.BaseExp` composes the two low-level modules without
+exposing their setup to an experiment subclass:
 
 ```python
+from catseq.experiment.base_exp import BaseExp
+
+
 class BaseExp:
     compiler: Compiler
     runtime: Runtime
@@ -111,6 +117,8 @@ class BaseExp:
 
 Experiment subclasses continue to define `build_sequence(params)`. They do not
 construct assemblers, interfaces, Compile Environments, or board endpoints.
+One `BaseExp` instance owns the complete scan and execution lifecycle; CatSeq
+does not add a separate `ExperimentRun` wrapper.
 
 ## Failure boundaries
 
@@ -138,26 +146,32 @@ construct assemblers, interfaces, Compile Environments, or board endpoints.
    encoder module.
 3. [x] Add Ethernet Runtime as the public execution facade over the existing Rust
    runtime contract.
-4. [x] Convert the external TTL benchmark so it imports no OASM symbols and passes
-   no hand-written Compile Environment.
-5. [ ] Port BaseExp to compose Compiler and Runtime, then migrate experiments one
-   at a time.
+4. [x] Prove the low-level external TTL compiler/runtime path without public
+   OASM symbols or a hand-written Compile Environment.
+5. [ ] Execute the accepted
+   [`catseq.experiment` migration plan](catseq_experiment_migration_plan.md),
+   then migrate experiments one at a time.
 
 ## Acceptance benchmark
 
-The external TTL benchmark is the tracer bullet. Its source must contain a
-normal CatSeq TTL sequence and the short public setup shown above. It must not
-mention `SimpleNamespace`, `assembler`, `run_cfg`, OASM core types,
-`BoardEndpoint`, instruction capacity, schema version, or a raw environment
-dictionary. Compilation must produce the expected 500 ms call plan, and the
-physical run must return successful evidence for `rwg0`.
+The final external TTL benchmark is the `catseq.experiment` tracer bullet. Its
+source must contain a normal CatSeq TTL sequence, import `BaseExp` from
+`catseq.experiment.base_exp`, and import `BaseModule` and `BaseService` from
+`catseq.experiment.base_module`. It must not mention `SimpleNamespace`,
+`assembler`, `run_cfg`, OASM core types, `BoardEndpoint`, instruction capacity,
+schema version, a raw environment dictionary, or `rb1system.abstract`.
+Compilation must produce the expected 500 ms call plan, the physical run must
+return successful evidence for `rwg0`, and the lifecycle must produce a
+readable H5 record.
 
 ## 0.3.2 verification checkpoint
 
-Verified on 2026-08-02 with the external single-file TTL benchmark. The
-compiler emitted the expected 500 ms plan, and the physical runtime returned
-successful terminal evidence for its configured board. Concrete interface,
-chassis, reply, and board-route values remain in the external hardware test.
+The low-level Compiler/Ethernet Runtime path was verified on 2026-08-02 with
+the external single-file TTL benchmark. The compiler emitted the expected 500
+ms plan, and the physical runtime returned successful terminal evidence for its
+configured board. That checkpoint predates the `BaseExp` clean port; the final
+experiment-control hardware acceptance remains open in Phase 7 of the migration
+plan.
 
 An offline differential regression test also verifies that the private explicit
 reply-endpoint adapter produces the same finalized OASM instruction words and

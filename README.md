@@ -153,5 +153,6 @@ git diff --check
 ```
 
 The authoritative implementation status is
-[docs/dev/0.3_native_compiler.md](docs/dev/0.3_native_compiler.md). Accepted
-decisions are recorded in [docs/adr](docs/adr).
+[docs/development/0.3_native_compiler.md](docs/development/0.3_native_compiler.md).
+The [documentation index](docs/README.md) separates user, device, development,
+and decision records.

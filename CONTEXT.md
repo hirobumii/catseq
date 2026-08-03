@@ -5,6 +5,23 @@ board-specific instructions with exact timing and state continuity.
 
 ## Language
 
+**BaseExp**:
+The lifecycle owner for one complete experiment execution, from setup through
+scan traversal to finalization. It owns orchestration, not platform-specific
+resource construction. Its public home is `catseq.experiment`, and CatSeq does
+not split it into a separate Experiment Run object. It is imported from
+`catseq.experiment.base_exp`; the namespace does not bulk re-export all
+experiment types.
+_Avoid_: ExperimentRun, compile-and-run wrapper
+
+**Experiment Control**:
+The generic host-side lifecycle, scan traversal, device/result coordination,
+analysis, panel publication, and H5 persistence exposed through focused public
+modules under `catseq.experiment`. Target discovery, runtime
+construction, hardware locks, and transport-specific publishers belong to
+downstream adapters.
+_Avoid_: rb1system.abstract, platform runtime factory
+
 **Lane**:
 The ordered, immutable sequence of operations for one hardware channel, together
 with its total duration and boundary states. Its public operation sequence is a

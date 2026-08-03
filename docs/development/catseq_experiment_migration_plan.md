@@ -2,7 +2,8 @@
 
 Document class: active migration plan
 
-Status: CatSeq phases 1-5 verified; rb1-next migration in progress
+Status: CatSeq phases 1-5, rb1-next migration, and the TTL tracer bullet are
+verified; CatSeq publication and full RB1 hardware acceptance remain
 
 Target namespace: `catseq.experiment`
 
@@ -329,12 +330,12 @@ diagnostics.
 
 ### Phase 7: hardware acceptance
 
-- [ ] Rewrite `hardware-tests/chassis2_ttl.py` as a self-contained,
+- [x] Rewrite `hardware-tests/chassis2_ttl.py` as a self-contained,
   human-written `BaseExp` example importing `BaseExp` from
   `catseq.experiment.base_exp`, module/service bases from
   `catseq.experiment.base_module`, and compilation/runtime types from CatSeq.
-- [ ] Remove all OASM and `rb1system.abstract` imports from that file.
-- [ ] Verify the expected 500 ms call plan, successful chassis-2 RWG0 terminal
+- [x] Remove all OASM and `rb1system.abstract` imports from that file.
+- [x] Verify the expected 500 ms call plan, successful chassis-2 RWG0 terminal
   evidence, and a readable H5 experiment record.
 - [ ] Run the Rydberg experiment as the first full RB1 acceptance case after
   the TTL tracer bullet.
@@ -357,6 +358,28 @@ The migration is not complete while any of these remain on the new path:
 - re-export aliases from `rb1system.abstract` to `catseq.experiment`.
 
 ## Completion evidence
+
+Interim acceptance evidence recorded on 2026-08-03:
+
+- CatSeq commit `c084891` and rb1-next commit `aaa76e4` supplied the local
+  experiment framework, compiler, runtime, and migrated RB1 consumers. CatSeq
+  is not yet published at a version that rb1-next can pin.
+- The rewritten `hardware-tests/chassis2_ttl.py` compiled
+  `Chassis2TtlExp.build_sequence` to 125,000,000 logical cycles at 250 MHz with
+  zero diagnostics. Its single `rwg0` plan contains `ttl_config`, high, wait,
+  and low calls.
+- The physical command completed through CatSeq `EthernetRuntime` on `eno1`
+  with destination `60:cf:84:a7:bc:01`, reply node 21/channel 0, and
+  `rwg0 -> node 2`; it exited successfully with terminal text
+  `completed chassis 2 RWG0`.
+- The retained record is
+  `/home/hermes/workspaces/exp/hardware-tests/chassis2_ttl_20260803_231742.h5`.
+  It is a readable 13,688-byte schema-1 `Chassis2TtlExp` record containing all
+  six experiment groups and attempted execution index 0.
+
+The full Rydberg hardware acceptance and CatSeq publication/version pin remain
+open. When those gates close, append their evidence below rather than replacing
+the TTL tracer record.
 
 When the final phase closes, record in this document:
 

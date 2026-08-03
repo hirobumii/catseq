@@ -9,6 +9,11 @@ import tempfile
 
 import catseq
 from catseq import _native
+from catseq.experiment.base_exp import BaseExp
+from catseq.experiment.base_module import BaseModule, BaseService
+from catseq.experiment.descartes import DescartesGenerator
+from catseq.experiment.device import DeviceList
+from catseq.experiment.params import ExpParam, ExpParams, ScanPoint
 from catseq.morphism import Morphism, identity
 from catseq.targets import rtmq_v2_profile
 
@@ -32,6 +37,14 @@ assert _native.CompiledSequence.__module__ == "catseq._native"
 assert _native.EthernetRuntimeBackend.__module__ == "catseq._native"
 assert _native.AssembledOASMProgram.__module__ == "catseq._native"
 assert _native.LinuxRawEthernetRuntimeConfig.__module__ == "catseq._native"
+assert BaseExp.__module__ == "catseq.experiment.base_exp"
+assert BaseModule.__module__ == "catseq.experiment.base_module"
+assert BaseService.__module__ == "catseq.experiment.base_module"
+assert DescartesGenerator.__module__ == "catseq.experiment.descartes"
+assert DeviceList.__module__ == "catseq.experiment.device"
+assert ExpParam.__module__ == "catseq.experiment.params"
+assert ExpParams.__module__ == "catseq.experiment.params"
+assert ScanPoint.__module__ == "catseq.experiment.params"
 
 runtime_board = _native.AssembledOASMBoard(
     "rwg0",

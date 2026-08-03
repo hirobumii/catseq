@@ -7,15 +7,27 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-04
+
 ### Added
 
 - Added the focused `catseq.experiment` modules for host-side experiment
   lifecycle control, immutable scan parameters, Descartes traversal, devices,
-  analyzers, panel publication, and optional H5 persistence. `BaseExp` compiles
+  analyzers, panel publication, and H5 persistence. `BaseExp` compiles
   only `build_sequence` and executes the returned `CompiledSequence` through a
   supplied runtime. The first scan point compiles synchronously; later points
   compile one point ahead while the current sequence runs, and wait only when
-  the prefetched compilation is not yet complete.
+  the prefetched compilation is not yet complete. Unused speculative work does
+  not delay cleanup after failure or cancellation.
+- Added `tools/set_version.py` as the single release-version command for Python,
+  Rust, lockfiles, current user documentation, and the dated changelog section.
+
+### Changed
+
+- Moved downstream opaque operations out of CatSeq's built-in RTMQ target
+  profile. Systems supply their own opaque callables through `Compiler`
+  configuration, and the native compiler now treats those declared definitions
+  as opaque leaves instead of parsing their Python bodies.
 
 ### Fixed
 

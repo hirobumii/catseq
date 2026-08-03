@@ -1,6 +1,6 @@
-# CatSeq 0.3.2 quickstart
+# CatSeq 0.4.0 quickstart
 
-CatSeq 0.3.2 keeps the Python Morphism composition syntax, but production
+CatSeq 0.4.0 keeps the Python Morphism composition syntax, but production
 compilation starts from a source definition. It does not execute the Python
 builder and does not compile an already-constructed Python `Morphism`.
 

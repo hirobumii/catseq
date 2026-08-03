@@ -3,17 +3,31 @@
 This directory contains project-development material. Device specifications
 belong in [`../dev/`](../dev/).
 
+## Release version
+
+Use one command to set a release version instead of editing its copies by hand:
+
+```bash
+python3 tools/set_version.py X.Y.Z --date YYYY-MM-DD
+```
+
+`pyproject.toml` remains the reference version read by the release checker. The
+command synchronizes it with the Python package, Rust workspace, both lockfiles,
+README, quickstart, and a dated changelog section. Historical versioned
+documents are not rewritten.
+
 ## Current documents
 
-- [CatSeq 0.3 native compiler](0.3_native_compiler.md) is the authoritative
-  compiler implementation status.
 - [Compilation and execution interface redesign](execution_api_redesign.md)
   records the current Compiler/Runtime interface and its BaseExp integration.
 - [Experiment-control clean-port plan](catseq_experiment_migration_plan.md) is
-  the active plan for introducing the `catseq.experiment` modules.
+  the implementation record and tracks the remaining downstream acceptance
+  gates.
 
 ## Historical records
 
+- [CatSeq 0.3 native compiler](0.3_native_compiler.md) records the completed
+  0.3.2 compiler/runtime baseline.
 - [CatSeq 0.3 Typed Source HIR implementation plan](0.3_typed_source_hir_plan.md)
   records the completed compiler milestone.
 - [CatSeq 0.3.1 Linux raw-Ethernet runtime migration plan](0.3.1_linux_raw_ethernet_runtime_plan.md)

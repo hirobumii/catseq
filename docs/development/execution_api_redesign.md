@@ -2,8 +2,8 @@
 
 Document class: current design
 
-Status: 0.3.2 compiler/runtime implementation complete; `catseq.experiment`
-clean-port plan accepted
+Status: 0.4.0 compiler/runtime and `catseq.experiment` integration implemented;
+full Rydberg hardware acceptance remains pending
 
 ## Goal
 
@@ -97,28 +97,26 @@ objects once; callers do not construct schema-versioned dictionaries.
 ## BaseExp integration
 
 `catseq.experiment.base_exp.BaseExp` composes the two low-level modules without
-exposing their setup to an experiment subclass:
+exposing their setup to an experiment subclass. The first point compiles
+synchronously; after device parameters are applied, point N+1 starts compiling
+before the runtime executes point N:
 
-```python
-from catseq.experiment.base_exp import BaseExp
-
-
-class BaseExp:
-    compiler: Compiler
-    runtime: Runtime
-
-    def compile(self, params):
-        return self.compiler.compile(self.build_sequence, params)
-
-    def execute(self, params):
-        compiled = self.compile(params)
-        return self.runtime.run(compiled)
+```text
+record attempted ScanPoint
+  -> take prefetched CompiledSequence, waiting if needed
+     (compile synchronously for the first point)
+  -> apply device parameters and initialize devices
+  -> start compiling the next immutable ScanPoint
+  -> runtime.run(compiled)
+  -> read devices and run streaming analysis
 ```
 
 Experiment subclasses continue to define `build_sequence(params)`. They do not
 construct assemblers, interfaces, Compile Environments, or board endpoints.
 One `BaseExp` instance owns the complete scan and execution lifecycle; CatSeq
-does not add a separate `ExperimentRun` wrapper.
+does not add a separate `ExperimentRun` wrapper. A speculative next-point
+compilation is not an attempted execution and is recorded in `ParaDict` only
+when normal Descartes traversal reaches it.
 
 ## Failure boundaries
 
@@ -148,30 +146,30 @@ does not add a separate `ExperimentRun` wrapper.
    runtime contract.
 4. [x] Prove the low-level external TTL compiler/runtime path without public
    OASM symbols or a hand-written Compile Environment.
-5. [ ] Execute the accepted
+5. [x] Execute the accepted
    [`catseq.experiment` migration plan](catseq_experiment_migration_plan.md),
-   then migrate experiments one at a time.
+   migrate the first RB1 consumers, and verify the BaseExp TTL tracer.
 
 ## Acceptance benchmark
 
-The final external TTL benchmark is the `catseq.experiment` tracer bullet. Its
-source must contain a normal CatSeq TTL sequence, import `BaseExp` from
-`catseq.experiment.base_exp`, and import `BaseModule` and `BaseService` from
-`catseq.experiment.base_module`. It must not mention `SimpleNamespace`,
+The completed external TTL benchmark is the `catseq.experiment` tracer bullet.
+Its source contains a normal CatSeq TTL sequence, imports `BaseExp` from
+`catseq.experiment.base_exp`, and imports `BaseModule` and `BaseService` from
+`catseq.experiment.base_module`. It does not mention `SimpleNamespace`,
 `assembler`, `run_cfg`, OASM core types, `BoardEndpoint`, instruction capacity,
 schema version, a raw environment dictionary, or `rb1system.abstract`.
-Compilation must produce the expected 500 ms call plan, the physical run must
-return successful evidence for `rwg0`, and the lifecycle must produce a
-readable H5 record.
+Compilation produced the expected 500 ms call plan, the physical run returned
+successful evidence for `rwg0`, and the lifecycle produced a readable H5
+record. Exact evidence is retained in the migration plan; the full Rydberg
+experiment remains the next downstream hardware gate.
 
-## 0.3.2 verification checkpoint
+## Verification checkpoints
 
 The low-level Compiler/Ethernet Runtime path was verified on 2026-08-02 with
 the external single-file TTL benchmark. The compiler emitted the expected 500
 ms plan, and the physical runtime returned successful terminal evidence for its
-configured board. That checkpoint predates the `BaseExp` clean port; the final
-experiment-control hardware acceptance remains open in Phase 7 of the migration
-plan.
+configured board. The BaseExp-level TTL tracer then passed on 2026-08-03; the
+selected Rydberg run remains open in Phase 7 of the migration plan.
 
 An offline differential regression test also verifies that the private explicit
 reply-endpoint adapter produces the same finalized OASM instruction words and

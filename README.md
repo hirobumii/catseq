@@ -5,10 +5,11 @@
 ![Python](https://img.shields.io/badge/python-3.12-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)
 
-CatSeq 0.3.2 is a categorical timing-composition language, native compiler,
-and RTMQ execution runtime for hardware sequences.
+CatSeq 0.4.0 is a categorical timing-composition language, native compiler,
+RTMQ execution runtime, and host-side experiment controller for hardware
+sequences.
 
-CatSeq 0.3.2 preserves the Python `Morphism`, `MorphismDef`, `>>`, `@`, `|`, and
+CatSeq 0.4.0 preserves the Python `Morphism`, `MorphismDef`, `>>`, `@`, `|`, and
 channel-dictionary syntax. The public `Compiler` parses one sequence entry and
 its reachable definitions, then lowers them to a Rust-owned
 `CompiledSequence`. `EthernetRuntime` separately owns physical chassis routing
@@ -111,12 +112,42 @@ requires `CAP_NET_RAW`. The timeout defaults to the compiled logical duration
 plus the runtime margin. Real interface, MAC, reply-node, and board-route values
 belong in the consuming application or hardware-test repository, not CatSeq.
 
-## 0.3.2 API boundary
+## Coordinate an experiment run
+
+`catseq.experiment` provides ordinary host-side Python control around the
+per-scan-point compiler/runtime boundary. Import concepts from the focused
+module that owns them; the package does not provide a bulk re-export facade:
+
+```python
+from catseq.experiment.base_exp import BaseExp
+from catseq.experiment.base_module import BaseModule, BaseService
+from catseq.experiment.params import ExpParam, ExpParams, ScanPoint
+```
+
+`BaseExp.run()` owns repeat/scan traversal, device lifecycle, analyzers, panel
+publication, H5 persistence, and cleanup. It compiles the first point
+synchronously, then compiles point N+1 while the compiled sequence for point N
+runs. If that compilation is still in progress when traversal reaches N+1,
+execution waits for it. Only `build_sequence` and the immutable point
+`ExpParams` enter the compiler; experiment orchestration itself is never
+compiled.
+
+The concrete runner supplies the system-scoped `Compiler`, runtime, devices,
+run control, panel publisher, and `H5Writer`. Hardware locks, process policy,
+MQTT transport, and platform-specific device implementations remain in the
+consumer rather than CatSeq.
+
+## 0.4.0 API boundary
 
 `Compiler`, `CompiledSequence`, and `EthernetRuntime` are the stable application
 seam. The compiled sequence is immutable and contains the OASM Call Plan,
 logical duration, target clock, diagnostics, and incremental evidence without
 exposing an assembler or transport state.
+
+The host experiment seam consists of the focused `catseq.experiment.*` modules,
+with `BaseExp` as the only complete-lifecycle coordinator. There is no separate
+`ExperimentRun` object, and neither the experiment package nor top-level
+`catseq` re-exports the entire experiment API.
 
 The 0.3.1 `compile_entry()`, `assemble_oasm_calls()`, and
 `execute_oasm_program()` implementation helpers are no longer exported as
@@ -152,7 +183,7 @@ cargo test --locked --workspace --all-targets --manifest-path rust/Cargo.toml
 git diff --check
 ```
 
-The authoritative implementation status is
-[docs/development/0.3_native_compiler.md](docs/development/0.3_native_compiler.md).
-The [documentation index](docs/README.md) separates user, device, development,
-and decision records.
+The [development documentation index](docs/development/README.md) identifies
+the current interface and migration records. The top-level
+[documentation index](docs/README.md) separates user, device, development, and
+decision records.

@@ -13,10 +13,16 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "h5py>=3.16",
+    "numpy>=2.3",
     "pytest",
     "pytest-mock",
     "ruff",
     "mypy"
+]
+h5 = [
+    "h5py>=3.16",
+    "numpy>=2.3",
 ]
 
 [project.scripts]

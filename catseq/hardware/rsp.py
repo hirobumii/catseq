@@ -58,6 +58,11 @@ def pid_release() -> MorphismDef:
     compiler_only("catseq.hardware.rsp.pid_release")
 
 
+def pid_relink() -> MorphismDef:
+    """Reconnect a held PID loop."""
+    compiler_only("catseq.hardware.rsp.pid_relink")
+
+
 def rf_config(config: RSPWaveformParams) -> MorphismDef:
     """Configure one static RSP RF output."""
     compiler_only("catseq.hardware.rsp.rf_config")
@@ -73,6 +78,7 @@ __all__ = [
     "initialize",
     "pid_config",
     "pid_hold",
+    "pid_relink",
     "pid_release",
     "pid_start",
     "rf_config",

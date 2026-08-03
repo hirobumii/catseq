@@ -11,7 +11,8 @@ scan traversal to finalization. It owns orchestration, not platform-specific
 resource construction. Its public home is `catseq.experiment`, and CatSeq does
 not split it into a separate Experiment Run object. It is imported from
 `catseq.experiment.base_exp`; the namespace does not bulk re-export all
-experiment types.
+experiment types. Its orchestration is host Python; only `build_sequence` is
+compiled separately for each attempted scan point.
 _Avoid_: ExperimentRun, compile-and-run wrapper
 
 **Experiment Control**:

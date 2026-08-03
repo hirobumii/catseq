@@ -22,6 +22,15 @@ concrete experiment or its runner, so the generic flow can be reused without
 importing deployment policy into CatSeq. A separate `ExperimentRun` concept is
 not introduced.
 
+Experiment orchestration remains ordinary host Python. `BaseExp` invokes the
+CatSeq compiler once for each attempted scan point, passing only the bound
+`build_sequence` method and that point's `ExpParams`; traversal, device
+lifecycle, analysis, publication, persistence, and cleanup are never compiled.
+
+`BaseModule` and `BaseService` are clean ports of the existing sequence
+abstractions with serialization removed. CatSeq does not add a separate
+authoring base or require the compiler to classify these host-side types.
+
 RB1 retains only platform adapters and concrete experiment implementations.
 Migrated consumers import the specific `catseq.experiment.*` modules directly;
 CatSeq does not provide lookalike Raw classes, and `rb1system.abstract` does not

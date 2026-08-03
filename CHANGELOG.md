@@ -7,6 +7,19 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added the focused `catseq.experiment` modules for host-side experiment
+  lifecycle control, immutable scan parameters, Descartes traversal, devices,
+  analyzers, panel publication, and optional H5 persistence. `BaseExp` compiles
+  only `build_sequence` once per attempted scan point and executes the returned
+  `CompiledSequence` through a supplied runtime.
+
+### Fixed
+
+- Restored the `catseq.hardware.rsp.pid_relink` source declaration already
+  recognized by the native compiler.
+
 ## [0.3.2] - 2026-08-03
 
 ### Added

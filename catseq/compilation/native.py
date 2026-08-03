@@ -250,6 +250,8 @@ def _owner_bindings(owner: object, values: dict[str, object]) -> None:
             if not name.startswith("_") and not isinstance(value, property)
         )
     for name in names:
+        if name.startswith("_"):
+            continue
         try:
             value = getattr(owner, name)
         except (AttributeError, RuntimeError):
@@ -291,6 +293,7 @@ def _value_bindings(
             except (AttributeError, RuntimeError):
                 continue
             if declaration is key:
+                values[f"self.{attribute}"] = encoded_item
                 values[f"{name}[self.{attribute}]"] = encoded_item
 
 
@@ -298,6 +301,8 @@ def _json_scalar_or_sequence(value: object) -> object | None:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, (tuple, list)):
+        if not value:
+            return None
         encoded = [_json_scalar_or_sequence(item) for item in value]
         if all(item is not None for item in encoded):
             return encoded

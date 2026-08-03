@@ -2,7 +2,7 @@
 
 Document class: active migration plan
 
-Status: accepted architecture; implementation pending
+Status: CatSeq phases 1-5 verified; rb1-next migration in progress
 
 Target namespace: `catseq.experiment`
 
@@ -67,6 +67,10 @@ them.
 10. The OASM object model is not part of experiment control. `assembler`,
     `run_cfg`, `eth_intf`, `C_*`, `seq`, and `intf_usb` do not enter
     `catseq.experiment`.
+11. Experiment orchestration is ordinary host Python and is never a CatSeq
+    compiler input. At each attempted scan point, `BaseExp` passes only the
+    bound `build_sequence` method and that point's immutable `ExpParams` to the
+    compiler.
 
 These decisions supersede the older RB1/OASM-specific conclusions that
 `BaseExp` should own `seq`, `intf_usb`, or an `execution_mode` switch. Runtime
@@ -104,7 +108,7 @@ The initial package layout is:
 catseq/experiment/
   __init__.py          namespace documentation; no bulk re-exports
   base_exp.py          complete experiment lifecycle
-  base_module.py       BaseModule and BaseService authoring bases
+  base_module.py       BaseModule and BaseService sequence abstractions
   params.py            ExpParam, ExpParams, and ScanPoint
   descartes.py         repeat and tensor-scan traversal
   para_dict.py         append-only parameter history and queries
@@ -126,8 +130,9 @@ package.
 
 ## Dependency rules
 
-- Modules under `catseq.experiment` may depend on the public `Compiler`,
-  Compiled Sequence, and Ethernet Runtime behavior already owned by CatSeq.
+- `BaseExp` calls the public `Compiler` and the supplied runtime at the
+  per-point boundary. Descartes traversal, device lifecycle, analysis,
+  publication, persistence, and cleanup never enter the compiler.
 - Experiment modules other than `h5` do not import `h5py` or NumPy. Only
   `catseq.experiment.h5` owns H5 encoding and its optional dependencies.
 - No CatSeq experiment module imports `rb1system`, runner schemas, ScienceClaw,
@@ -136,8 +141,9 @@ package.
   specific `catseq.experiment.*` modules they use; the dependency never points
   back into RB1.
 - The compiler and runtime remain usable without importing experiment control.
-  Static compiler support for canonical `catseq.experiment` authoring types
-  does not make the runtime depend on the Python experiment package.
+  They do not classify or compile `BaseExp`, `BaseModule`, `BaseService`, or the
+  experiment lifecycle. Reachable sequence-building methods remain ordinary
+  CatSeq source definitions regardless of their host-side base classes.
 - Do not add a public generic runtime or persistence protocol for this port.
   The current runtime and H5 writer are single concrete implementations. Tests
   can replace them at private seams inside the package.
@@ -169,7 +175,7 @@ The source audit on 2026-08-03 established these pre-migration checkpoints:
 
 | Current RB1 source | CatSeq destination | RB1 remainder |
 | --- | --- | --- |
-| `abstract/base_module.py` | `experiment.base_module` authoring identity | Legacy `init(hard=...)`, channel styling, and RB1 state-map helpers while concrete modules still need them |
+| `abstract/base_module.py` | `experiment.base_module`, retaining module initialization, channel state/style, and service composition while removing serialization | Concrete RB1 modules and services only |
 | `abstract/params.py` | `experiment.params` | None |
 | `abstract/descartes_generator.py` | `experiment.descartes` | None; H5 encoding moves separately |
 | `abstract/para_dict.py` | `experiment.para_dict` | None; H5/NumPy encoding moves separately |
@@ -180,7 +186,7 @@ The source audit on 2026-08-03 established these pre-migration checkpoints:
 | `abstract/indexer.py` | `experiment.indexer` | None |
 | `rb1system/panel.py` | `experiment.panel` | MQTT transport, topic naming, health, and ScienceClaw identity |
 | `abstract/base_exp.py` | `experiment.base_exp`, rewritten over `Compiler.compile()` and runtime `run()` | Runtime/config construction, hardware lock, runner identity, and deployment policy |
-| `abstract/util.py` | Dataclass authoring machinery only where still needed; H5 helpers in `experiment.h5` | Delete unused singleton and `SavableABDC` aggregation |
+| `abstract/util.py` | No destination; use explicit standard-library dataclasses and move H5 conversion into `experiment.h5` | Delete singleton, metaclass decoration, and `SavableABDC` aggregation |
 
 This is a clean port. Files are not copied wholesale, and CatSeq does not keep
 RB1 import paths alive after their last consumer migrates.
@@ -217,7 +223,7 @@ a second orchestration interface.
 
 ### Phase 0: freeze observable behavior
 
-- [ ] Move or reproduce the focused RB1 framework tests as behavior tests for
+- [x] Move or reproduce the focused RB1 framework tests as behavior tests for
   the new package interface.
 - [x] Record the real Rydberg source-check baseline and the current TTL
   low-level compiler/runtime result.
@@ -228,26 +234,27 @@ Gate: the current focused RB1 suite remains green, and the CatSeq compiler
 checks `RydbergTransferExp.build_sequence` with no diagnostics before any source
 type moves.
 
-### Phase 1: establish authoring and parameter foundations
+### Phase 1: establish module, service, and parameter foundations
 
-- [ ] Add the public `catseq.experiment.base_module` and
+- [x] Add the public `catseq.experiment.base_module` and
   `catseq.experiment.params` modules; keep the package `__init__` free of bulk
   re-exports.
-- [ ] Clean-port `BaseModule`, `BaseService`, `ExpParam`, `ExpParams`, and
+- [x] Clean-port `BaseModule`, `BaseService`, `ExpParam`, `ExpParams`, and
   `ScanPoint` without `SavableABDC` or H5 imports.
-- [ ] Teach the static compiler to treat canonical
-  `catseq.experiment` authoring imports as the supported source definitions.
+- [x] Keep these host abstractions out of compiler classification and compile
+  only `build_sequence` plus its reachable sequence-building definitions.
 
-Gate: immutability, mapping, range-expansion, and source-compilation tests pass;
-the real Rydberg source still produces zero diagnostics.
+Gate: module/service composition, immutability, mapping, and range-expansion
+tests pass. A boundary test proves orchestration is not compiled, and the real
+Rydberg `build_sequence` source still produces zero diagnostics.
 
 ### Phase 2: port scan traversal and run data
 
-- [ ] Clean-port `DescartesGenerator`, `ParaDict`, and `RunControl` as pure
+- [x] Clean-port `DescartesGenerator`, `ParaDict`, and `RunControl` as pure
   in-process modules.
-- [ ] Preserve repeat, tensor-scan, `final_exp`, streaming callback, and
+- [x] Preserve repeat, tensor-scan, `final_exp`, streaming callback, and
   attempted-point ordering behavior.
-- [ ] Keep H5 conversion out of these classes.
+- [x] Keep H5 conversion out of these classes.
 
 Gate: tests cover nested repeat/scan traversal, tensor coordinates, final
 analysis order, pause/cancel checkpoints, and a compile failure after the point
@@ -255,10 +262,10 @@ has already been recorded.
 
 ### Phase 3: port device, result, analyzer, indexer, and panel concepts
 
-- [ ] Clean-port result and device bases plus non-singleton `DeviceList`.
-- [ ] Build one internal analyzer pipeline for dependency sorting, dependency
+- [x] Clean-port result and device bases plus non-singleton `DeviceList`.
+- [x] Build one internal analyzer pipeline for dependency sorting, dependency
   requests, streaming/final dispatch, and disabled analyzers.
-- [ ] Clean-port `Indexer`, `PanelUpdate`, `PanelPublisher`, and
+- [x] Clean-port `Indexer`, `PanelUpdate`, `PanelPublisher`, and
   `NullPanelPublisher` without MQTT or ScienceClaw imports.
 
 Gate: tests cover device lifecycle order, append-only results, analyzer
@@ -267,12 +274,12 @@ and two independent `DeviceList` instances in one process.
 
 ### Phase 4: centralize H5 persistence
 
-- [ ] Implement the concrete `catseq.experiment.h5` module.
-- [ ] Preserve the established groups: `static_para`, `dynamic_para`,
+- [x] Implement the concrete `catseq.experiment.h5` module.
+- [x] Preserve the established groups: `static_para`, `dynamic_para`,
   `descartes`, `device`, `analyze`, and `debug`.
-- [ ] Move value conversion and dataset replacement rules out of experiment,
+- [x] Move value conversion and dataset replacement rules out of experiment,
   device, result, analyzer, Descartes, and ParaDict classes.
-- [ ] Package `h5py` and NumPy behind a `catseq[h5]` optional dependency; all
+- [x] Package `h5py` and NumPy behind a `catseq[h5]` optional dependency; all
   non-H5 experiment modules must still import without that extra.
 
 Gate: one temporary-file integration test verifies the complete schema and can
@@ -281,13 +288,15 @@ results, and failure diagnostics.
 
 ### Phase 5: implement BaseExp as the vertical slice
 
-- [ ] Implement one `BaseExp.run()` lifecycle over supplied collaborators.
-- [ ] Compile each point with
+- [x] Implement one `BaseExp.run()` lifecycle over supplied collaborators.
+- [x] Compile each point with
   `compiler.compile(self.build_sequence, scan_point.params)` and execute only
   the returned Compiled Sequence through the supplied runtime.
-- [ ] Integrate Descartes, devices, analyzers, panel publication, H5, run
+- [x] Prove the compiler receives one call per attempted point and never
+  receives `run`, Descartes traversal, device, analyzer, or persistence code.
+- [x] Integrate Descartes, devices, analyzers, panel publication, H5, run
   control, and cleanup without exposing the internal pipeline.
-- [ ] Use simple fake devices, analyzers, publisher, and runtime in package
+- [x] Use simple fake devices, analyzers, publisher, and runtime in package
   tests; do not add public fake framework classes.
 
 Gate: one tracer experiment proves success, compile failure, runtime failure,

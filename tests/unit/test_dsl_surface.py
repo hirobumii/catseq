@@ -1,6 +1,7 @@
 import pytest
 
 from catseq.hardware.rwg import linear_ramp, load, play, set_state
+from catseq.hardware.rsp import pid_relink
 from catseq.hardware.ttl import pulse, set_high
 from catseq.morphism import (
     CompilerOnlyError,
@@ -25,6 +26,8 @@ def test_identity_is_a_compiler_only_source_intrinsic() -> None:
 def test_hardware_operations_are_compiler_only_source_intrinsics() -> None:
     with pytest.raises(CompilerOnlyError, match="compile_entry"):
         pulse(1.0)
+    with pytest.raises(CompilerOnlyError, match="compile_entry"):
+        pid_relink()
 
 
 def test_morphism_is_a_nominal_source_type_not_a_runtime_ir() -> None:

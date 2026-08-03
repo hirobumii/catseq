@@ -5,10 +5,7 @@ This module provides functions to convert between binary masks (0b000101)
 and RTMQ ISA "A.B" format masks.
 """
 
-from typing import Union
-
-
-def binary_to_rtmq_mask(binary_mask: int) -> Union[int, str]:
+def binary_to_rtmq_mask(binary_mask: int) -> str:
     """
     Convert a binary mask to RTMQ ISA "X.P" format.
     
@@ -21,14 +18,21 @@ def binary_to_rtmq_mask(binary_mask: int) -> Union[int, str]:
         binary_mask: Binary mask representing channel states
         
     Returns:
-        Either a string "X.P" or the original integer mask
-        
+        The mask in "X.P" format
+
+    Raises:
+        ValueError: if the mask is negative or cannot be represented exactly
+            in "X.P" format
+
     Examples:
         binary_to_rtmq_mask(0b0001)     # "1.0": channel 0 (bit 0)
         binary_to_rtmq_mask(0b0100)     # "1.1": channel 2 (bit 2) 
         binary_to_rtmq_mask(0b1100)     # "3.1": channels 2,3 (bits 2,3)
         binary_to_rtmq_mask(0b11110000) # "F.2": channels 4-7 (bits 4-7)
     """
+    if binary_mask < 0:
+        raise ValueError(f"Binary mask must be non-negative, got {binary_mask}")
+
     if binary_mask == 0:
         return "0.0"
     
@@ -59,9 +63,10 @@ def binary_to_rtmq_mask(binary_mask: int) -> Union[int, str]:
         X, P = min(valid_combinations, key=lambda pair: pair[0])
         return f"{X:X}.{P}"
     
-    # For complex masks that can't be represented in X.P format,
-    # return the original integer
-    return binary_mask
+    raise ValueError(
+        f"Binary mask 0b{binary_mask:b} cannot be represented in RTMQ 'X.P' format; "
+        "an X.P mask is a 4-bit pattern shifted by an even bit position"
+    )
 
 
 def rtmq_mask_to_binary(rtmq_mask: str) -> int:
@@ -80,13 +85,7 @@ def rtmq_mask_to_binary(rtmq_mask: str) -> int:
         rtmq_mask_to_binary("3.0")  # -> 3 << (0*2) = 3
         rtmq_mask_to_binary("F.2")  # -> 15 << (2*2) = 240
     """
-    if '.' not in rtmq_mask:
-        raise ValueError(f"Invalid RTMQ mask format: {rtmq_mask}. Expected 'A.B' format.")
-    
-    X_str, P_str = rtmq_mask.split('.')
-    X = int(X_str, 16)  # Parse as hexadecimal
-    P = int(P_str, 16)  # Parse as hexadecimal (though usually 0-3)
-    
+    X, P = _parse_rtmq_mask(rtmq_mask)
     return X << (P * 2)
 
 
@@ -106,20 +105,29 @@ def encode_rtmq_mask(rtmq_mask: str) -> int:
         encode_rtmq_mask("3.1")  # -> (3 << 4) + 1 = 49
         encode_rtmq_mask("F.2")  # -> (15 << 4) + 2 = 242
     """
-    if '.' not in rtmq_mask:
-        raise ValueError(f"Invalid RTMQ mask format: {rtmq_mask}. Expected 'A.B' format.")
-    
-    X_str, P_str = rtmq_mask.split('.')
-    X = int(X_str, 16)
-    P = int(P_str, 16)
-    
+    X, P = _parse_rtmq_mask(rtmq_mask)
     if X > 15 or P > 15:
         raise ValueError(f"X and P must be single hex digits (0-F), got X={X}, P={P}")
     
     return (X << 4) + P
 
 
-def smart_mask_convert(binary_mask: int) -> Union[str, int]:
+def _parse_rtmq_mask(rtmq_mask: str) -> tuple[int, int]:
+    """Split an "A.B" mask into its hexadecimal pattern and position."""
+    if '.' not in rtmq_mask:
+        raise ValueError(f"Invalid RTMQ mask format: {rtmq_mask}. Expected 'A.B' format.")
+
+    X_str, _, P_str = rtmq_mask.partition('.')
+    try:
+        return int(X_str, 16), int(P_str, 16)
+    except ValueError as error:
+        raise ValueError(
+            f"Invalid RTMQ mask format: {rtmq_mask}. "
+            "Expected hexadecimal 'A.B' digits."
+        ) from error
+
+
+def smart_mask_convert(binary_mask: int) -> str:
     """
     Smart conversion that tries to find the best RTMQ representation.
     
@@ -127,8 +135,14 @@ def smart_mask_convert(binary_mask: int) -> Union[str, int]:
         binary_mask: Binary mask to convert
         
     Returns:
-        Either a string in "A.B" format or the original mask if no good conversion found
+        The mask in "A.B" format
+
+    Raises:
+        ValueError: if the mask is negative or has no exact "A.B" representation
     """
+    if binary_mask < 0:
+        raise ValueError(f"Binary mask must be non-negative, got {binary_mask}")
+
     if binary_mask == 0:
         return "0.0"
     
@@ -147,8 +161,9 @@ def smart_mask_convert(binary_mask: int) -> Union[str, int]:
             if X <= 15 and X > 0:  # Valid single hex digit
                 return f"{X:X}.{P}"
     
-    # Return original mask if no good conversion found
-    return binary_mask
+    raise ValueError(
+        f"Binary mask 0b{binary_mask:b} has no exact RTMQ 'A.B' representation"
+    )
 
 
 def demonstrate_channel_control():
@@ -198,12 +213,11 @@ def _test_mask_conversions():
     for binary, expected in test_cases:
         result = binary_to_rtmq_mask(binary)
         print(f"0b{binary:08b} ({binary:3d}) -> {result} (expected {expected})")
-        
-        # Test reverse conversion
-        if isinstance(result, str):
-            reverse = rtmq_mask_to_binary(result)
-            print(f"  Reverse: {result} -> 0b{reverse:08b} ({reverse})")
-            assert reverse == binary, f"Round trip failed: {binary} -> {result} -> {reverse}"
+        assert result == expected, f"Conversion failed: {binary} -> {result} != {expected}"
+
+        reverse = rtmq_mask_to_binary(result)
+        print(f"  Reverse: {result} -> 0b{reverse:08b} ({reverse})")
+        assert reverse == binary, f"Round trip failed: {binary} -> {result} -> {reverse}"
 
 
 if __name__ == "__main__":

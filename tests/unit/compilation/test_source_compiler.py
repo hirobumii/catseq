@@ -174,6 +174,49 @@ def test_compile_entry_wraps_native_compiler_diagnostics(
         )
 
 
+def test_compile_entry_accepts_native_string_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _response()
+    response["diagnostics"] = ["entry uses a deprecated intrinsic"]
+    monkeypatch.setattr(
+        "catseq.compilation.native.subprocess.run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, json.dumps(response), ""
+        ),
+    )
+
+    result = compile_entry(
+        _Experiment().build_sequence,
+        {},
+        environment={"schema_version": 1, "channels": {}},
+        source_root=Path(__file__).parents[3],
+        compiler="catseqc-test",
+    )
+
+    assert result.diagnostics == ("entry uses a deprecated intrinsic",)
+
+
+def test_compile_entry_reports_stderr_when_stdout_is_not_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "catseq.compilation.native.subprocess.run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, "not json", "linker warning details"
+        ),
+    )
+
+    with pytest.raises(CatSeqCompileError, match="linker warning details"):
+        compile_entry(
+            _Experiment().build_sequence,
+            {},
+            environment={"schema_version": 1, "channels": {}},
+            source_root=Path(__file__).parents[3],
+            compiler="catseqc-test",
+        )
+
+
 def test_compile_result_converts_the_native_plan_to_oasm_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

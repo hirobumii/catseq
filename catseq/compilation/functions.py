@@ -24,6 +24,16 @@ from ..types.rwg import WaveformParams
 from .mask_utils import binary_to_rtmq_mask
 from ..types.rsp import RSPPIDConfig, RSPWaveformParams
 
+
+def _output_ceiling(config: RSPPIDConfig | RSPWaveformParams) -> float:
+    """Return the configured RF output ceiling, rejecting an unset value."""
+    if config.output_max is None:
+        raise ValueError(
+            f"RF output {config.rf_out} requires an explicit output_max "
+            "before its RSP output ceiling can be encoded"
+        )
+    return config.output_max
+
 def ttl_config(mask, dir):
     """配置 TTL 通道方向/初始化
     
@@ -205,7 +215,7 @@ def rsp_rf_config(config: RSPWaveformParams):
     R.mua_gan = mua_gan(1.0)
     R.mua_ofs = mua_ofs(0.0)
     R.mua_cpl = mua_cpl(-1.0)
-    R.mua_cph = mua_cph(-1.0+2*config.output_max)
+    R.mua_cph = mua_cph(-1.0 + 2 * _output_ceiling(config))
     
     R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", "reg")
 
@@ -235,7 +245,7 @@ def rsp_pid_config(config: RSPPIDConfig):
     R.mua_gan = mua_gan(1.0)
     R.mua_ofs = mua_ofs(0.0)
     R.mua_cpl = mua_cpl(-1.0)
-    R.mua_cph = mua_cph(-1.0+2*config.output_max)
+    R.mua_cph = mua_cph(-1.0 + 2 * _output_ceiling(config))
     
     R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", f"dgt{config.dgt_source}")
     
@@ -262,7 +272,7 @@ def rsp_pid_release(config: RSPPIDConfig):
     R.mua_gan = mua_gan(1.0)
     R.mua_ofs = mua_ofs(0.0)
     R.mua_cpl = mua_cpl(-1.0)
-    R.mua_cph = mua_cph(-1.0+2*config.output_max)
+    R.mua_cph = mua_cph(-1.0 + 2 * _output_ceiling(config))
     
     R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", "reg")
 
@@ -277,6 +287,6 @@ def rsp_pid_relink(config: RSPPIDConfig):
     R.mua_gan = mua_gan(1.0)
     R.mua_ofs = mua_ofs(0.0)
     R.mua_cpl = mua_cpl(-1.0)
-    R.mua_cph = mua_cph(-1.0+2*config.output_max)
+    R.mua_cph = mua_cph(-1.0 + 2 * _output_ceiling(config))
     
     R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", f"dgt{config.dgt_source}")

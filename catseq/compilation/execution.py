@@ -42,8 +42,10 @@ try:
     )
 
     OASM_AVAILABLE = True
-except ImportError:
+    OASM_IMPORT_ERROR: ImportError | None = None
+except ImportError as error:
     OASM_AVAILABLE = False
+    OASM_IMPORT_ERROR = error
 
 
 OASM_FUNCTION_MAP: Dict[OASMFunction, Callable] = {
@@ -276,7 +278,9 @@ def assemble_oasm_calls(
     caller's assembler remains reusable and no download side effect occurs.
     """
     if not OASM_AVAILABLE:
-        raise RuntimeError("OASM modules are required to assemble a runtime program")
+        raise RuntimeError(
+            "OASM modules are required to assemble a runtime program"
+        ) from OASM_IMPORT_ERROR
     if not calls_by_board:
         raise ValueError("cannot assemble an empty OASM call mapping")
 

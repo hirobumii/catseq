@@ -36,7 +36,7 @@ class OASMCompileResult:
     oasm_call_plan: JsonObject
     logical_duration_cycles: int
     clock_hz: int
-    diagnostics: tuple[JsonObject, ...]
+    diagnostics: tuple[str | JsonObject, ...]
     incremental: JsonObject
     native_compile_seconds: float
 
@@ -140,7 +140,11 @@ def compile_entry(
     try:
         response = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
-        raise CatSeqCompileError("catseqc returned invalid JSON") from error
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise CatSeqCompileError(
+            f"catseqc returned invalid JSON: {detail}" if detail
+            else "catseqc returned invalid JSON"
+        ) from error
     return _decode_result(response, target_clock_hz)
 
 
@@ -155,6 +159,12 @@ def _compile_in_process(
 ) -> object:
     try:
         _native = importlib.import_module("catseq._native")
+    except ImportError as error:
+        raise CatSeqCompileError(
+            "the native compiler extension catseq._native is unavailable; "
+            f"install a CatSeq platform wheel ({error})"
+        ) from error
+    try:
         request = {
             "schema_version": 1,
             "source_path": str(source_path),
@@ -168,14 +178,15 @@ def _compile_in_process(
         encoded = json.dumps(request, separators=(",", ":")).encode()
         response = _native.compile(encoded)
     except (
-        ImportError,
         AttributeError,
         OSError,
         RuntimeError,
         TypeError,
         ValueError,
     ) as error:
-        raise CatSeqCompileError(str(error)) from error
+        raise CatSeqCompileError(
+            str(error) or f"native compiler raised {type(error).__name__}"
+        ) from error
     try:
         return json.loads(response)
     except (json.JSONDecodeError, TypeError) as error:
@@ -392,9 +403,11 @@ def _decode_result(response: object, target_clock_hz: int) -> OASMCompileResult:
     diagnostics = response.get("diagnostics", ())
     incremental = response.get("incremental", {})
     if not isinstance(diagnostics, list) or not all(
-        isinstance(item, dict) for item in diagnostics
+        isinstance(item, (str, dict)) for item in diagnostics
     ):
-        raise CatSeqCompileError("catseqc result has invalid diagnostics")
+        raise CatSeqCompileError(
+            f"catseqc result has invalid diagnostics: {diagnostics!r}"
+        )
     if not isinstance(incremental, dict):
         raise CatSeqCompileError("catseqc result has invalid incremental statistics")
     return OASMCompileResult(

@@ -5,15 +5,15 @@
 ![Python](https://img.shields.io/badge/python-3.12-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)
 
-CatSeq is a categorical timing-composition language and native compiler for
-RTMQ hardware sequences.
+CatSeq 0.3.2 is a categorical timing-composition language, native compiler,
+and RTMQ execution runtime for hardware sequences.
 
-CatSeq 0.3 preserves the Python `Morphism`, `MorphismDef`, `>>`, `@`, `|`, and
-channel-dictionary syntax. Production compilation is source based: the public
-`Compiler` parses one `build_sequence` entry and its reachable service/module
-definitions and lowers them to a Rust-owned `CompiledSequence`. It never
-imports or executes the experiment module. The `catseqc` command is a
-diagnostic and automation adapter over the same Rust compiler core.
+CatSeq 0.3.2 preserves the Python `Morphism`, `MorphismDef`, `>>`, `@`, `|`, and
+channel-dictionary syntax. The public `Compiler` parses one sequence entry and
+its reachable definitions, then lowers them to a Rust-owned
+`CompiledSequence`. `EthernetRuntime` separately owns physical chassis routing
+and execution. The `catseqc` command is a diagnostic and automation adapter
+over the same Rust compiler core.
 
 ## Installation
 
@@ -30,62 +30,93 @@ uv sync --locked --all-extras --dev --python 3.12
 
 No platform setup script is required.
 
-## Sequence source
+## Compile a TTL sequence
 
+Save this complete compile-only example as `quickstart_ttl.py` and run it with
+`uv run python quickstart_ttl.py`:
+
+<!-- catseq-release-check: quickstart:start -->
 ```python
-from catseq.hardware.ttl import hold, set_high, set_low
-from catseq.morphism import Morphism, MorphismDef, identity, morphism_template
-from catseq.time_utils import us
+from pathlib import Path
+
+from catseq import Compiler
+from catseq.hardware.ttl import pulse
+from catseq.morphism import Morphism, identity
+from catseq.time_utils import ms
+from catseq.types import Board, Channel, ChannelType
 
 
-@morphism_template
-def pulse(duration: float) -> MorphismDef:
-    return set_high() >> hold(duration) >> set_low()
+rwg0 = Board("rwg0")
+ttl0 = Channel(rwg0, local_id=0, channel_type=ChannelType.TTL)
 
 
-class PulseExperiment:
-    def build_sequence(self, params) -> Morphism:
-        return identity(10 * us) >> {
-            self.trigger: pulse(params["duration_us"] * us)
-        }
+class TtlExperiment:
+    def build_sequence(self) -> Morphism:
+        return identity(0) >> {ttl0: pulse(500 * ms)}
+
+
+class LabSystem:
+    source_root = Path(__file__).parent
+    channels = {"quickstart_ttl.ttl0": ttl0}
+
+
+compiler = Compiler.from_system(LabSystem())
+compiled = compiler.compile(TtlExperiment().build_sequence)
+
+print(f"compiled {compiled.logical_duration_cycles} cycles")
+print(compiled.oasm_call_plan)
 ```
+<!-- catseq-release-check: quickstart:end -->
 
-`MorphismDef` is the source spelling of `MorphismTemplate`. Its body may compose
-Atomic Schemas with `>>`, `@`, and `|`; the compiler stores the body once and
-binding it to a channel creates an `Instantiate` node. Calling this source with
-CPython raises `CompilerOnlyError` because Python no longer owns a shadow arena.
+The first line is `compiled 125000000 cycles`: 500 ms at the default 250 MHz
+target clock. `Compiler.compile()` uses the bound method to locate the source
+entry but does not call it. The method body and reachable CatSeq definitions
+are parsed by the native compiler, so arbitrary Python lifecycle code is not
+executed during compilation.
 
-## Compile and run
+`Compiler.from_system()` captures the source root and typed channel map once.
+A system may additionally provide `opaque_calls`, scalar `environment_values`,
+a target profile, and an incremental `cache_dir`.
 
-The system supplies its source root and typed channel declarations once. The
-physical runtime separately owns the chassis route:
+## Run on RTMQ hardware
+
+Physical routing is deployment configuration, not sequence source. For
+example, a host application can read its route from environment or site
+configuration and run the compiled value:
 
 ```python
-from catseq import Compiler, EthernetRuntime
+import os
+
+from catseq import EthernetRuntime
 
 
-compiler = Compiler.from_system(system)
 runtime = EthernetRuntime(
-    interface=runtime_interface,
-    destination=chassis_destination,
-    reply=reply_endpoint,
-    boards=board_routes,
+    interface=os.environ["CATSEQ_INTERFACE"],
+    destination=os.environ["CATSEQ_CHASSIS_MAC"],
+    reply=(
+        int(os.environ["CATSEQ_REPLY_NODE"]),
+        int(os.environ.get("CATSEQ_REPLY_CHANNEL", "0")),
+    ),
+    boards={"rwg0": int(os.environ["CATSEQ_RWG0_NODE"])},
 )
 
-compiled = compiler.compile(experiment.build_sequence, params)
-success = runtime.run(compiled)
+result = runtime.run(compiled)
+print(result.board_evidence)
 ```
-
-`Compiler.compile()` does not call the bound method. It locates the source entry
-and binds only restricted compile values. The immutable result contains the
-OASM Call Plan, logical duration, target clock, diagnostics, and incremental
-evidence.
 
 `EthernetRuntime.run()` privately invokes the pinned OASM instruction encoder,
 then passes the immutable program to the Rust Download/RTLink runtime. Physical
 execution is currently Linux-only, uses `AF_PACKET/SOCK_RAW` without pcap, and
 requires `CAP_NET_RAW`. The timeout defaults to the compiled logical duration
-plus the runtime margin.
+plus the runtime margin. Real interface, MAC, reply-node, and board-route values
+belong in the consuming application or hardware-test repository, not CatSeq.
+
+## 0.3.2 API boundary
+
+`Compiler`, `CompiledSequence`, and `EthernetRuntime` are the stable application
+seam. The compiled sequence is immutable and contains the OASM Call Plan,
+logical duration, target clock, diagnostics, and incremental evidence without
+exposing an assembler or transport state.
 
 The 0.3.1 `compile_entry()`, `assemble_oasm_calls()`, and
 `execute_oasm_program()` implementation helpers are no longer exported as
@@ -106,8 +137,6 @@ catseqc emit-arena
 catseqc compile
 ```
 
-`Compiler`, `CompiledSequence`, and `EthernetRuntime` are the stable application
-seam.
 The command-line interface is primarily for diagnostics, CI, compiler
 development, and explicit external-compiler compatibility checks.
 

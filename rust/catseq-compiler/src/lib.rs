@@ -13,12 +13,153 @@ use catseq_frontend::{
 use catseq_rtmq::{
     CompileEnvironment, LinkBindings, OasmCallPlan, TargetProfile, compile_oasm_call_plan,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 mod compiler_thread;
 mod response;
 
 pub use compiler_thread::{CompilerThreadError, run_compiler_thread};
+
+/// Immutable native result shared by PyO3 and JSON compatibility adapters.
+#[derive(Clone, Debug)]
+pub struct CompiledSequence {
+    entry: String,
+    oasm_call_plan: OasmCallPlan,
+    clock_hz: u64,
+    native_compile_seconds: f64,
+    diagnostics: Vec<String>,
+    incremental: CompiledIncrementalStats,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CompiledIncrementalStats {
+    executed: u64,
+    green: u64,
+    red: u64,
+    result_cache_loads: u64,
+    bytes_read: u64,
+    bytes_written: u64,
+    fingerprint_seconds: f64,
+    executed_by_kind: BTreeMap<String, u64>,
+}
+
+impl CompiledSequence {
+    pub fn entry(&self) -> &str {
+        &self.entry
+    }
+
+    pub const fn oasm_call_plan(&self) -> &OasmCallPlan {
+        &self.oasm_call_plan
+    }
+
+    pub const fn logical_duration_cycles(&self) -> u64 {
+        self.oasm_call_plan.logical_duration_cycles()
+    }
+
+    pub const fn clock_hz(&self) -> u64 {
+        self.clock_hz
+    }
+
+    pub const fn native_compile_seconds(&self) -> f64 {
+        self.native_compile_seconds
+    }
+
+    pub fn diagnostics(&self) -> &[String] {
+        &self.diagnostics
+    }
+
+    pub const fn incremental(&self) -> &CompiledIncrementalStats {
+        &self.incremental
+    }
+}
+
+/// System-scoped native compiler configuration reused across sequence builds.
+///
+/// Source identity and link-time argument values vary per compilation.  The
+/// source root, Compile Environment, target profile, and incremental cache do
+/// not, so they are parsed and owned once here instead of travelling through
+/// the Python per-sequence API.
+#[derive(Clone)]
+pub struct CompilerSession {
+    source_root: PathBuf,
+    compile_environment: CompileEnvironment,
+    target_profile: TargetProfile,
+    environment_bindings: LinkBindings,
+    cache_dir: Option<PathBuf>,
+}
+
+impl CompilerSession {
+    pub fn from_json(
+        source_root: PathBuf,
+        compile_environment: &[u8],
+        target_profile: &[u8],
+        environment_values: &[u8],
+        cache_dir: Option<PathBuf>,
+    ) -> Result<Self, String> {
+        let compile_environment = serde_json::from_slice::<CompileEnvironment>(compile_environment)
+            .map_err(|error| format!("cannot decode compile environment: {error}"))?;
+        let target_profile = serde_json::from_slice::<TargetProfile>(target_profile)
+            .map_err(|error| format!("cannot decode target profile: {error}"))?;
+        let environment_values = serde_json::from_slice::<serde_json::Value>(environment_values)
+            .map_err(|error| format!("cannot decode environment values: {error}"))?;
+        if !environment_values.is_object() {
+            return Err("environment values must be a JSON object".to_owned());
+        }
+        let environment_bindings = serde_json::from_value::<LinkBindings>(serde_json::json!({
+            "schema_version": 1,
+            "runtime_values": {},
+            "environment_values": environment_values,
+        }))
+        .map_err(|error| format!("cannot decode environment values: {error}"))?;
+        Ok(Self {
+            source_root,
+            compile_environment,
+            target_profile,
+            environment_bindings,
+            cache_dir,
+        })
+    }
+
+    pub fn source_root(&self) -> &std::path::Path {
+        &self.source_root
+    }
+
+    pub fn compile_entry(
+        &self,
+        source_path: PathBuf,
+        entry: String,
+        link_bindings: &[u8],
+    ) -> Result<CompiledSequence, String> {
+        let mut link_bindings = serde_json::from_slice::<LinkBindings>(link_bindings)
+            .map_err(|error| format!("cannot decode link bindings: {error}"))?;
+        link_bindings.replace_environment_values_from(&self.environment_bindings);
+        let source_root = self.source_root.canonicalize().map_err(|error| {
+            format!(
+                "cannot resolve source root {}: {error}",
+                self.source_root.display()
+            )
+        })?;
+        let source_path = source_path
+            .canonicalize()
+            .map_err(|error| format!("cannot resolve source {}: {error}", source_path.display()))?;
+        source_path.strip_prefix(&source_root).map_err(|_| {
+            format!(
+                "entry source {} is outside source root {}",
+                source_path.display(),
+                source_root.display()
+            )
+        })?;
+        compile_source_bundle(
+            &source_root,
+            &source_path,
+            &entry,
+            self.cache_dir.as_deref(),
+            &self.compile_environment,
+            &self.target_profile,
+            &link_bindings,
+        )
+    }
+}
 
 pub fn run_cli(args: impl IntoIterator<Item = String>) -> Result<(), String> {
     run(args.into_iter())
@@ -376,19 +517,40 @@ pub fn compile_json_request(request: &[u8]) -> Result<Vec<u8>, String> {
             request.schema_version
         ));
     }
-    let source = fs::read_to_string(&request.source_path)
-        .map_err(|error| format!("cannot read {}: {error}", request.source_path.display()))?;
-    let output = check_source_bundle(
+    let compiled = compile_source_bundle(
         &request.source_root,
         &request.source_path,
-        source,
         &request.entry,
         request.cache_dir.as_deref(),
+        &request.compile_environment,
+        &request.target_profile,
+        &request.link_bindings,
+    )?;
+    response::encode_compiled_sequence(&compiled)
+}
+
+fn compile_source_bundle(
+    source_root: &std::path::Path,
+    source_path: &std::path::Path,
+    entry: &str,
+    cache_dir: Option<&std::path::Path>,
+    compile_environment: &CompileEnvironment,
+    target_profile: &TargetProfile,
+    link_bindings: &LinkBindings,
+) -> Result<CompiledSequence, String> {
+    let source = fs::read_to_string(source_path)
+        .map_err(|error| format!("cannot read {}: {error}", source_path.display()))?;
+    let output = check_source_bundle(
+        source_root,
+        source_path,
+        source,
+        entry,
+        cache_dir,
         CommandKind::Compile,
         NativeCompileInputs {
-            environment: Some(&request.compile_environment),
-            target: Some(&request.target_profile),
-            link_bindings: &request.link_bindings,
+            environment: Some(compile_environment),
+            target: Some(target_profile),
+            link_bindings,
         },
     )?;
     let CheckedOutput::CallPlan {
@@ -400,7 +562,24 @@ pub fn compile_json_request(request: &[u8]) -> Result<Vec<u8>, String> {
     else {
         unreachable!("compile command always returns an OASM call plan")
     };
-    response::encode_call_plan(&report, &plan, clock_hz, compile_time)
+    let incremental = report.incremental();
+    Ok(CompiledSequence {
+        entry: report.entry().to_owned(),
+        oasm_call_plan: plan,
+        clock_hz,
+        native_compile_seconds: compile_time.as_secs_f64(),
+        diagnostics: report.diagnostics().to_vec(),
+        incremental: CompiledIncrementalStats {
+            executed: incremental.executed(),
+            green: incremental.green(),
+            red: incremental.red(),
+            result_cache_loads: incremental.result_cache_loads(),
+            bytes_read: incremental.bytes_read(),
+            bytes_written: incremental.bytes_written(),
+            fingerprint_seconds: incremental.fingerprint_seconds(),
+            executed_by_kind: incremental.executed_by_kind().clone(),
+        },
+    })
 }
 
 fn print_text_summary(summary: &TypedCheckSummary) {

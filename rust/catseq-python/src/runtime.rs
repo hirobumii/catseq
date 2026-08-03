@@ -9,6 +9,8 @@ use catseq_runtime::{
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+const DEFAULT_INSTRUCTION_CAPACITY_WORDS: usize = 131_072;
+
 #[pyclass(name = "AssembledOASMBoard", module = "catseq._native", frozen)]
 #[derive(Clone)]
 pub(crate) struct PyAssembledOasmBoard {
@@ -209,6 +211,134 @@ impl PyLinuxRawEthernetRuntimeConfig {
     }
 }
 
+#[pyclass(name = "EthernetRuntimeBackend", module = "catseq._native", frozen)]
+pub(crate) struct PyEthernetRuntimeBackend {
+    config: LinuxRawEthernetRuntimeConfig,
+    reply_node: u16,
+    reply_channel: u8,
+    timeout_margin_ms: u64,
+}
+
+#[pymethods]
+impl PyEthernetRuntimeBackend {
+    #[new]
+    #[pyo3(signature = (interface, destination, reply, boards, timeout_margin_ms=10_000))]
+    fn new(
+        interface: String,
+        destination: &str,
+        reply: (u16, u8),
+        boards: BTreeMap<String, u16>,
+        timeout_margin_ms: u64,
+    ) -> PyResult<Self> {
+        if reply.1 > 31 {
+            return Err(PyValueError::new_err(format!(
+                "reply channel {} exceeds RTLink channel 31",
+                reply.1
+            )));
+        }
+        if boards.is_empty() {
+            return Err(PyValueError::new_err(
+                "EthernetRuntime requires at least one board route",
+            ));
+        }
+        let endpoints = boards
+            .into_iter()
+            .map(|(address, node)| {
+                let address = OasmAddress::from_str(&address)?;
+                BoardEndpoint::new(address, node, 0, DEFAULT_INSTRUCTION_CAPACITY_WORDS)
+            })
+            .collect::<Result<Vec<_>, RuntimeContractError>>()
+            .map_err(contract_error)?;
+        let config = LinuxRawEthernetRuntimeConfig::new(
+            1,
+            interface,
+            Some(parse_mac(destination)?),
+            timeout_margin_ms.max(1),
+            endpoints,
+        )
+        .map_err(contract_error)?;
+        Ok(Self {
+            config,
+            reply_node: reply.0,
+            reply_channel: reply.1,
+            timeout_margin_ms,
+        })
+    }
+
+    #[getter]
+    fn interface(&self) -> &str {
+        self.config.interface()
+    }
+
+    #[getter]
+    fn destination(&self) -> String {
+        self.config
+            .destination_mac()
+            .expect("public EthernetRuntime always has a destination")
+            .into_iter()
+            .map(|octet| format!("{octet:02x}"))
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+
+    #[getter]
+    fn reply(&self) -> (u16, u8) {
+        (self.reply_node, self.reply_channel)
+    }
+
+    #[getter]
+    fn boards(&self) -> BTreeMap<String, u16> {
+        self.config
+            .boards()
+            .iter()
+            .map(|endpoint| (endpoint.address().as_str().to_owned(), endpoint.node()))
+            .collect()
+    }
+
+    #[getter]
+    fn timeout_margin_ms(&self) -> u64 {
+        self.timeout_margin_ms
+    }
+
+    #[pyo3(signature = (program, logical_duration_cycles, clock_hz, timeout_ms=None))]
+    fn execute(
+        &self,
+        py: Python<'_>,
+        program: PyRef<'_, PyAssembledOasmProgram>,
+        logical_duration_cycles: u64,
+        clock_hz: u64,
+        timeout_ms: Option<u64>,
+    ) -> PyResult<Py<PyAny>> {
+        if clock_hz == 0 {
+            return Err(PyValueError::new_err(
+                "CompiledSequence clock_hz must be greater than zero",
+            ));
+        }
+        if program.inner.reply_node() != self.reply_node
+            || program.inner.reply_channel() != self.reply_channel
+        {
+            return Err(PyValueError::new_err(
+                "assembled program reply endpoint does not match EthernetRuntime",
+            ));
+        }
+        let duration_ms = (u128::from(logical_duration_cycles) * 1_000)
+            .div_ceil(u128::from(clock_hz))
+            .min(u128::from(u64::MAX)) as u64;
+        let timeout_ms = timeout_ms
+            .unwrap_or_else(|| duration_ms.saturating_add(self.timeout_margin_ms))
+            .max(1);
+        let config = LinuxRawEthernetRuntimeConfig::new(
+            1,
+            self.config.interface().to_owned(),
+            self.config.destination_mac(),
+            timeout_ms,
+            self.config.boards().to_vec(),
+        )
+        .map_err(contract_error)?;
+        runtime_outcome(py, program.inner.clone(), config)
+    }
+}
+
 #[pyclass(name = "OASMRuntimeSuccess", module = "catseq._native", frozen)]
 pub(crate) struct PyOasmRuntimeSuccess {
     inner: RuntimeSuccess,
@@ -294,13 +424,39 @@ fn execute_oasm_program(
     program: PyRef<'_, PyAssembledOasmProgram>,
     config: PyRef<'_, PyLinuxRawEthernetRuntimeConfig>,
 ) -> PyResult<Py<PyAny>> {
-    let program = program.inner.clone();
-    let config = config.inner.clone();
+    runtime_outcome(py, program.inner.clone(), config.inner.clone())
+}
+
+fn runtime_outcome(
+    py: Python<'_>,
+    program: AssembledOasmProgram,
+    config: LinuxRawEthernetRuntimeConfig,
+) -> PyResult<Py<PyAny>> {
     let outcome = py.allow_threads(move || execute_runtime(&program, &config));
     match outcome {
         Ok(inner) => Ok(Py::new(py, PyOasmRuntimeSuccess { inner })?.into_any()),
         Err(inner) => Ok(Py::new(py, PyOasmRuntimeFailure { inner })?.into_any()),
     }
+}
+
+fn parse_mac(value: &str) -> PyResult<[u8; 6]> {
+    let parts = value.split(':').collect::<Vec<_>>();
+    if parts.len() != 6 {
+        return Err(PyValueError::new_err(
+            "destination MAC must contain six colon-separated octets",
+        ));
+    }
+    let mut result = [0_u8; 6];
+    for (index, part) in parts.into_iter().enumerate() {
+        if part.len() != 2 {
+            return Err(PyValueError::new_err(
+                "destination MAC octets must contain two hexadecimal digits",
+            ));
+        }
+        result[index] = u8::from_str_radix(part, 16)
+            .map_err(|_| PyValueError::new_err("destination MAC contains invalid hexadecimal"))?;
+    }
+    Ok(result)
 }
 
 fn parse_address(value: &str) -> PyResult<OasmAddress> {
@@ -325,6 +481,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAssembledOasmProgram>()?;
     module.add_class::<PyBoardEndpoint>()?;
     module.add_class::<PyLinuxRawEthernetRuntimeConfig>()?;
+    module.add_class::<PyEthernetRuntimeBackend>()?;
     module.add_class::<PyOasmRuntimeSuccess>()?;
     module.add_class::<PyOasmRuntimeFailure>()?;
     module.add_function(wrap_pyfunction!(execute_oasm_program, module)?)?;

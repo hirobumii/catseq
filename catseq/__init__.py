@@ -1,13 +1,10 @@
 """CatSeq restricted-source DSL and native compiler adapter."""
 
+from .compiler import Compiler, CompiledSequence
 from .compilation import (
     CatSeqCompileError,
     CatSeqRuntimeError,
-    OASMCall,
-    OASMCompileResult,
-    assemble_oasm_calls,
-    compile_entry,
-    execute_oasm_program,
+    EthernetRuntime,
 )
 from .morphism import (
     CompilerDefinition,
@@ -34,7 +31,7 @@ from .time_utils import (
 )
 from .types import Board, Channel, ChannelType, State
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 __all__ = [
     "Board",
@@ -42,21 +39,19 @@ __all__ = [
     "CatSeqRuntimeError",
     "Channel",
     "ChannelType",
+    "CompiledSequence",
+    "Compiler",
     "CompilerDefinition",
     "CompilerOnlyError",
+    "EthernetRuntime",
     "Morphism",
     "MorphismDef",
     "MorphismTemplate",
-    "OASMCall",
-    "OASMCompileResult",
     "State",
     "atomic_morphism",
     "arena_build",
-    "assemble_oasm_calls",
-    "compile_entry",
     "cycles_to_time",
     "cycles_to_us",
-    "execute_oasm_program",
     "identity",
     "ms",
     "morphism_template",

@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 import time
 
-from catseq.compilation import (
+from catseq.compilation.runtime import (
     AssembledOASMBoard,
     AssembledOASMProgram,
     BoardEndpoint,

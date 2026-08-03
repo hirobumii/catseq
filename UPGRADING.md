@@ -23,27 +23,34 @@ The following Python compiler interfaces no longer exist:
 - Python-side OASM precompilation, instruction-cost analysis, and subroutine
   compiler
 
-Do not construct a Python Morphism and pass it to a compiler. Instead, compile
-the source entry:
+Do not construct a Python Morphism and pass it to a compiler. In 0.3.2, create
+one compiler from the system and compile the source entry:
 
 ```python
-result = compile_entry(
-    experiment.build_sequence,
-    params,
-    environment=environment,
+compiler = Compiler.from_system(system)
+runtime = EthernetRuntime(
+    interface=runtime_interface,
+    destination=chassis_destination,
+    reply=reply_endpoint,
+    boards=board_routes,
 )
-calls = result.to_oasm_calls(opaque_callables=opaque_callables)
-program = assemble_oasm_calls(calls, assembler_seq)
-success = execute_oasm_program(program, runtime_config)
+
+compiled = compiler.compile(experiment.build_sequence, params)
+success = runtime.run(compiled)
 ```
 
-`runtime_config` is a native `LinuxRawEthernetRuntimeConfig` containing the
-interface and explicit logical-board-to-node bindings. Assembly has no device
-side effects; only `execute_oasm_program()` opens the Rust raw-Ethernet runtime.
+`CompiledSequence` and the compiler/runtime configuration values are owned by
+Rust and exposed through PyO3. OASM instruction encoding remains private and
+has no device side effects; only `EthernetRuntime.run()` opens the Ethernet
+transport.
+
+The 0.3.1 `compile_entry()`, `assemble_oasm_calls()`, and
+`execute_oasm_program()` helpers are no longer public exports. Experiment code
+should not construct `LinuxRawEthernetRuntimeConfig`, `BoardEndpoint`, an OASM
+assembler, or a hand-written per-sequence Compile Environment.
 
 The installed platform wheel contains `catseqc`; callers should use the Python
-`compile_entry()` facade rather than locating or invoking the executable
-themselves.
+`Compiler` facade rather than locating or invoking the executable themselves.
 
 Hardware loops are declared as `repeat_morphism(body, count)` or ordinary
 compile-reachable Python `for` loops. Loop timing and instruction occupancy are

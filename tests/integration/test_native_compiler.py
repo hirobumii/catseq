@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from catseq.compilation import compile_entry
+from catseq.compilation.native import compile_entry
 from catseq.morphism import Morphism, identity
 from catseq.targets import rtmq_v2_profile
 

@@ -97,6 +97,8 @@ _PLAN_FUNCTIONS = {
 
 
 class _OASMAssembler(Protocol):
+    asm: Any
+
     def clear(self) -> Any: ...
 
     def __call__(
@@ -298,13 +300,16 @@ def assemble_oasm_calls(
             ) from error
 
         finalized_context = board_context.copy()
-        interface = getattr(finalized_context, "intf", None)
-        if interface is None:
+        context_interface = getattr(finalized_context, "intf", None)
+        if context_interface is None:
             raise ValueError(
                 f"assembler context for board {board_name!r} has no interface"
             )
         try:
-            board_reply_endpoint = (int(interface.nod_adr), int(interface.loc_chn))
+            board_reply_endpoint = (
+                int(context_interface.nod_adr),
+                int(context_interface.loc_chn),
+            )
         except (AttributeError, TypeError, ValueError) as error:
             raise ValueError(
                 f"assembler context for board {board_name!r} "
@@ -315,7 +320,8 @@ def assemble_oasm_calls(
         elif reply_endpoint != board_reply_endpoint:
             raise ValueError(
                 "all assembled boards must use the same reply endpoint; "
-                f"{board_name!r} uses {board_reply_endpoint}, expected {reply_endpoint}"
+                f"{board_name!r} uses {board_reply_endpoint}, "
+                f"expected {reply_endpoint}"
             )
 
         with oasm_context < finalized_context:

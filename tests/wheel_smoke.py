@@ -9,12 +9,27 @@ import tempfile
 
 import catseq
 from catseq import _native
+from catseq.morphism import Morphism, identity
 from catseq.targets import rtmq_v2_profile
+
+
+SYNTHETIC_INTERFACE = "catseq-wheel-smoke-interface-that-does-not-exist"
+SYNTHETIC_DESTINATION = "02:ca:75:ee:00:01"
+SYNTHETIC_DESTINATION_BYTES = [2, 202, 117, 238, 0, 1]
+SYNTHETIC_REPLY = (60_001, 31)
+SYNTHETIC_BOARD_ROUTES = {"rwg0": 60_000}
+
+
+def wheel_public_sequence() -> Morphism:
+    return identity(1)
 
 
 assert catseq.__version__ == version("catseq")
 assert callable(_native.compile)
 assert callable(_native.execute_oasm_program)
+assert _native.Compiler.__module__ == "catseq._native"
+assert _native.CompiledSequence.__module__ == "catseq._native"
+assert _native.EthernetRuntimeBackend.__module__ == "catseq._native"
 assert _native.AssembledOASMProgram.__module__ == "catseq._native"
 assert _native.LinuxRawEthernetRuntimeConfig.__module__ == "catseq._native"
 
@@ -23,12 +38,12 @@ runtime_board = _native.AssembledOASMBoard(
     [0x00D00000, 0x00D00000],
     1,
 )
-runtime_program = _native.AssembledOASMProgram(1, 20, 3, [runtime_board])
-runtime_endpoint = _native.BoardEndpoint("rwg0", 2, 7, 1024)
+runtime_program = _native.AssembledOASMProgram(1, *SYNTHETIC_REPLY, [runtime_board])
+runtime_endpoint = _native.BoardEndpoint("rwg0", 60_000, 7, 1024)
 runtime_config = _native.LinuxRawEthernetRuntimeConfig(
     1,
-    "catseq-wheel-smoke-interface-that-does-not-exist",
-    [2, 0, 0, 0, 0, 4],
+    SYNTHETIC_INTERFACE,
+    SYNTHETIC_DESTINATION_BYTES,
     10,
     [runtime_endpoint],
 )
@@ -61,5 +76,21 @@ with tempfile.TemporaryDirectory(prefix="catseq-wheel-smoke-") as temporary:
     }
     response = json.loads(_native.compile(json.dumps(request).encode()))
 
+    compiler = catseq.Compiler(
+        source_root=Path(__file__).parent,
+        channels={},
+        cache_dir=root / "public-cache",
+    )
+    compiled = compiler.compile(wheel_public_sequence)
+    runtime = catseq.EthernetRuntime(
+        interface=SYNTHETIC_INTERFACE,
+        destination=SYNTHETIC_DESTINATION,
+        reply=SYNTHETIC_REPLY,
+        boards=SYNTHETIC_BOARD_ROUTES,
+    )
+
 assert response["stage"] == "oasm_call_plan"
 assert response["logical_duration_cycles"] == 1
+assert isinstance(compiled, catseq.CompiledSequence)
+assert compiled.logical_duration_cycles == 1
+assert runtime.boards == SYNTHETIC_BOARD_ROUTES

@@ -10,6 +10,8 @@ use catseq_rtmq::OasmCallPlan;
 use serde::Serialize;
 use serde::ser::{SerializeSeq, SerializeStruct, Serializer};
 
+use crate::CompiledSequence;
+
 pub(crate) fn write_check(summary: &TypedCheckSummary) -> Result<(), String> {
     write_json(&CheckJson(summary))
 }
@@ -37,24 +39,23 @@ pub(crate) fn write_call_plan(
     compile_time: Duration,
 ) -> Result<(), String> {
     write_json(&CallPlanReportJson {
-        report,
+        entry: report.entry(),
         plan,
         clock_hz,
-        compile_time,
+        native_compile_seconds: compile_time.as_secs_f64(),
+        diagnostics: report.diagnostics(),
+        incremental: IncrementalJson(report.incremental()),
     })
 }
 
-pub(crate) fn encode_call_plan(
-    report: &TypedCheckReport,
-    plan: &OasmCallPlan,
-    clock_hz: u64,
-    compile_time: Duration,
-) -> Result<Vec<u8>, String> {
+pub(crate) fn encode_compiled_sequence(compiled: &CompiledSequence) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&CallPlanReportJson {
-        report,
-        plan,
-        clock_hz,
-        compile_time,
+        entry: compiled.entry(),
+        plan: compiled.oasm_call_plan(),
+        clock_hz: compiled.clock_hz(),
+        native_compile_seconds: compiled.native_compile_seconds(),
+        diagnostics: compiled.diagnostics(),
+        incremental: compiled.incremental(),
     })
     .map_err(|error| format!("cannot encode JSON output: {error}"))
 }
@@ -139,14 +140,16 @@ impl Serialize for ArenaReportJson<'_> {
     }
 }
 
-struct CallPlanReportJson<'a> {
-    report: &'a TypedCheckReport,
+struct CallPlanReportJson<'a, I> {
+    entry: &'a str,
     plan: &'a OasmCallPlan,
     clock_hz: u64,
-    compile_time: Duration,
+    native_compile_seconds: f64,
+    diagnostics: &'a [String],
+    incremental: I,
 }
 
-impl Serialize for CallPlanReportJson<'_> {
+impl<I: Serialize> Serialize for CallPlanReportJson<'_, I> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -154,16 +157,16 @@ impl Serialize for CallPlanReportJson<'_> {
         let mut state = serializer.serialize_struct("CallPlanResponse", 9)?;
         state.serialize_field("schema_version", &1_u32)?;
         state.serialize_field("stage", "oasm_call_plan")?;
-        state.serialize_field("entry", self.report.entry())?;
+        state.serialize_field("entry", self.entry)?;
         state.serialize_field("oasm_call_plan", self.plan)?;
         state.serialize_field(
             "logical_duration_cycles",
             &self.plan.logical_duration_cycles(),
         )?;
         state.serialize_field("clock_hz", &self.clock_hz)?;
-        state.serialize_field("native_compile_seconds", &self.compile_time.as_secs_f64())?;
-        state.serialize_field("diagnostics", self.report.diagnostics())?;
-        state.serialize_field("incremental", &IncrementalJson(self.report.incremental()))?;
+        state.serialize_field("native_compile_seconds", &self.native_compile_seconds)?;
+        state.serialize_field("diagnostics", self.diagnostics)?;
+        state.serialize_field("incremental", &self.incremental)?;
         state.end()
     }
 }

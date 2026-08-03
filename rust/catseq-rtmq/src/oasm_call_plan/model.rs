@@ -45,6 +45,11 @@ impl LinkBindings {
             environment_values: BTreeMap::new(),
         }
     }
+
+    pub fn replace_environment_values_from(&mut self, source: &Self) {
+        self.environment_values
+            .clone_from(&source.environment_values);
+    }
 }
 
 impl CompileEnvironment {

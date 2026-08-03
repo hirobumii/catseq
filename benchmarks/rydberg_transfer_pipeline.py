@@ -24,13 +24,15 @@ from types import ModuleType
 from typing import Any, Callable
 
 from catseq import _native
-from catseq.compilation import (
+from catseq.compilation.execution import (
+    assemble_oasm_calls,
+    oasm_call_plan_to_calls,
+)
+from catseq.compilation.runtime import (
     BoardEndpoint,
     CatSeqRuntimeError,
     LinuxRawEthernetRuntimeConfig,
-    assemble_oasm_calls,
     execute_oasm_program,
-    oasm_call_plan_to_calls,
 )
 from oasm.dev.main import C_MAIN, run_cfg
 from oasm.dev.rsp import C_RSP

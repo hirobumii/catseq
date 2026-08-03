@@ -103,6 +103,31 @@ fn link_bindings_supply_environment_slots() {
 }
 
 #[test]
+fn system_environment_values_replace_per_compile_values_only() {
+    let mut per_compile = LinkBindings {
+        schema_version: 1,
+        runtime_values: BTreeMap::from([("scan".to_owned(), LinkValue::Unsigned(9))]),
+        environment_values: BTreeMap::from([("delay".to_owned(), LinkValue::Unsigned(1))]),
+    };
+    let system = LinkBindings {
+        schema_version: 1,
+        runtime_values: BTreeMap::new(),
+        environment_values: BTreeMap::from([("delay".to_owned(), LinkValue::Unsigned(5))]),
+    };
+
+    per_compile.replace_environment_values_from(&system);
+
+    assert_eq!(
+        per_compile.runtime_values,
+        BTreeMap::from([("scan".to_owned(), LinkValue::Unsigned(9))])
+    );
+    assert_eq!(
+        per_compile.environment_values,
+        BTreeMap::from([("delay".to_owned(), LinkValue::Unsigned(5))])
+    );
+}
+
+#[test]
 fn logical_duration_excludes_hardware_loop_scheduling_overhead() {
     let plan = compile_oasm_call_plan(
         &loop_program(),

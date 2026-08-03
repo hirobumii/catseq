@@ -18,6 +18,12 @@ or a runtime Sync Phi release. It is the final Rust compiler artifact in CatSeq
 0.3, not assembly text or an RTMQ binary.
 _Avoid_: OASM assembly, RTMQ binary
 
+**Compiled Sequence**:
+The immutable public result of compiling and linking one sequence entry. It
+contains the OASM Call Plan, logical timing, and diagnostics, but no OASM
+assembler context or physical execution state.
+_Avoid_: seq, OASM assembler, live Python Morphism
+
 **Runtime Slot**:
 A stable symbolic identifier for one externally supplied scan input. Its value
 is absent during source compilation and specialization and is supplied through
@@ -48,7 +54,8 @@ _Avoid_: Type Signature, Dependency Role
 **Compile Environment**:
 The immutable source-external facts available while a sequence is analyzed and
 specialized, such as hardware mappings, calibration snapshots, and registered
-intrinsic signatures. Runtime scan values are not part of it.
+intrinsic signatures. It is shared by compilations for one sequencing system;
+Runtime scan values and physical execution settings are not part of it.
 _Avoid_: Python object graph, runtime globals
 
 **Compile Request**:
@@ -61,6 +68,12 @@ _Avoid_: Python compiler callback, daemon session request
 The versioned RTMQ ABI, board capabilities, clock definition, and Atomic Schema
 target mappings against which a program is lowered.
 _Avoid_: Hardware map, Compile Environment
+
+**Ethernet Runtime**:
+The execution environment that dispatches assembled board programs to one
+physical chassis through the RTLink Ethernet protocol. Platform-specific raw
+socket or capture-driver mechanisms are not part of its public identity.
+_Avoid_: Raw Ethernet Runtime, OASM eth_intf
 
 **Relocatable Artifact**:
 The target-specific Python-free RTMQ fragment DAG reusable across Link Bindings.

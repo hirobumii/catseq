@@ -9,7 +9,7 @@ from types import ModuleType
 
 import pytest
 
-from catseq.compilation import CatSeqCompileError, compile_entry
+from catseq.compilation.native import CatSeqCompileError, compile_entry
 from catseq.compilation.types import OASMAddress, OASMFunction
 
 

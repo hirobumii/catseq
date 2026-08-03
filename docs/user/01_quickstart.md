@@ -43,46 +43,40 @@ The example is compiled into a shared Serial template containing `set_high`, a
 Wait node, and `set_low`; the channel dictionary creates an `Instantiate` node.
 Direct CPython execution raises `CompilerOnlyError`.
 
-## Compile a source entry
+## Compile and run a source entry
 
-The host application supplies its channel map (`environment`). CatSeq selects
-its packaged, versioned RTMQ target profile automatically:
+The system supplies its source root and typed channels once. Runtime routing is
+configured separately from compilation:
 
 ```python
-from catseq.compilation import (
-    BoardEndpoint,
-    LinuxRawEthernetRuntimeConfig,
-    assemble_oasm_calls,
-    compile_entry,
-    execute_oasm_program,
+from catseq import Compiler, EthernetRuntime
+
+
+compiler = Compiler.from_system(system)
+runtime = EthernetRuntime(
+    interface=runtime_interface,
+    destination=chassis_destination,
+    reply=reply_endpoint,
+    boards=board_routes,
 )
 
-result = compile_entry(
-    experiment.build_sequence,
-    params,
-    environment=environment,
-)
-
-calls = result.to_oasm_calls(opaque_callables=opaque_callables)
-program = assemble_oasm_calls(calls, assembler_seq)
-runtime = LinuxRawEthernetRuntimeConfig(
-    1,
-    "eno1",
-    None,
-    2_000,
-    [BoardEndpoint("rwg0", 2, 0, 131_072)],
-)
-success = execute_oasm_program(program, runtime)
-print(result.logical_duration_cycles)
+compiled = compiler.compile(experiment.build_sequence, params)
+success = runtime.run(compiled)
+print(compiled.logical_duration_cycles)
 ```
 
-`compile_entry()` uses the method only to locate its source and bind restricted
-arguments. The method body and reachable service/module definitions are parsed
-by `catseqc`; arbitrary host lifecycle code is not compiled.
+`Compiler.from_system()` reads `source_root` and `channels` from the system. A
+system may also supply `opaque_calls`, scalar `environment_values`, a target
+profile, and an incremental `cache_dir`; these are captured once by the
+Rust-owned compiler session. `Compiler.compile()` uses the method only to
+locate its source and bind restricted arguments. The method body and reachable
+service/module definitions are parsed by the Rust compiler; arbitrary host
+lifecycle code is not compiled.
 
 The old `compile_to_oasm_calls(morphism, ...)` API is removed in 0.3. Native
 compiler diagnostics and RTMQ lowering tests now own that behavior.
 
-Assembly is pure and returns an immutable Rust/PyO3 value; it does not return
-an OASM sequence to run later. Execution is Linux-only and requires
-`CAP_NET_RAW`; Rust uses `AF_PACKET/SOCK_RAW` directly and does not use pcap.
+The returned `CompiledSequence` is an immutable Rust/PyO3 value. OASM assembly
+is private to `EthernetRuntime.run()` and does not leave a mutable sequence to
+run later. Execution is currently Linux-only and requires `CAP_NET_RAW`; Rust
+uses `AF_PACKET/SOCK_RAW` directly and does not use pcap.

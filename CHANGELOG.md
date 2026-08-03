@@ -7,6 +7,45 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-03
+
+### Added
+
+- Added a reusable, system-scoped `Compiler` whose Compile Environment, target
+  profile, source root, and incremental cache are owned by a native Rust
+  compiler session. `Compiler.from_system()` accepts typed channel declarations,
+  opaque encoder callables, and scalar environment values once instead of
+  requiring a raw environment dictionary for every sequence.
+- Added the immutable, Rust-owned `CompiledSequence` returned by
+  `Compiler.compile()`. It exposes the OASM Call Plan, logical duration, target
+  clock, diagnostics, and incremental compilation evidence without exposing an
+  assembler or physical execution state.
+- Added `EthernetRuntime`, which owns the chassis destination, reply endpoint,
+  and logical-board routes and executes a `CompiledSequence` with
+  `runtime.run(compiled)`.
+
+### Changed
+
+- Moved OASM assembler construction and final instruction encoding behind the
+  `EthernetRuntime` facade. OASM remains the pinned RTMQ instruction encoder,
+  but its assembler, core types, mutable contexts, and interface shims are no
+  longer part of the common experiment API.
+- Made the public Ethernet runtime derive its timeout from the compiled logical
+  duration plus a configurable margin. Schema versions, instruction capacities,
+  transport implementation names, and low-level board endpoint objects remain
+  internal defaults in the common path.
+- Removed the 0.3.1 `compile_entry()`, `assemble_oasm_calls()`, and
+  `execute_oasm_program()` helpers from public package exports. Their internal
+  modules remain available to CatSeq's regression and migration tooling, but
+  are not application compatibility seams.
+
+### Fixed
+
+- Preserved OASM's completion epilogue when using an explicit runtime reply
+  endpoint. The private adapter now supplies the endpoint during encoding, so
+  RTMQ boards emit terminal completion evidence instead of timing out after a
+  successful launch.
+
 ## [0.3.1] - 2026-07-24
 
 ### Added

@@ -3,7 +3,7 @@ import dataclasses
 import pytest
 
 from catseq import _native
-from catseq.compilation import (
+from catseq.compilation.runtime import (
     AssembledOASMBoard,
     AssembledOASMProgram,
     BoardEndpoint,
@@ -55,7 +55,7 @@ def test_native_constructors_surface_rust_contract_errors() -> None:
         _native.BoardEndpoint("main", 2, 32, 1024)
 
 
-def test_runtime_types_are_direct_public_aliases_of_native_classes() -> None:
+def test_internal_runtime_types_are_direct_aliases_of_native_classes() -> None:
     assert AssembledOASMBoard is _native.AssembledOASMBoard
     assert AssembledOASMProgram is _native.AssembledOASMProgram
     assert BoardEndpoint is _native.BoardEndpoint

@@ -1,9 +1,154 @@
-use catseq_compiler::{compile_json_request, run_cli as run_rust_cli, run_compiler_thread};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use catseq_compiler::{
+    CompiledSequence as NativeCompiledSequence, CompilerSession, compile_json_request,
+    run_cli as run_rust_cli, run_compiler_thread,
+};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 mod runtime;
+
+#[pyclass(name = "CompiledSequence", module = "catseq._native", frozen)]
+struct PyCompiledSequence {
+    inner: NativeCompiledSequence,
+    opaque_callables: BTreeMap<String, Py<PyAny>>,
+}
+
+#[pymethods]
+impl PyCompiledSequence {
+    #[getter]
+    fn entry(&self) -> &str {
+        self.inner.entry()
+    }
+
+    #[getter]
+    fn logical_duration_cycles(&self) -> u64 {
+        self.inner.logical_duration_cycles()
+    }
+
+    #[getter]
+    fn clock_hz(&self) -> u64 {
+        self.inner.clock_hz()
+    }
+
+    #[getter]
+    fn total_duration_us(&self) -> f64 {
+        self.inner.logical_duration_cycles() as f64 * 1_000_000.0 / self.inner.clock_hz() as f64
+    }
+
+    #[getter]
+    fn native_compile_seconds(&self) -> f64 {
+        self.inner.native_compile_seconds()
+    }
+
+    #[getter]
+    fn oasm_call_plan(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        json_to_python(py, self.inner.oasm_call_plan())
+    }
+
+    #[getter]
+    fn diagnostics(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        json_to_python(py, self.inner.diagnostics())
+    }
+
+    #[getter]
+    fn incremental(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        json_to_python(py, self.inner.incremental())
+    }
+
+    #[getter]
+    fn _opaque_callables(&self, py: Python<'_>) -> BTreeMap<String, Py<PyAny>> {
+        self.opaque_callables
+            .iter()
+            .map(|(key, callable)| (key.clone(), callable.clone_ref(py)))
+            .collect()
+    }
+}
+
+#[pyclass(name = "Compiler", module = "catseq._native", frozen)]
+struct PyCompiler {
+    inner: CompilerSession,
+    opaque_callables: BTreeMap<String, Py<PyAny>>,
+}
+
+#[pymethods]
+impl PyCompiler {
+    #[new]
+    #[pyo3(signature = (
+        source_root,
+        compile_environment,
+        target_profile,
+        environment_values,
+        opaque_callables,
+        cache_dir=None,
+    ))]
+    fn new(
+        source_root: PathBuf,
+        compile_environment: &[u8],
+        target_profile: &[u8],
+        environment_values: &[u8],
+        opaque_callables: BTreeMap<String, Py<PyAny>>,
+        cache_dir: Option<PathBuf>,
+    ) -> PyResult<Self> {
+        let inner = CompilerSession::from_json(
+            source_root,
+            compile_environment,
+            target_profile,
+            environment_values,
+            cache_dir,
+        )
+        .map_err(PyRuntimeError::new_err)?;
+        Ok(Self {
+            inner,
+            opaque_callables,
+        })
+    }
+
+    #[getter]
+    fn source_root(&self) -> String {
+        self.inner.source_root().display().to_string()
+    }
+
+    fn compile(
+        &self,
+        py: Python<'_>,
+        source_path: PathBuf,
+        entry: String,
+        link_bindings: &[u8],
+    ) -> PyResult<PyCompiledSequence> {
+        let compiler = self.inner.clone();
+        let link_bindings = link_bindings.to_vec();
+        let opaque_callables = self
+            .opaque_callables
+            .iter()
+            .map(|(key, callable)| (key.clone(), callable.clone_ref(py)))
+            .collect();
+        let inner = py
+            .allow_threads(move || {
+                run_compiler_thread(move || {
+                    compiler.compile_entry(source_path, entry, &link_bindings)
+                })
+            })
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))?
+            .map_err(PyRuntimeError::new_err)?;
+        Ok(PyCompiledSequence {
+            inner,
+            opaque_callables,
+        })
+    }
+}
+
+fn json_to_python<T: serde::Serialize + ?Sized>(py: Python<'_>, value: &T) -> PyResult<Py<PyAny>> {
+    let encoded =
+        serde_json::to_string(value).map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+    Ok(py
+        .import("json")?
+        .call_method1("loads", (encoded,))?
+        .unbind())
+}
 
 #[pyfunction]
 fn compile<'py>(py: Python<'py>, request: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
@@ -41,6 +186,8 @@ fn run_cli(py: Python<'_>) -> PyResult<i32> {
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(compile, module)?)?;
     module.add_function(wrap_pyfunction!(run_cli, module)?)?;
+    module.add_class::<PyCompiler>()?;
+    module.add_class::<PyCompiledSequence>()?;
     runtime::register(module)?;
     Ok(())
 }

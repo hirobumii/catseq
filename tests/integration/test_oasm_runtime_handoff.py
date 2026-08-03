@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from catseq import _native
-from catseq.compilation.execution import assemble_oasm_calls
+from catseq.compilation._oasm_encoder import encode_compiled_sequence
+from catseq.compilation.execution import (
+    assemble_oasm_calls,
+    decode_oasm_call_plan,
+)
 from catseq.compilation.types import OASMAddress, OASMCall, OASMFunction
 from oasm.dev.main import C_MAIN
 from oasm.dev.rwg import C_RWG
@@ -146,6 +150,88 @@ def test_assembly_rejects_empty_or_inconsistent_reply_contexts() -> None:
     sequence.asm["rwg0"].intf = None
     with pytest.raises(ValueError, match="has no interface"):
         assemble_oasm_calls({OASMAddress.RWG0: calls[OASMAddress.RWG0]}, sequence)
+
+
+def test_private_reply_adapter_preserves_legacy_oasm_words() -> None:
+    plan = {
+        "schema_version": 1,
+        "epochs": [
+            {
+                "id": 0,
+                "origin_cycles": 0,
+                "boards": [
+                    {
+                        "address": "rwg0",
+                        "calls": [
+                            {
+                                "offset_cycles": 0,
+                                "function": "wait",
+                                "args": [1],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    calls = decode_oasm_call_plan(plan)
+    legacy_sequence = assembler(multi=[("rwg0", C_RWG)])
+    interface = sim_intf()
+    interface.nod_adr = 1_234
+    interface.loc_chn = 31
+    legacy_sequence.asm["rwg0"].intf = interface
+
+    class CompiledPlan:
+        oasm_call_plan = plan
+        _opaque_callables = {}
+
+    legacy = assemble_oasm_calls(calls, legacy_sequence)
+    private = encode_compiled_sequence(
+        CompiledPlan(),
+        reply=(1_234, 31),
+    )
+
+    assert private.reply_node == legacy.reply_node
+    assert private.reply_channel == legacy.reply_channel
+    assert private.boards[0].ich_words == legacy.boards[0].ich_words
+    assert (
+        private.boards[0].exception_handler_word
+        == legacy.boards[0].exception_handler_word
+    )
+
+
+def test_private_encoder_resolves_opaque_calls_from_the_compiled_sequence() -> None:
+    def opaque_instruction() -> None:
+        nop(n=1)
+
+    class CompiledPlan:
+        oasm_call_plan = {
+            "schema_version": 1,
+            "epochs": [
+                {
+                    "id": 0,
+                    "origin_cycles": 0,
+                    "boards": [
+                        {
+                            "address": "rwg0",
+                            "calls": [
+                                {
+                                    "offset_cycles": 0,
+                                    "function": "user_defined_func",
+                                    "args": ["test.opaque", [], {}],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        _opaque_callables = {"test.opaque": opaque_instruction}
+
+    program = encode_compiled_sequence(CompiledPlan(), reply=(1_234, 31))
+
+    assert program.boards[0].address == "rwg0"
+    assert program.boards[0].exception_handler_word > 0
 
 
 def test_assembler_callback_errors_propagate_without_execution_fallback() -> None:

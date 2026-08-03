@@ -10,10 +10,9 @@ RTMQ hardware sequences.
 
 CatSeq 0.3 preserves the Python `Morphism`, `MorphismDef`, `>>`, `@`, `|`, and
 channel-dictionary syntax. Production compilation is source based: the public
-`compile_entry()` facade sends a versioned request to the in-process PyO3
-extension, which parses one `build_sequence` entry and its reachable
-service/module definitions and lowers them to a complete `OASMCallPlan`. It
-never imports or executes the experiment module. The `catseqc` command is a
+`Compiler` parses one `build_sequence` entry and its reachable service/module
+definitions and lowers them to a Rust-owned `CompiledSequence`. It never
+imports or executes the experiment module. The `catseqc` command is a
 diagnostic and automation adapter over the same Rust compiler core.
 
 ## Installation
@@ -56,47 +55,42 @@ Atomic Schemas with `>>`, `@`, and `|`; the compiler stores the body once and
 binding it to a channel creates an `Instantiate` node. Calling this source with
 CPython raises `CompilerOnlyError` because Python no longer owns a shadow arena.
 
-## Native compilation
+## Compile and run
 
-The host application owns its hardware channel map, opaque callable registry,
-and OASM assembler. CatSeq ships the fixed RTMQ target profile:
+The system supplies its source root and typed channel declarations once. The
+physical runtime separately owns the chassis route:
 
 ```python
-from catseq.compilation import (
-    BoardEndpoint,
-    LinuxRawEthernetRuntimeConfig,
-    assemble_oasm_calls,
-    compile_entry,
-    execute_oasm_program,
+from catseq import Compiler, EthernetRuntime
+
+
+compiler = Compiler.from_system(system)
+runtime = EthernetRuntime(
+    interface=runtime_interface,
+    destination=chassis_destination,
+    reply=reply_endpoint,
+    boards=board_routes,
 )
 
-result = compile_entry(
-    experiment.build_sequence,
-    params,
-    environment=environment,
-)
-calls = result.to_oasm_calls(opaque_callables=opaque_callables)
-program = assemble_oasm_calls(calls, assembler_seq)
-runtime = LinuxRawEthernetRuntimeConfig(
-    1,
-    "eno1",
-    None,  # defaults to interface MAC + 2
-    2_000,
-    [BoardEndpoint("rwg0", 2, 0, 131_072)],
-)
-success = execute_oasm_program(program, runtime)
+compiled = compiler.compile(experiment.build_sequence, params)
+success = runtime.run(compiled)
 ```
 
-`compile_entry()` does not call the bound method. It uses it to locate the
-source entry and to bind only restricted compile values, then sends a
-versioned, Python-free request to the in-process PyO3 compiler. The result also
-contains `logical_duration_cycles`, allowing a host such as `rb1-next.BaseExp`
-to preserve its existing execution timeout contract.
+`Compiler.compile()` does not call the bound method. It locates the source entry
+and binds only restricted compile values. The immutable result contains the
+OASM Call Plan, logical duration, target clock, diagnostics, and incremental
+evidence.
 
-`assemble_oasm_calls()` only encodes an immutable in-memory ICH program.
-`execute_oasm_program()` passes that Rust-owned value directly through PyO3 to
-the Rust Download/RTLink runtime. Physical execution is Linux-only, uses
-`AF_PACKET/SOCK_RAW` without pcap, and requires `CAP_NET_RAW`.
+`EthernetRuntime.run()` privately invokes the pinned OASM instruction encoder,
+then passes the immutable program to the Rust Download/RTLink runtime. Physical
+execution is currently Linux-only, uses `AF_PACKET/SOCK_RAW` without pcap, and
+requires `CAP_NET_RAW`. The timeout defaults to the compiled logical duration
+plus the runtime margin.
+
+The 0.3.1 `compile_entry()`, `assemble_oasm_calls()`, and
+`execute_oasm_program()` implementation helpers are no longer exported as
+public APIs. Internal modules retain the adapters needed for compiler and
+runtime regression tests.
 
 The 0.2 `compile_to_oasm_calls(morphism, ...)` API and Python compiler passes
 are intentionally removed. See [UPGRADING.md](UPGRADING.md).
@@ -112,7 +106,8 @@ catseqc emit-arena
 catseqc compile
 ```
 
-The Python facade and its `OASMCompileResult` are the stable application seam.
+`Compiler`, `CompiledSequence`, and `EthernetRuntime` are the stable application
+seam.
 The command-line interface is primarily for diagnostics, CI, compiler
 development, and explicit external-compiler compatibility checks.
 

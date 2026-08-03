@@ -68,9 +68,13 @@ them.
     `run_cfg`, `eth_intf`, `C_*`, `seq`, and `intf_usb` do not enter
     `catseq.experiment`.
 11. Experiment orchestration is ordinary host Python and is never a CatSeq
-    compiler input. At each attempted scan point, `BaseExp` passes only the
-    bound `build_sequence` method and that point's immutable `ExpParams` to the
-    compiler.
+   compiler input. At each attempted scan point, `BaseExp` passes only the
+   bound `build_sequence` method and that point's immutable `ExpParams` to the
+   compiler.
+12. Consumer migration does not authorize deleting a legacy API merely because
+   no current production file imports it. Removing an RB1 abstraction is a
+   separate compatibility decision and requires an accepted semantic
+   replacement; import counts are only migration evidence.
 
 These decisions supersede the older RB1/OASM-specific conclusions that
 `BaseExp` should own `seq`, `intf_usb`, or an `execution_mode` switch. Runtime
@@ -188,8 +192,9 @@ The source audit on 2026-08-03 established these pre-migration checkpoints:
 | `abstract/base_exp.py` | `experiment.base_exp`, rewritten over `Compiler.compile()` and runtime `run()` | Runtime/config construction, hardware lock, runner identity, and deployment policy |
 | `abstract/util.py` | No destination; use explicit standard-library dataclasses and move H5 conversion into `experiment.h5` | Delete singleton, metaclass decoration, and `SavableABDC` aggregation |
 
-This is a clean port. Files are not copied wholesale, and CatSeq does not keep
-RB1 import paths alive after their last consumer migrates.
+This is a clean port. Files are not copied wholesale, and migrated consumers do
+not use RB1 compatibility proxies. The legacy RB1 implementation may remain as
+an independent API until a separate removal decision is made.
 
 ## Lifecycle contract
 
@@ -227,7 +232,7 @@ a second orchestration interface.
   the new package interface.
 - [x] Record the real Rydberg source-check baseline and the current TTL
   low-level compiler/runtime result.
-- [ ] Add a source check that prevents new imports from
+- [x] Add a source check that prevents new imports from
   `rb1system.abstract` in migrated files.
 
 Gate: the current focused RB1 suite remains green, and the CatSeq compiler
@@ -305,15 +310,16 @@ public experiment interface.
 
 ### Phase 6: migrate rb1-next consumers directly
 
-- [ ] Add RB1 factories for CatSeq Compiler/Ethernet Runtime configuration,
+- [x] Add RB1 factories for CatSeq Compiler/Ethernet Runtime configuration,
   hardware locking, concrete devices, `JobRunControl`, MQTT panel publication,
   and run identity.
-- [ ] Migrate one experiment at a time to direct imports from the specific
+- [x] Migrate one experiment at a time to direct imports from the specific
   `catseq.experiment.*` modules it uses.
-- [ ] Keep unmigrated experiments on the old implementation; do not turn
+- [x] Keep unmigrated experiments on the old implementation; do not turn
   `rb1system.abstract` into a proxy.
-- [ ] Remove each old abstraction when its last consumer has migrated, then
-  delete `rb1system.abstract` and the duplicate panel contract.
+- [x] Keep the legacy abstractions and panel contract intact after consumer
+  migration. Any later removal requires its own accepted compatibility plan
+  and is not inferred from a lack of imports.
 - [ ] Update rb1-next from CatSeq 0.2.4/OASM-facing use to the CatSeq version
   containing `catseq.experiment`.
 

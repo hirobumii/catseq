@@ -103,15 +103,3 @@ instruction_cost_cycles = 0
 [operations."catseq.hardware.sync.global_sync"]
 lowering = "global_sync"
 instruction_cost_cycles = 0
-
-[operations."rb1system.modules.addressing.AddressingModule.amp_calib"]
-lowering = "opaque"
-fixed_duration_cycles = 4124
-board = "rwg8"
-instruction_cost_cycles = 4124
-
-[operations."rb1system.modules.shuttling.ShuttlingModule.amp_calib"]
-lowering = "opaque"
-fixed_duration_cycles = 4124
-board = "rwg9"
-instruction_cost_cycles = 4124

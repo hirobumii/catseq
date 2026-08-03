@@ -256,7 +256,7 @@ def _owner_bindings(owner: object, values: dict[str, object]) -> None:
             value = getattr(owner, name)
         except (AttributeError, RuntimeError):
             continue
-        encoded = _json_scalar_or_sequence(value)
+        encoded = _json_link_value(value)
         if encoded is not None:
             values[f"self.{name}"] = encoded
 
@@ -267,14 +267,14 @@ def _value_bindings(
     owner: object | None,
     values: dict[str, object],
 ) -> None:
-    encoded = _json_scalar_or_sequence(value)
+    encoded = _json_link_value(value)
     if encoded is not None:
         values[name] = encoded
         return
     if not isinstance(value, Mapping):
         return
     for key, item in value.items():
-        encoded_item = _json_scalar_or_sequence(item)
+        encoded_item = _json_link_value(item)
         if encoded_item is None:
             continue
         if isinstance(key, str):
@@ -297,15 +297,9 @@ def _value_bindings(
                 values[f"{name}[self.{attribute}]"] = encoded_item
 
 
-def _json_scalar_or_sequence(value: object) -> object | None:
-    if value is None or isinstance(value, (bool, int, float, str)):
+def _json_link_value(value: object) -> object | None:
+    if isinstance(value, (bool, int, float, str)):
         return value
-    if isinstance(value, (tuple, list)):
-        if not value:
-            return None
-        encoded = [_json_scalar_or_sequence(item) for item in value]
-        if all(item is not None for item in encoded):
-            return encoded
     return None
 
 

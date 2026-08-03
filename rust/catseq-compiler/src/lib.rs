@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -6,8 +6,10 @@ use std::time::{Duration, Instant};
 use catseq_core::native_arenas::NativeArenas;
 use catseq_frontend::{
     TypedCheckReport, TypedCheckSummary, check_typed_bundle_entry_incremental_with_loader,
+    check_typed_bundle_entry_incremental_with_loader_and_opaque_definitions,
     check_typed_bundle_entry_summary_incremental_with_loader, check_typed_bundle_entry_with_loader,
-    check_typed_entry, check_typed_entry_incremental, check_typed_entry_summary_incremental,
+    check_typed_bundle_entry_with_loader_and_opaque_definitions, check_typed_entry,
+    check_typed_entry_incremental, check_typed_entry_summary_incremental,
     lower_typed_report_to_native_arenas, specialize_typed_report_to_native_arenas,
 };
 use catseq_rtmq::{
@@ -414,6 +416,12 @@ fn check_source_bundle(
         }
         Ok(source)
     };
+    let opaque_definitions: BTreeSet<String> = compile_inputs
+        .environment
+        .into_iter()
+        .flat_map(CompileEnvironment::opaque_definition_names)
+        .map(str::to_owned)
+        .collect();
     match (command, cache_dir) {
         (CommandKind::Check, Some(cache_dir)) => Ok(CheckedOutput::Summary(
             check_typed_bundle_entry_summary_incremental_with_loader(
@@ -459,9 +467,10 @@ fn check_source_bundle(
             arena_output(report)
         }
         (CommandKind::Compile, Some(cache_dir)) => {
-            let report = check_typed_bundle_entry_incremental_with_loader(
+            let report = check_typed_bundle_entry_incremental_with_loader_and_opaque_definitions(
                 &entry_module,
                 requested,
+                &opaque_definitions,
                 cache_dir,
                 &mut loader,
             )
@@ -474,9 +483,13 @@ fn check_source_bundle(
             )
         }
         (CommandKind::Compile, None) => {
-            let report =
-                check_typed_bundle_entry_with_loader(&entry_module, requested, &mut loader)
-                    .map_err(|error| error.to_string())?;
+            let report = check_typed_bundle_entry_with_loader_and_opaque_definitions(
+                &entry_module,
+                requested,
+                &opaque_definitions,
+                &mut loader,
+            )
+            .map_err(|error| error.to_string())?;
             compile_output(
                 report,
                 compile_inputs.environment.expect("validated by caller"),

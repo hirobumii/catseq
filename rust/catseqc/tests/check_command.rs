@@ -87,6 +87,69 @@ fn shared_compile_request_api_returns_an_oasm_call_plan() {
 }
 
 #[test]
+fn compile_environment_declares_an_opaque_source_definition() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "def sequence():\n    return amp_calib()\n\ndef amp_calib():\n    raise RuntimeError('host encoder only')\n",
+    )
+    .unwrap();
+    let module = path.file_stem().unwrap().to_string_lossy();
+    let operation = format!("{module}.amp_calib");
+    let request = serde_json::to_vec(&serde_json::json!({
+        "schema_version": 1,
+        "source_path": path,
+        "source_root": path.parent().unwrap(),
+        "entry": "sequence",
+        "compile_environment": {
+            "schema_version": 1,
+            "channels": {},
+            "opaque_calls": {
+                operation.clone(): {
+                    "callable": "test.amp_calib",
+                    "args": [],
+                    "kwargs": {}
+                }
+            }
+        },
+        "target_profile": {
+            "schema_version": 1,
+            "rtmq_abi_version": 2,
+            "clock_hz": 250_000_000_u64,
+            "boards": {"rwg0": {"kind": "rwg", "ttl_width": 32}},
+            "operations": {
+                operation: {
+                    "lowering": "opaque",
+                    "fixed_duration_cycles": 5,
+                    "board": "rwg0",
+                    "instruction_cost_cycles": 5
+                }
+            }
+        },
+        "link_bindings": {
+            "schema_version": 1,
+            "runtime_values": {},
+            "environment_values": {}
+        }
+    }))
+    .unwrap();
+
+    let response = compile_json_request(&request).unwrap();
+    fs::remove_file(path).unwrap();
+    let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 5);
+    assert_eq!(
+        response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"][0],
+        serde_json::json!({
+            "offset_cycles": 0,
+            "function": "user_defined_func",
+            "args": ["test.amp_calib", [], {}]
+        })
+    );
+}
+
+#[test]
 fn binary_discovers_requested_sequence_entry_from_source() {
     let path = source_file();
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))

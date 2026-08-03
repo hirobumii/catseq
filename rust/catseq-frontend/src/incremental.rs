@@ -1,6 +1,6 @@
 //! Minimal rustc-style incremental query graph for typed source checks.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt::Write as _;
 use std::fmt::{Display, Formatter};
@@ -15,11 +15,12 @@ use crate::intrinsics::REGISTRY_SEMANTIC_VERSION;
 use crate::typed::IncrementalStatsSnapshot;
 use crate::{
     IncrementalStats, TypeSignature, TypedCheckError, TypedCheckReport, TypedCheckSummary,
-    TypedDefinition, check_typed_bundle_entry_with_loader, check_typed_entry,
+    TypedDefinition, check_typed_bundle_entry_with_loader_and_opaque_definitions,
+    check_typed_entry,
 };
 
 const CACHE_FORMAT_VERSION: u32 = 14;
-const FRONTEND_SEMANTIC_VERSION: u32 = 12;
+const FRONTEND_SEMANTIC_VERSION: u32 = 13;
 const DEP_GRAPH_FILE: &str = "dep-graph.json";
 const CURRENT_FILE: &str = "CURRENT";
 
@@ -870,9 +871,29 @@ pub fn check_typed_bundle_entry_incremental_with_loader<F>(
 where
     F: FnMut(&str) -> Result<Option<String>, String>,
 {
+    check_typed_bundle_entry_incremental_with_loader_and_opaque_definitions(
+        entry_module,
+        requested_entry,
+        &BTreeSet::new(),
+        cache_dir,
+        loader,
+    )
+}
+
+pub fn check_typed_bundle_entry_incremental_with_loader_and_opaque_definitions<F>(
+    entry_module: &str,
+    requested_entry: &str,
+    opaque_definitions: &BTreeSet<String>,
+    cache_dir: &Path,
+    loader: &mut F,
+) -> Result<TypedCheckReport, IncrementalCheckError>
+where
+    F: FnMut(&str) -> Result<Option<String>, String>,
+{
     match check_typed_bundle_entry_incremental_impl(
         entry_module,
         requested_entry,
+        opaque_definitions,
         cache_dir,
         loader,
         RequestedCheck::Report,
@@ -894,6 +915,7 @@ where
     match check_typed_bundle_entry_incremental_impl(
         entry_module,
         requested_entry,
+        &BTreeSet::new(),
         cache_dir,
         loader,
         RequestedCheck::Summary,
@@ -906,6 +928,7 @@ where
 fn check_typed_bundle_entry_incremental_impl<F>(
     entry_module: &str,
     requested_entry: &str,
+    opaque_definitions: &BTreeSet<String>,
     cache_dir: &Path,
     loader: &mut F,
     requested: RequestedCheck,
@@ -914,7 +937,13 @@ where
     F: FnMut(&str) -> Result<Option<String>, String>,
 {
     let mut session = QuerySession::open(cache_dir);
-    let check_key = Fingerprint::of_parts(&["check-bundle", entry_module, requested_entry]);
+    let opaque_identity = serde_json::to_string(opaque_definitions)?;
+    let check_key = Fingerprint::of_parts(&[
+        "check-bundle",
+        entry_module,
+        requested_entry,
+        &opaque_identity,
+    ]);
     let previous_summary = session.previous.latest_cached_summary(check_key);
     let mut parse_nodes = HashMap::<String, u32>::new();
     let mut sources = HashMap::<String, String>::new();
@@ -948,7 +977,12 @@ where
         }
     }
 
-    let report = check_typed_bundle_entry_with_loader(entry_module, requested_entry, loader)?;
+    let report = check_typed_bundle_entry_with_loader_and_opaque_definitions(
+        entry_module,
+        requested_entry,
+        opaque_definitions,
+        loader,
+    )?;
     let mut queried_modules = report.queried_modules().to_vec();
     queried_modules.sort();
     query_bundle_modules(

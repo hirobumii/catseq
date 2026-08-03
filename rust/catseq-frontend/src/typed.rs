@@ -4,7 +4,7 @@
 //! deliberately owns CatSeq types instead of leaking NAC3 AST nodes past the
 //! parsing/indexing boundary.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use crate::intrinsics;
 
@@ -52,6 +52,23 @@ pub fn check_typed_bundle_entry(
 pub fn check_typed_bundle_entry_with_loader<F>(
     entry_module: &str,
     requested_entry: &str,
+    loader: &mut F,
+) -> Result<TypedCheckReport, TypedCheckError>
+where
+    F: FnMut(&str) -> Result<Option<String>, String>,
+{
+    check_typed_bundle_entry_with_loader_and_opaque_definitions(
+        entry_module,
+        requested_entry,
+        &BTreeSet::new(),
+        loader,
+    )
+}
+
+pub fn check_typed_bundle_entry_with_loader_and_opaque_definitions<F>(
+    entry_module: &str,
+    requested_entry: &str,
+    opaque_definitions: &BTreeSet<String>,
     loader: &mut F,
 ) -> Result<TypedCheckReport, TypedCheckError>
 where
@@ -125,6 +142,13 @@ where
                 });
             }
             if intrinsics::is_compiler_special_form(&resolved) {
+                continue;
+            }
+            if opaque_definitions.contains(&resolved) {
+                analysis
+                    .definition
+                    .hir
+                    .resolve_opaque_atomic_call(&source_call.source_path, &resolved);
                 continue;
             }
             if let Some((target_module, target_definition)) =

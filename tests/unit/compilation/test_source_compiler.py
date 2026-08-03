@@ -15,6 +15,7 @@ from catseq.compilation.types import OASMAddress, OASMFunction
 
 class _Experiment:
     duration = 0.35
+    scan_values = (0.1, 0.2)
 
     def build_sequence(self, params):
         raise AssertionError("compile_entry must not execute Python sequence code")
@@ -83,6 +84,7 @@ def test_compile_entry_compiles_source_without_executing_the_bound_method(
     assert command[command.index("--entry") + 1] == "_Experiment.build_sequence"
     bindings = captured["bindings"]
     assert bindings["runtime_values"]["self.duration"] == 0.35
+    assert "self.scan_values" not in bindings["runtime_values"]
     assert bindings["runtime_values"]['params["pulse_time_us"]'] == 0.35
     assert captured["target"]["clock_hz"] == 250000000
     assert captured["target"]["rtmq_abi_version"] == 2

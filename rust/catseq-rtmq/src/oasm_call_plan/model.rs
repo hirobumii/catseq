@@ -56,6 +56,10 @@ impl CompileEnvironment {
     pub const fn schema_version(&self) -> u32 {
         self.schema_version
     }
+
+    pub fn opaque_definition_names(&self) -> impl Iterator<Item = &str> {
+        self.opaque_calls.keys().map(String::as_str)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]

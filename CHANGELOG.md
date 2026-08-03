@@ -12,8 +12,10 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added the focused `catseq.experiment` modules for host-side experiment
   lifecycle control, immutable scan parameters, Descartes traversal, devices,
   analyzers, panel publication, and optional H5 persistence. `BaseExp` compiles
-  only `build_sequence` once per attempted scan point and executes the returned
-  `CompiledSequence` through a supplied runtime.
+  only `build_sequence` and executes the returned `CompiledSequence` through a
+  supplied runtime. The first scan point compiles synchronously; later points
+  compile one point ahead while the current sequence runs, and wait only when
+  the prefetched compilation is not yet complete.
 
 ### Fixed
 

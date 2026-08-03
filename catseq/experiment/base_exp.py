@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -33,7 +34,9 @@ class BaseExp(ABC):
 
     Experiment orchestration runs as ordinary Python.  At each attempted scan
     point, only ``build_sequence`` and that point's parameters are handed to
-    the CatSeq compiler.
+    the CatSeq compiler.  While the current compiled sequence runs, BaseExp
+    compiles one immutable scan point ahead.  Sequence configuration outside
+    ``ExpParams`` must therefore remain stable for the duration of a run.
     """
 
     compiler: Compiler = field(kw_only=True, repr=False, metadata={"persist": False})
@@ -68,6 +71,8 @@ class BaseExp(ABC):
         self._panel_publisher_started = False
         self._h5_opened = False
         self._device_run_started = False
+        self._compile_executor: ThreadPoolExecutor | None = None
+        self._next_compilation: Future[Any] | None = None
         self._running = False
 
     @abstractmethod
@@ -135,7 +140,16 @@ class BaseExp(ABC):
                 analyzer._dependencies_satisfied = dependencies_satisfied is not False
 
             self.run_control.start()
-            self.gen.call_next()
+            with ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="catseq-compile",
+            ) as compile_executor:
+                self._compile_executor = compile_executor
+                try:
+                    self.gen.call_next()
+                finally:
+                    self._compile_executor = None
+                    self._next_compilation = None
             for analyzer in self._analyzer_pipeline:
                 if analyzer._dependencies_satisfied:
                     self._publish_analyzer_updates(analyzer, analyzer.analyze())
@@ -156,9 +170,24 @@ class BaseExp(ABC):
             )
 
     def _execute_point(self, scan_point: ScanPoint) -> Any:
-        compiled = self.compiler.compile(self.build_sequence, scan_point.params)
+        if self._next_compilation is None:
+            compiled = self.compiler.compile(self.build_sequence, scan_point.params)
+        else:
+            compilation = self._next_compilation
+            self._next_compilation = None
+            compiled = compilation.result()
+
         self.apply_scan_params_to_devices(scan_point)
         self.device_list.init_device()
+
+        next_point = self.gen._next_scan_point(scan_point)
+        if next_point is not None and self._compile_executor is not None:
+            self._next_compilation = self._compile_executor.submit(
+                self.compiler.compile,
+                self.build_sequence,
+                next_point.params,
+            )
+
         result = self.runtime.run(compiled)
         self.device_list.read()
         return result

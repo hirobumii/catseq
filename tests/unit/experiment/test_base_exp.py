@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass, field
+from threading import Event
 from typing import ClassVar
 
 import pytest
@@ -68,6 +70,37 @@ class RecordingRuntime:
             self.on_run()
         if compiled["duration"] == self.fail_value:
             raise RuntimeError(f"runtime failed at {compiled['duration']}")
+        return {"ok": True}
+
+
+class BlockingSecondCompiler(RecordingCompiler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.second_started = Event()
+        self.release_second = Event()
+
+    def compile(self, entry, params: ExpParams):
+        self.calls.append((entry, params))
+        value = params[TracerExperiment.duration]
+        if value == 2.0 and not self.second_started.is_set():
+            self.second_started.set()
+            if not self.release_second.wait(timeout=2):
+                raise RuntimeError("second compilation was not released")
+        return {"duration": value}
+
+
+class OverlapRuntime(RecordingRuntime):
+    def __init__(self, compiler: BlockingSecondCompiler) -> None:
+        super().__init__()
+        self.compiler = compiler
+        self.first_finished = Event()
+
+    def run(self, compiled):
+        self.compiled.append(compiled)
+        if len(self.compiled) == 1:
+            if not self.compiler.second_started.wait(timeout=1):
+                raise RuntimeError("next point was not compiling during runtime")
+            self.first_finished.set()
         return {"ok": True}
 
 
@@ -146,6 +179,35 @@ class TracerExperiment(BaseExp):
         raise AssertionError(
             "the host test compiler must inspect build_sequence without executing it"
         )
+
+
+@dataclass
+class IndexedExperiment(BaseExp):
+    repetition: ClassVar[ExpParam[int]] = ExpParam("repetition")
+    duration: ClassVar[ExpParam[float]] = ExpParam("duration_us", "us")
+
+    def config_generator(self) -> None:
+        self.gen.add_descartes("repeat", 2, idx_param=self.repetition)
+        self.gen.add_descartes("scan", self.duration, [1.0, 2.0])
+
+    def build_sequence(self, params: ExpParams):
+        raise AssertionError(
+            "the host test compiler must inspect build_sequence without executing it"
+        )
+
+
+class IndexedCompiler:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, float]] = []
+
+    def compile(self, entry, params: ExpParams):
+        del entry
+        point = (
+            params[IndexedExperiment.repetition],
+            params[IndexedExperiment.duration],
+        )
+        self.calls.append(point)
+        return {"repetition": point[0], "duration": point[1]}
 
 
 def make_experiment(
@@ -229,7 +291,63 @@ def test_base_exp_compiles_and_runs_each_attempted_scan_point() -> None:
     assert experiment.panels == ["panel-progress", "panel-summary"]
 
 
-def test_compile_failure_keeps_the_attempt_and_skips_runtime_and_final_analysis() -> None:
+def test_base_exp_compiles_the_next_point_while_the_current_point_runs() -> None:
+    compiler = BlockingSecondCompiler()
+    runtime = OverlapRuntime(compiler)
+    experiment, _, _, _, _ = make_experiment(
+        compiler=compiler,
+        runtime=runtime,
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        running = executor.submit(experiment.run)
+        try:
+            assert compiler.second_started.wait(timeout=1)
+            assert runtime.first_finished.wait(timeout=1)
+            with pytest.raises(TimeoutError):
+                running.result(timeout=0.02)
+            assert runtime.compiled == [{"duration": 1.0}]
+        finally:
+            compiler.release_second.set()
+        running.result(timeout=2)
+
+    assert [params[experiment.duration] for _, params in compiler.calls] == [
+        1.0,
+        2.0,
+        1.0,
+        2.0,
+    ]
+    assert [compiled["duration"] for compiled in runtime.compiled] == [
+        1.0,
+        2.0,
+        1.0,
+        2.0,
+    ]
+
+
+def test_lookahead_preserves_nested_repeat_parameters_and_coordinates() -> None:
+    compiler = IndexedCompiler()
+    runtime = RecordingRuntime()
+    experiment = IndexedExperiment(
+        compiler=compiler,
+        runtime=runtime,
+        h5_writer=RecordingWriter(),
+    )
+
+    experiment.run()
+
+    assert compiler.calls == [(0, 1.0), (0, 2.0), (1, 1.0), (1, 2.0)]
+    assert runtime.compiled == [
+        {"repetition": 0, "duration": 1.0},
+        {"repetition": 0, "duration": 2.0},
+        {"repetition": 1, "duration": 1.0},
+        {"repetition": 1, "duration": 2.0},
+    ]
+    assert experiment.para_dict.coordinate_values("repeat_0") == (0, 0, 1, 1)
+    assert experiment.para_dict.coordinate_values("scan_0") == (0, 1, 0, 1)
+
+
+def test_compile_failure_records_attempt_before_stopping() -> None:
     experiment, _, runtime, writer, _ = make_experiment(
         compiler=RecordingCompiler(fail_value=1.0)
     )
@@ -244,6 +362,29 @@ def test_compile_failure_keeps_the_attempt_and_skips_runtime_and_final_analysis(
     assert isinstance(writer.events[1][1], RuntimeError)
 
 
+def test_prefetched_compile_failure_is_raised_when_that_point_is_attempted() -> None:
+    experiment, compiler, runtime, writer, _ = make_experiment(
+        compiler=RecordingCompiler(fail_value=2.0)
+    )
+
+    with pytest.raises(RuntimeError, match="compile failed at 2.0"):
+        experiment.run()
+
+    assert [params[experiment.duration] for _, params in compiler.calls] == [
+        1.0,
+        2.0,
+    ]
+    assert experiment.para_dict.execution_indexes == (0, 1)
+    assert runtime.compiled == [{"duration": 1.0}]
+    assert experiment.device_list.detector.events == [
+        "start",
+        "init",
+        "read",
+        "close",
+    ]
+    assert isinstance(writer.events[1][1], RuntimeError)
+
+
 def test_runtime_failure_keeps_the_attempt_and_closes_devices() -> None:
     experiment, compiler, _, writer, _ = make_experiment(
         runtime=RecordingRuntime(fail_value=1.0)
@@ -252,19 +393,25 @@ def test_runtime_failure_keeps_the_attempt_and_closes_devices() -> None:
     with pytest.raises(RuntimeError, match="runtime failed at 1.0"):
         experiment.run()
 
-    assert len(compiler.calls) == 1
+    assert [params[experiment.duration] for _, params in compiler.calls] == [
+        1.0,
+        2.0,
+    ]
     assert experiment.para_dict.execution_indexes == (0,)
     assert experiment.device_list.detector.events == ["start", "init", "close"]
     assert isinstance(writer.events[1][1], RuntimeError)
 
 
-def test_cancellation_stops_before_the_next_point_and_still_runs_final_analysis() -> None:
+def test_cancellation_stops_before_next_point_and_runs_final_analysis() -> None:
     experiment, compiler, _, _, _ = make_experiment()
     experiment.runtime.on_run = experiment.run_control.request_stop
 
     experiment.run()
 
-    assert len(compiler.calls) == 1
+    assert [params[experiment.duration] for _, params in compiler.calls] == [
+        1.0,
+        2.0,
+    ]
     assert experiment.para_dict.execution_indexes == (0,)
     assert experiment._analyzer_pipeline[0].final_calls == 1
 

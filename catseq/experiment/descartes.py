@@ -129,6 +129,47 @@ class DescartesGenerator:
     def finish(self) -> None:
         """Complete the traversal lifecycle; immutable points need no restore."""
 
+    def _next_scan_point(self, point: ScanPoint) -> ScanPoint | None:
+        nodes = [
+            (node_type, order, args, kwargs)
+            for (node_type, order), (_, args, kwargs) in zip(
+                self._order, self._callers, strict=True
+            )
+            if node_type != "final_exp"
+        ]
+        next_coordinates = dict(point.coordinates)
+
+        for position in range(len(nodes) - 1, -1, -1):
+            node_type, order, args, _ = nodes[position]
+            axis = f"{node_type}_{order}"
+            size = args[0] if node_type == "repeat" else len(args[1])
+            next_index = next_coordinates[axis] + 1
+            if next_index >= size:
+                continue
+            next_coordinates[axis] = next_index
+            for deeper_type, deeper_order, _, _ in nodes[position + 1 :]:
+                next_coordinates[f"{deeper_type}_{deeper_order}"] = 0
+            break
+        else:
+            return None
+
+        params = ExpParams.empty()
+        ordered_coordinates: dict[str, int] = {}
+        for node_type, order, args, kwargs in nodes:
+            axis = f"{node_type}_{order}"
+            index = next_coordinates[axis]
+            ordered_coordinates[axis] = index
+            if node_type == "scan":
+                params = params.with_value(args[0], args[1][index])
+            elif (idx_param := kwargs.get("idx_param")) is not None:
+                params = params.with_value(idx_param, index)
+
+        return ScanPoint(
+            params=params,
+            coordinates=ordered_coordinates,
+            execution_index=point.execution_index + 1,
+        )
+
     def _repeat(
         self,
         current_index: int,

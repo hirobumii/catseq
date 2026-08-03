@@ -76,6 +76,11 @@ them.
    no current production file imports it. Removing an RB1 abstraction is a
    separate compatibility decision and requires an accepted semantic
    replacement; import counts are only migration evidence.
+13. `BaseExp` owns a private one-point compilation lookahead. The first point
+    compiles synchronously; while point N runs, point N+1 compiles in the
+    background. Traversal waits for that compilation only when it reaches point
+    N+1 and the result is not ready. A speculative compilation does not record
+    a point as attempted in `ParaDict`.
 
 These decisions supersede the older RB1/OASM-specific conclusions that
 `BaseExp` should own `seq`, `intf_usb`, or an `execution_mode` switch. Runtime
@@ -201,18 +206,28 @@ an independent API until a separate removal decision is made.
 
 The public lifecycle operation is `BaseExp.run()`. An experiment subclass
 provides `build_sequence(params)` and the narrow scan/analyzer hooks needed by
-the existing model. For each attempted scan point, the framework performs:
+the existing model. The first attempted point has no prefetched result, so it
+compiles synchronously. Each point then performs:
 
 ```text
 record ScanPoint in ParaDict
-  -> Compiler.compile(build_sequence, scan_point.params)
+  -> take its prefetched compilation, waiting if necessary
+     (or compile synchronously for the first point)
   -> apply scan parameters to devices
   -> DeviceList.init_device()
+  -> start Compiler.compile(build_sequence, next_point.params)
   -> Runtime.run(compiled_sequence)
   -> DeviceList.read()
   -> streaming analyzers
   -> optional panel publication
 ```
+
+The compile of point N+1 overlaps `Runtime.run()` for point N. The immutable
+next point is previewed internally by Descartes, but it is not appended to
+`ParaDict` until normal traversal reaches it. Cancellation or a failure at the
+current point can therefore leave one harmless speculative compilation without
+turning that point into an attempted execution. A prefetched compile failure is
+raised when traversal attempts that point.
 
 The complete run surrounds that point loop with device startup, experiment
 preparation, Descartes configuration, analyzer dependency resolution, final
@@ -295,19 +310,23 @@ results, and failure diagnostics.
 ### Phase 5: implement BaseExp as the vertical slice
 
 - [x] Implement one `BaseExp.run()` lifecycle over supplied collaborators.
-- [x] Compile each point with
-  `compiler.compile(self.build_sequence, scan_point.params)` and execute only
-  the returned Compiled Sequence through the supplied runtime.
-- [x] Prove the compiler receives one call per attempted point and never
-  receives `run`, Descartes traversal, device, analyzer, or persistence code.
+- [x] Compile the first point synchronously, then compile one immutable point
+  ahead while the current Compiled Sequence runs; wait when the next point is
+  attempted before its compilation completes.
+- [x] Prove the compiler receives only `build_sequence` and one point's
+  `ExpParams`, never `run`, Descartes traversal, device, analyzer, or
+  persistence code.
+- [x] Keep speculative compilation distinct from attempted execution: only
+  normal Descartes traversal appends the point to `ParaDict`.
 - [x] Integrate Descartes, devices, analyzers, panel publication, H5, run
   control, and cleanup without exposing the internal pipeline.
 - [x] Use simple fake devices, analyzers, publisher, and runtime in package
   tests; do not add public fake framework classes.
 
-Gate: one tracer experiment proves success, compile failure, runtime failure,
-cancellation, final analysis, H5 persistence, and cleanup entirely through the
-public experiment interface.
+Gate: tracer experiments prove compilation/runtime overlap, waiting for an
+unfinished next compilation, nested repeat/scan lookahead, compile failure,
+runtime failure, cancellation, final analysis, H5 persistence, and cleanup
+entirely through the public experiment interface.
 
 ### Phase 6: migrate rb1-next consumers directly
 

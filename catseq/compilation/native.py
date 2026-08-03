@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, fields, is_dataclass
 import importlib
 import inspect
@@ -15,7 +16,7 @@ import sys
 import sysconfig
 import tempfile
 import hashlib
-from typing import Any
+from typing import Any, TypeGuard
 
 from ..targets import rtmq_v2_profile
 from .execution import decode_oasm_call_plan
@@ -27,6 +28,26 @@ JsonObject = Mapping[str, Any]
 
 class CatSeqCompileError(RuntimeError):
     """The native compiler rejected a source entry or its bindings."""
+
+
+NATIVE_ERRORS: tuple[type[BaseException], ...] = (
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
+
+
+@contextmanager
+def native_compile_errors(
+    *extra: type[BaseException],
+) -> Iterator[None]:
+    """Translate native compiler failures into :class:`CatSeqCompileError`."""
+
+    try:
+        yield
+    except NATIVE_ERRORS + extra as error:
+        raise CatSeqCompileError(str(error)) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +174,7 @@ def _compile_in_process(
     target: JsonObject | str | Path,
     link_bindings: JsonObject | str | Path,
 ) -> object:
-    try:
+    with native_compile_errors(ImportError, AttributeError):
         _native = importlib.import_module("catseq._native")
         request = {
             "schema_version": 1,
@@ -167,15 +188,6 @@ def _compile_in_process(
         }
         encoded = json.dumps(request, separators=(",", ":")).encode()
         response = _native.compile(encoded)
-    except (
-        ImportError,
-        AttributeError,
-        OSError,
-        RuntimeError,
-        TypeError,
-        ValueError,
-    ) as error:
-        raise CatSeqCompileError(str(error)) from error
     try:
         return json.loads(response)
     except (json.JSONDecodeError, TypeError) as error:
@@ -326,10 +338,14 @@ def _merge_link_bindings(
     return payload
 
 
+def _is_int(value: object, *, minimum: int) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
 def _target_clock_hz(target: JsonObject | str | Path) -> int:
-    payload = json.loads(Path(target).read_text()) if isinstance(target, (str, Path)) else target
-    clock_hz = payload.get("clock_hz")
-    if not isinstance(clock_hz, int) or isinstance(clock_hz, bool) or clock_hz <= 0:
+    payload = _json_payload(target)
+    clock_hz = payload.get("clock_hz") if isinstance(payload, Mapping) else None
+    if not _is_int(clock_hz, minimum=1):
         raise ValueError("target clock_hz must be a positive integer")
     return clock_hz
 
@@ -385,9 +401,9 @@ def _decode_result(response: object, target_clock_hz: int) -> OASMCompileResult:
     clock_hz = response.get("clock_hz", target_clock_hz)
     if not isinstance(plan, dict):
         raise CatSeqCompileError("catseqc result has no OASMCallPlan")
-    if not isinstance(duration, int) or isinstance(duration, bool) or duration < 0:
+    if not _is_int(duration, minimum=0):
         raise CatSeqCompileError("catseqc result has no logical duration")
-    if not isinstance(clock_hz, int) or isinstance(clock_hz, bool) or clock_hz <= 0:
+    if not _is_int(clock_hz, minimum=1):
         raise CatSeqCompileError("catseqc result has an invalid target clock")
     diagnostics = response.get("diagnostics", ())
     incremental = response.get("incremental", {})

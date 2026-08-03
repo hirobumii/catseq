@@ -10,11 +10,11 @@ from typing import Any
 from . import _native
 from ._native import CompiledSequence
 from .compilation.native import (
-    CatSeqCompileError,
     _argument_bindings,
     _bound_function,
     _cache_dir,
     _source_path,
+    native_compile_errors,
 )
 from .targets import rtmq_v2_profile
 from .types import Channel
@@ -47,7 +47,7 @@ class Compiler:
             rtmq_v2_profile() if target_profile is None else target_profile
         )
         cache = Path(cache_dir) if cache_dir is not None else _cache_dir(root)
-        try:
+        with native_compile_errors():
             self._native = _native.Compiler(
                 root,
                 _encode_json(environment),
@@ -56,8 +56,6 @@ class Compiler:
                 opaque_callables,
                 cache,
             )
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            raise CatSeqCompileError(str(error)) from error
 
     @classmethod
     def from_system(cls, system: object) -> Compiler:
@@ -104,14 +102,12 @@ class Compiler:
             "runtime_values": runtime_values,
             "environment_values": {},
         }
-        try:
+        with native_compile_errors():
             return self._native.compile(
                 source_path,
                 function.__qualname__,
                 _encode_json(link_bindings),
             )
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            raise CatSeqCompileError(str(error)) from error
 
 
 def _encode_channel(source_name: str, channel: Channel) -> dict[str, object]:

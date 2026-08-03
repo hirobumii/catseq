@@ -4,7 +4,7 @@ Execution helpers for OASM call streams.
 
 import importlib
 from collections.abc import Mapping
-from typing import Any, Callable, Dict, List, Protocol, TypeVar
+from typing import Any, Callable, Dict, List, NamedTuple, Protocol, TypeVar
 
 from .functions import (
     rwg_init,
@@ -46,53 +46,65 @@ except ImportError:
     OASM_AVAILABLE = False
 
 
+class _OASMFunctionSpec(NamedTuple):
+    """One entry of the single OASM function registry.
+
+    ``plan_name`` is the spelling used by the native OASMCallPlan and is
+    ``None`` for operations that only exist in the Python API.
+    ``implementation`` is the OASM DSL callable and is ``None`` for operations
+    resolved by the host instead of a fixed DSL function.
+    """
+
+    function: OASMFunction
+    plan_name: str | None
+    implementation: Callable | None
+
+
+_OASM_FUNCTIONS: tuple[_OASMFunctionSpec, ...] = (
+    _OASMFunctionSpec(OASMFunction.TTL_CONFIG, "ttl_config", ttl_config),
+    _OASMFunctionSpec(OASMFunction.TTL_SET, "ttl_set", ttl_set),
+    _OASMFunctionSpec(OASMFunction.WAIT_US, None, wait_us),
+    _OASMFunctionSpec(OASMFunction.WAIT, "wait", wait_mu),
+    _OASMFunctionSpec(OASMFunction.LOOP_BEGIN, "loop_begin", loop_begin),
+    _OASMFunctionSpec(OASMFunction.LOOP_END, "loop_end", loop_end),
+    _OASMFunctionSpec(OASMFunction.WAIT_MASTER, "wait_master", wait_master),
+    _OASMFunctionSpec(OASMFunction.TRIG_SLAVE, "trig_slave", trig_slave),
+    _OASMFunctionSpec(OASMFunction.RWG_INIT, "rwg_init", rwg_init),
+    _OASMFunctionSpec(
+        OASMFunction.RWG_SET_CARRIER, "rwg_set_carrier", rwg_set_carrier
+    ),
+    _OASMFunctionSpec(OASMFunction.RWG_RF_SWITCH, "rwg_rf_switch", rwg_rf_switch),
+    _OASMFunctionSpec(
+        OASMFunction.RWG_LOAD_WAVEFORM, "rwg_load_waveform", rwg_load_waveform
+    ),
+    _OASMFunctionSpec(OASMFunction.RWG_PLAY, "rwg_play", rwg_play),
+    _OASMFunctionSpec(OASMFunction.RSP_INIT, "rsp_init", rsp_init),
+    _OASMFunctionSpec(
+        OASMFunction.RSP_SET_CARRIER, "rsp_set_carrier", rsp_set_carrier
+    ),
+    _OASMFunctionSpec(OASMFunction.RSP_PID_CONFIG, "rsp_pid_config", rsp_pid_config),
+    _OASMFunctionSpec(OASMFunction.RSP_PID_START, "rsp_pid_start", rsp_pid_start),
+    _OASMFunctionSpec(OASMFunction.RSP_PID_HOLD, "rsp_pid_hold", rsp_pid_hold),
+    _OASMFunctionSpec(
+        OASMFunction.RSP_PID_RELEASE, "rsp_pid_release", rsp_pid_release
+    ),
+    _OASMFunctionSpec(OASMFunction.RSP_PID_RELINK, "rsp_pid_relink", rsp_pid_relink),
+    _OASMFunctionSpec(OASMFunction.RSP_RF_CONFIG, "rsp_rf_config", rsp_rf_config),
+    _OASMFunctionSpec(OASMFunction.USER_DEFINED_FUNC, "user_defined_func", None),
+)
+
+
 OASM_FUNCTION_MAP: Dict[OASMFunction, Callable] = {
-    OASMFunction.TTL_CONFIG: ttl_config,
-    OASMFunction.TTL_SET: ttl_set,
-    OASMFunction.WAIT_US: wait_us,
-    OASMFunction.WAIT: wait_mu,
-    OASMFunction.LOOP_BEGIN: loop_begin,
-    OASMFunction.LOOP_END: loop_end,
-    OASMFunction.WAIT_MASTER: wait_master,
-    OASMFunction.TRIG_SLAVE: trig_slave,
-    OASMFunction.RWG_INIT: rwg_init,
-    OASMFunction.RWG_SET_CARRIER: rwg_set_carrier,
-    OASMFunction.RWG_RF_SWITCH: rwg_rf_switch,
-    OASMFunction.RWG_LOAD_WAVEFORM: rwg_load_waveform,
-    OASMFunction.RWG_PLAY: rwg_play,
-    OASMFunction.RSP_INIT: rsp_init,
-    OASMFunction.RSP_SET_CARRIER: rsp_set_carrier,
-    OASMFunction.RSP_PID_CONFIG: rsp_pid_config,
-    OASMFunction.RSP_PID_START: rsp_pid_start,
-    OASMFunction.RSP_PID_HOLD: rsp_pid_hold,
-    OASMFunction.RSP_PID_RELEASE: rsp_pid_release,
-    OASMFunction.RSP_PID_RELINK: rsp_pid_relink,
-    OASMFunction.RSP_RF_CONFIG: rsp_rf_config,
+    spec.function: spec.implementation
+    for spec in _OASM_FUNCTIONS
+    if spec.implementation is not None
 }
 
 
-_PLAN_FUNCTIONS = {
-    "loop_begin": OASMFunction.LOOP_BEGIN,
-    "loop_end": OASMFunction.LOOP_END,
-    "ttl_config": OASMFunction.TTL_CONFIG,
-    "ttl_set": OASMFunction.TTL_SET,
-    "wait": OASMFunction.WAIT,
-    "rwg_init": OASMFunction.RWG_INIT,
-    "rwg_set_carrier": OASMFunction.RWG_SET_CARRIER,
-    "rwg_rf_switch": OASMFunction.RWG_RF_SWITCH,
-    "rwg_load_waveform": OASMFunction.RWG_LOAD_WAVEFORM,
-    "rwg_play": OASMFunction.RWG_PLAY,
-    "wait_master": OASMFunction.WAIT_MASTER,
-    "trig_slave": OASMFunction.TRIG_SLAVE,
-    "rsp_init": OASMFunction.RSP_INIT,
-    "rsp_set_carrier": OASMFunction.RSP_SET_CARRIER,
-    "rsp_pid_config": OASMFunction.RSP_PID_CONFIG,
-    "rsp_pid_start": OASMFunction.RSP_PID_START,
-    "rsp_pid_hold": OASMFunction.RSP_PID_HOLD,
-    "rsp_pid_release": OASMFunction.RSP_PID_RELEASE,
-    "rsp_pid_relink": OASMFunction.RSP_PID_RELINK,
-    "rsp_rf_config": OASMFunction.RSP_RF_CONFIG,
-    "user_defined_func": OASMFunction.USER_DEFINED_FUNC,
+_PLAN_FUNCTIONS: Dict[str, OASMFunction] = {
+    spec.plan_name: spec.function
+    for spec in _OASM_FUNCTIONS
+    if spec.plan_name is not None
 }
 
 

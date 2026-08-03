@@ -64,6 +64,15 @@ def binary_to_rtmq_mask(binary_mask: int) -> Union[int, str]:
     return binary_mask
 
 
+def _split_rtmq_mask(rtmq_mask: str) -> tuple[int, int]:
+    """Split an "X.P" mask into its hexadecimal ``(X, P)`` components."""
+    if '.' not in rtmq_mask:
+        raise ValueError(f"Invalid RTMQ mask format: {rtmq_mask}. Expected 'A.B' format.")
+
+    X_str, P_str = rtmq_mask.split('.')
+    return int(X_str, 16), int(P_str, 16)
+
+
 def rtmq_mask_to_binary(rtmq_mask: str) -> int:
     """
     Convert RTMQ ISA "A.B" format mask to binary.
@@ -80,13 +89,7 @@ def rtmq_mask_to_binary(rtmq_mask: str) -> int:
         rtmq_mask_to_binary("3.0")  # -> 3 << (0*2) = 3
         rtmq_mask_to_binary("F.2")  # -> 15 << (2*2) = 240
     """
-    if '.' not in rtmq_mask:
-        raise ValueError(f"Invalid RTMQ mask format: {rtmq_mask}. Expected 'A.B' format.")
-    
-    X_str, P_str = rtmq_mask.split('.')
-    X = int(X_str, 16)  # Parse as hexadecimal
-    P = int(P_str, 16)  # Parse as hexadecimal (though usually 0-3)
-    
+    X, P = _split_rtmq_mask(rtmq_mask)
     return X << (P * 2)
 
 
@@ -106,13 +109,8 @@ def encode_rtmq_mask(rtmq_mask: str) -> int:
         encode_rtmq_mask("3.1")  # -> (3 << 4) + 1 = 49
         encode_rtmq_mask("F.2")  # -> (15 << 4) + 2 = 242
     """
-    if '.' not in rtmq_mask:
-        raise ValueError(f"Invalid RTMQ mask format: {rtmq_mask}. Expected 'A.B' format.")
-    
-    X_str, P_str = rtmq_mask.split('.')
-    X = int(X_str, 16)
-    P = int(P_str, 16)
-    
+    X, P = _split_rtmq_mask(rtmq_mask)
+
     if X > 15 or P > 15:
         raise ValueError(f"X and P must be single hex digits (0-F), got X={X}, P={P}")
     

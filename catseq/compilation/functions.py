@@ -200,14 +200,31 @@ def rsp_init(offset_0 = 0.0, offset_1 = 0.0, flt_typ='rr', chn_cpl='dd'):
     wait(10*250)
     clo(R.ext_adc, 0b00)
 
-def rsp_rf_config(config: RSPWaveformParams):
-    R.mua_inp[config.rf_out] = mod_inp("reg", "reg", rsp_signal(config.amp*2.0-1.0))
+def _rsp_route_output(rf_out: int, mua_input, output_max, rfg_gate: str):
+    """连接 mua -> rfg 输出链，并设置统一的增益/限幅配置
+
+    Args:
+        rf_out: RF 输出端口编号
+        mua_input: mua 单元的输入配置（``mod_inp`` 的返回值）
+        output_max: 输出幅度上限
+        rfg_gate: rfg 输入的门控源（``"reg"`` 或 ``f"dgt{...}"``）
+    """
+    R.mua_inp[rf_out] = mua_input
     R.mua_gan = mua_gan(1.0)
     R.mua_ofs = mua_ofs(0.0)
     R.mua_cpl = mua_cpl(-1.0)
-    R.mua_cph = mua_cph(-1.0+2*config.output_max)
-    
-    R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", "reg")
+    R.mua_cph = mua_cph(-1.0 + 2 * output_max)
+
+    R.rfg_inp[rf_out] = mod_inp(f"mua{rf_out}", rfg_gate)
+
+
+def rsp_rf_config(config: RSPWaveformParams):
+    _rsp_route_output(
+        config.rf_out,
+        mod_inp("reg", "reg", rsp_signal(config.amp*2.0-1.0)),
+        config.output_max,
+        "reg",
+    )
 
 def rsp_pid_config(config: RSPPIDConfig):
     """
@@ -231,14 +248,13 @@ def rsp_pid_config(config: RSPPIDConfig):
     R.acu_prh = acu_prh(-1048576*2, atn_acu)
     R.acu_prl = acu_prl(-1048576*2)
     
-    R.mua_inp[config.rf_out] = mod_inp(f"acu{config.rf_out}", f"dgt{config.dgt_source}")
-    R.mua_gan = mua_gan(1.0)
-    R.mua_ofs = mua_ofs(0.0)
-    R.mua_cpl = mua_cpl(-1.0)
-    R.mua_cph = mua_cph(-1.0+2*config.output_max)
-    
-    R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", f"dgt{config.dgt_source}")
-    
+    _rsp_route_output(
+        config.rf_out,
+        mod_inp(f"acu{config.rf_out}", f"dgt{config.dgt_source}"),
+        config.output_max,
+        f"dgt{config.dgt_source}",
+    )
+
 
 def rsp_pid_start(loop_id:int):
     """
@@ -258,13 +274,12 @@ def rsp_pid_release(config: RSPPIDConfig):
     """
     R.dgt_cfg[config.dgt_source] = dgt_cfg("cst0")
 
-    R.mua_inp[config.rf_out] = mod_inp("reg", "reg", rsp_signal(-1.0))
-    R.mua_gan = mua_gan(1.0)
-    R.mua_ofs = mua_ofs(0.0)
-    R.mua_cpl = mua_cpl(-1.0)
-    R.mua_cph = mua_cph(-1.0+2*config.output_max)
-    
-    R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", "reg")
+    _rsp_route_output(
+        config.rf_out,
+        mod_inp("reg", "reg", rsp_signal(-1.0)),
+        config.output_max,
+        "reg",
+    )
 
 # TODO 这里的relink不能成立，分析原因
 def rsp_pid_relink(config: RSPPIDConfig):
@@ -273,10 +288,9 @@ def rsp_pid_relink(config: RSPPIDConfig):
     """
     R.dgt_cfg[config.dgt_source] = dgt_cfg("cst0")
 
-    R.mua_inp[config.rf_out] = mod_inp(f"acu{config.rf_out}", f"dgt{config.dgt_source}")
-    R.mua_gan = mua_gan(1.0)
-    R.mua_ofs = mua_ofs(0.0)
-    R.mua_cpl = mua_cpl(-1.0)
-    R.mua_cph = mua_cph(-1.0+2*config.output_max)
-    
-    R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", f"dgt{config.dgt_source}")
+    _rsp_route_output(
+        config.rf_out,
+        mod_inp(f"acu{config.rf_out}", f"dgt{config.dgt_source}"),
+        config.output_max,
+        f"dgt{config.dgt_source}",
+    )

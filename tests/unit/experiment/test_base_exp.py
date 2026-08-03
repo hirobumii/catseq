@@ -101,7 +101,15 @@ class OverlapRuntime(RecordingRuntime):
             if not self.compiler.second_started.wait(timeout=1):
                 raise RuntimeError("next point was not compiling during runtime")
             self.first_finished.set()
+        if self.on_run is not None:
+            self.on_run()
         return {"ok": True}
+
+
+class FailingOverlapRuntime(OverlapRuntime):
+    def run(self, compiled):
+        super().run(compiled)
+        raise RuntimeError(f"runtime failed at {compiled['duration']}")
 
 
 class RecordingWriter:
@@ -347,6 +355,23 @@ def test_lookahead_preserves_nested_repeat_parameters_and_coordinates() -> None:
     assert experiment.para_dict.coordinate_values("scan_0") == (0, 1, 0, 1)
 
 
+def test_runtime_failure_does_not_wait_for_speculative_compilation() -> None:
+    compiler = BlockingSecondCompiler()
+    experiment, _, _, _, _ = make_experiment(
+        compiler=compiler,
+        runtime=FailingOverlapRuntime(compiler),
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        running = executor.submit(experiment.run)
+        try:
+            with pytest.raises(RuntimeError, match="runtime failed at 1.0"):
+                running.result(timeout=1)
+            assert experiment.device_list.detector.events == ["start", "init", "close"]
+        finally:
+            compiler.release_second.set()
+
+
 def test_compile_failure_records_attempt_before_stopping() -> None:
     experiment, _, runtime, writer, _ = make_experiment(
         compiler=RecordingCompiler(fail_value=1.0)
@@ -403,10 +428,17 @@ def test_runtime_failure_keeps_the_attempt_and_closes_devices() -> None:
 
 
 def test_cancellation_stops_before_next_point_and_runs_final_analysis() -> None:
-    experiment, compiler, _, _, _ = make_experiment()
-    experiment.runtime.on_run = experiment.run_control.request_stop
+    compiler = BlockingSecondCompiler()
+    runtime = OverlapRuntime(compiler)
+    experiment, _, _, _, _ = make_experiment(compiler=compiler, runtime=runtime)
+    runtime.on_run = experiment.run_control.request_stop
 
-    experiment.run()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        running = executor.submit(experiment.run)
+        try:
+            running.result(timeout=1)
+        finally:
+            compiler.release_second.set()
 
     assert [params[experiment.duration] for _, params in compiler.calls] == [
         1.0,

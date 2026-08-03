@@ -140,16 +140,21 @@ class BaseExp(ABC):
                 analyzer._dependencies_satisfied = dependencies_satisfied is not False
 
             self.run_control.start()
-            with ThreadPoolExecutor(
+            compile_executor = ThreadPoolExecutor(
                 max_workers=1,
                 thread_name_prefix="catseq-compile",
-            ) as compile_executor:
-                self._compile_executor = compile_executor
-                try:
-                    self.gen.call_next()
-                finally:
-                    self._compile_executor = None
-                    self._next_compilation = None
+            )
+            self._compile_executor = compile_executor
+            try:
+                self.gen.call_next()
+            finally:
+                wait_for_compiler = self._next_compilation is None
+                self._compile_executor = None
+                self._next_compilation = None
+                compile_executor.shutdown(
+                    wait=wait_for_compiler,
+                    cancel_futures=True,
+                )
             for analyzer in self._analyzer_pipeline:
                 if analyzer._dependencies_satisfied:
                     self._publish_analyzer_updates(analyzer, analyzer.analyze())

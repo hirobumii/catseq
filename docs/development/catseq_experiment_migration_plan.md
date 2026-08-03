@@ -227,7 +227,8 @@ next point is previewed internally by Descartes, but it is not appended to
 `ParaDict` until normal traversal reaches it. Cancellation or a failure at the
 current point can therefore leave one harmless speculative compilation without
 turning that point into an attempted execution. A prefetched compile failure is
-raised when traversal attempts that point.
+raised when traversal attempts that point. An unused speculative compilation
+does not delay failure or cancellation cleanup.
 
 The complete run surrounds that point loop with device startup, experiment
 preparation, Descartes configuration, analyzer dependency resolution, final

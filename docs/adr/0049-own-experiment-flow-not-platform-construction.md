@@ -23,9 +23,13 @@ importing deployment policy into CatSeq. A separate `ExperimentRun` concept is
 not introduced.
 
 Experiment orchestration remains ordinary host Python. `BaseExp` invokes the
-CatSeq compiler once for each attempted scan point, passing only the bound
-`build_sequence` method and that point's `ExpParams`; traversal, device
-lifecycle, analysis, publication, persistence, and cleanup are never compiled.
+CatSeq compiler with only the bound `build_sequence` method and one immutable
+point's `ExpParams`; traversal, device lifecycle, analysis, publication,
+persistence, and cleanup are never compiled. The first attempted point compiles
+synchronously. Later points compile one point ahead while the current sequence
+runs, so cancellation or failure may leave one compiled point that was never
+attempted. BaseExp waits for that result only if traversal reaches the point and
+does not delay cleanup for an unused speculative compilation.
 
 `BaseModule` and `BaseService` are clean ports of the existing sequence
 abstractions with serialization removed. CatSeq does not add a separate

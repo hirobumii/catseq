@@ -56,7 +56,7 @@ Run it with `uv run python quickstart_ttl.py`. The first line is
 `pulse` and other hardware timing APIs require an explicit duration. Use an SI
 unit such as `500 * ms`, or use `cycles(count)` when the value intentionally
 means target cycles. A bare numeric value is rejected, and an SI duration that
-is not an exact Cycle Count for the selected target clock is also rejected.
+is not an exact Cycle Delta for the selected target clock is also rejected.
 
 The channel key is qualified by the source module. Keep the documented
 `quickstart_ttl.py` filename, or replace `quickstart_ttl.ttl0` with the module
@@ -69,6 +69,12 @@ Rust-owned compiler session. `Compiler.compile()` uses the method only to
 locate its source and bind restricted arguments. The method body and reachable
 service/module definitions are parsed by the Rust compiler; arbitrary host
 lifecycle code is not compiled.
+
+An annotated class field without a source initializer is an Environment Slot.
+Use `<module>.<entry-class-or-singleton>.<field>` as the `environment_values`
+key (for example, `quickstart_ttl.Experiment.rewind`); this keeps fields on two
+instances of the same class distinct. A `Duration` binding is a signed target
+Cycle Delta.
 
 ## Run a compiled sequence
 

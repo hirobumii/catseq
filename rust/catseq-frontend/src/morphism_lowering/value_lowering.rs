@@ -437,12 +437,8 @@ pub(super) fn lower_compile_value(
     clock_hz: u64,
 ) -> Result<Option<LoweredValue>, MorphismLoweringError> {
     if normalized_is_cycles_call(value) {
-        let cycles = parse_normalized_cycles(value).ok_or_else(|| {
-            lowering_error(
-                node,
-                "cycles() requires exactly one non-negative integer count",
-            )
-        })?;
+        let cycles = parse_normalized_cycles(value)
+            .ok_or_else(|| lowering_error(node, "cycles() requires exactly one integer count"))?;
         return Ok(Some(LoweredValue::Scalar(ScalarValue::DurationCycles(
             cycles,
         ))));
@@ -468,8 +464,7 @@ pub(super) fn lower_compile_value(
             })?;
             if source_type == Some(&SourceType::Int64) {
                 let integer = numeric
-                    .to_cycle_count()
-                    .and_then(|value| i64::try_from(value).ok())
+                    .to_signed_cycle_delta()
                     .ok_or_else(|| lowering_error(node, "Int64 compile value is not integral"))?;
                 ScalarValue::Int(integer)
             } else if source_type == Some(&SourceType::Duration) {
@@ -498,12 +493,12 @@ pub(super) fn lower_compile_value(
     Ok(Some(LoweredValue::Scalar(scalar)))
 }
 
-pub(super) fn lower_duration_unit(node: &SourceHirNode, clock_hz: u64) -> Option<LoweredValue> {
-    let denominator = match node.symbol()? {
-        "s" => 1_u64,
-        "ms" => 1_000,
-        "us" => 1_000_000,
-        "ns" => 1_000_000_000,
+pub(super) fn lower_duration_unit(resolved: &str, clock_hz: u64) -> Option<LoweredValue> {
+    let denominator = match resolved {
+        "catseq.time_utils.s" => 1_u64,
+        "catseq.time_utils.ms" => 1_000,
+        "catseq.time_utils.us" => 1_000_000,
+        "catseq.time_utils.ns" => 1_000_000_000,
         _ => return None,
     };
     Some(LoweredValue::Scalar(ScalarValue::DurationCycles(
@@ -522,19 +517,18 @@ pub(super) fn lower_cycles_intrinsic(
         .and_then(|child| values[*child as usize].clone())
         .ok_or_else(|| lowering_error(node, "cycles() requires one integer count"))?;
     let duration = match argument {
-        LoweredValue::Scalar(ScalarValue::Int(value)) if value >= 0 => {
+        LoweredValue::Scalar(ScalarValue::Int(value)) => {
             ScalarValue::DurationCycles(ExactDecimal::from_i64(value))
         }
-        LoweredValue::Scalar(ScalarValue::Expr(value)) => {
+        LoweredValue::Scalar(ScalarValue::Expr(value))
+            if builder.value_type(value) == Some(ValueExprType::Int64) =>
+        {
             let one = builder.constant(ValueExprPayload::DurationCycles(1));
             ScalarValue::Expr(builder.operation(
                 ValueExprKind::Multiply,
                 ValueExprType::Duration,
                 &[value, one],
             ))
-        }
-        LoweredValue::Scalar(ScalarValue::Int(_)) => {
-            return Err(lowering_error(node, "cycles() count must be non-negative"));
         }
         _ => {
             return Err(lowering_error(
@@ -683,9 +677,6 @@ fn fold_scalar_operation(
         (ValueOperation::Divide, [DurationCycles(value), Float(scale)]) => {
             value.checked_div(*scale).map(DurationCycles)
         }
-        (ValueOperation::Divide, [Float(value), DurationCycles(scale)]) => {
-            value.checked_div(*scale).map(Float)
-        }
         (ValueOperation::Divide, [DurationCycles(left), DurationCycles(right)]) => {
             left.checked_div(*right).map(Float)
         }
@@ -697,7 +688,9 @@ fn fold_scalar_operation(
         }
         (ValueOperation::Negate, [Int(value)]) => value.checked_neg().map(Int),
         (ValueOperation::Negate, [Float(value)]) => value.checked_neg().map(Float),
-        (ValueOperation::Negate, [DurationCycles(value)]) => value.checked_neg().map(Float),
+        (ValueOperation::Negate, [DurationCycles(value)]) => {
+            value.checked_neg().map(DurationCycles)
+        }
         (ValueOperation::Positive, [value]) => Some(value.clone()),
         (ValueOperation::LogicalNot, [Bool(value)]) => Some(Bool(!value)),
         _ => None,
@@ -750,11 +743,11 @@ pub(super) fn scalar_to_expr(
         ScalarValue::Int(value) => ValueExprPayload::Int64(value),
         ScalarValue::Float(value) => ValueExprPayload::Float64(value.to_f64()),
         ScalarValue::DurationCycles(value) => {
-            let cycles = value.to_cycle_count().ok_or_else(|| {
+            let cycles = value.to_signed_cycle_delta().ok_or_else(|| {
                 lowering_error(
                     node,
                     format!(
-                        "duration {} is not an exact non-negative target Cycle Count",
+                        "duration {} is not an exact signed target Cycle Delta",
                         value.to_f64()
                     ),
                 )

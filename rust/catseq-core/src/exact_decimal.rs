@@ -126,6 +126,13 @@ impl ExactDecimal {
         u64::try_from(self.numerator / self.denominator).ok()
     }
 
+    pub fn to_signed_cycle_delta(self) -> Option<i64> {
+        if self.numerator % self.denominator != 0 {
+            return None;
+        }
+        i64::try_from(self.numerator / self.denominator).ok()
+    }
+
     pub fn to_cycle_count_rounded(self) -> Option<u64> {
         if self.numerator < 0 {
             return None;
@@ -141,6 +148,27 @@ impl ExactDecimal {
             quotient
         };
         u64::try_from(rounded).ok()
+    }
+
+    pub fn to_signed_cycle_delta_rounded(self) -> Option<i64> {
+        let negative = self.numerator < 0;
+        let numerator = self.numerator.checked_abs()?;
+        let quotient = numerator / self.denominator;
+        let remainder = numerator % self.denominator;
+        let twice_remainder = remainder.checked_mul(2)?;
+        let rounded = if twice_remainder > self.denominator
+            || (twice_remainder == self.denominator && quotient % 2 != 0)
+        {
+            quotient.checked_add(1)?
+        } else {
+            quotient
+        };
+        let signed = if negative {
+            rounded.checked_neg()?
+        } else {
+            rounded
+        };
+        i64::try_from(signed).ok()
     }
 
     pub fn to_f64(self) -> f64 {
@@ -185,6 +213,18 @@ mod tests {
                 .checked_mul(cycles_per_us)
                 .unwrap()
                 .to_cycle_count(),
+            None
+        );
+    }
+
+    #[test]
+    fn signed_cycle_deltas_remain_exact() {
+        assert_eq!(
+            ExactDecimal::parse("-2").unwrap().to_signed_cycle_delta(),
+            Some(-2)
+        );
+        assert_eq!(
+            ExactDecimal::parse("-1.5").unwrap().to_signed_cycle_delta(),
             None
         );
     }

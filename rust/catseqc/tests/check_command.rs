@@ -19,13 +19,17 @@ fn source_file() -> std::path::PathBuf {
 }
 
 fn ttl_target_profile(source_path: &std::path::Path) -> std::path::PathBuf {
+    ttl_target_profile_at(source_path, 250_000_000)
+}
+
+fn ttl_target_profile_at(source_path: &std::path::Path, clock_hz: u64) -> std::path::PathBuf {
     let path = source_path.with_extension("target.json");
     fs::write(
         &path,
         serde_json::to_vec(&serde_json::json!({
             "schema_version": 1,
             "rtmq_abi_version": 2,
-            "clock_hz": 250_000_000_u64,
+            "clock_hz": clock_hz,
             "boards": {
                 "main": {"kind": "main", "ttl_width": 32},
                 "rwg0": {"kind": "rwg", "ttl_width": 32}
@@ -52,20 +56,40 @@ fn compile_ttl_source(
     source: &str,
     clock_hz: u64,
 ) -> Result<serde_json::Value, String> {
+    compile_ttl_source_with(
+        source_path,
+        source,
+        "sequence",
+        clock_hz,
+        serde_json::json!({
+            "schema_version": 1,
+            "runtime_values": {},
+            "environment_values": {}
+        }),
+    )
+}
+
+fn compile_ttl_source_with(
+    source_path: &std::path::Path,
+    source: &str,
+    entry: &str,
+    clock_hz: u64,
+    link_bindings: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     fs::write(source_path, source).unwrap();
-    let channel_key = format!(
-        "{}::ttl0",
-        source_path.file_stem().unwrap().to_string_lossy()
-    );
+    let module = source_path.file_stem().unwrap().to_string_lossy();
+    let ttl0 = format!("{module}::ttl0");
+    let ttl1 = format!("{module}::ttl1");
     let request = serde_json::to_vec(&serde_json::json!({
         "schema_version": 1,
         "source_path": source_path,
         "source_root": source_path.parent().unwrap(),
-        "entry": "sequence",
+        "entry": entry,
         "compile_environment": {
             "schema_version": 1,
             "channels": {
-                channel_key: {"board": "rwg0", "local_id": 0, "kind": "ttl"}
+                ttl0: {"board": "rwg0", "local_id": 0, "kind": "ttl"},
+                ttl1: {"board": "rwg0", "local_id": 1, "kind": "ttl"}
             }
         },
         "target_profile": {
@@ -73,7 +97,10 @@ fn compile_ttl_source(
             "rtmq_abi_version": 2,
             "clock_hz": clock_hz,
             "duration_quantization": "strict",
-            "boards": {"rwg0": {"kind": "rwg", "ttl_width": 32}},
+            "boards": {
+                "main": {"kind": "main", "ttl_width": 32},
+                "rwg0": {"kind": "rwg", "ttl_width": 32}
+            },
             "operations": {
                 "catseq.hardware.ttl.set_high": {
                     "lowering": "ttl_set_high",
@@ -82,14 +109,14 @@ fn compile_ttl_source(
                 "catseq.hardware.ttl.set_low": {
                     "lowering": "ttl_set_low",
                     "instruction_cost_cycles": 0
+                },
+                "catseq.hardware.sync.global_sync": {
+                    "lowering": "global_sync",
+                    "instruction_cost_cycles": 0
                 }
             }
         },
-        "link_bindings": {
-            "schema_version": 1,
-            "runtime_values": {},
-            "environment_values": {}
-        }
+        "link_bindings": link_bindings
     }))
     .unwrap();
     compile_json_request(&request)
@@ -101,7 +128,7 @@ fn shared_compile_request_api_returns_an_oasm_call_plan() {
     let path = source_file();
     fs::write(
         &path,
-        "from catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    return identity(1)\n",
+        "from catseq.morphism import Morphism, identity\nfrom catseq.time_utils import cycles\n\ndef sequence() -> Morphism:\n    return identity(cycles(1))\n",
     )
     .unwrap();
     let request = serde_json::to_vec(&serde_json::json!({
@@ -319,6 +346,7 @@ fn oasm_black_box_definition_is_an_opaque_atomic_boundary() {
             .unwrap()
             .ends_with(".legacy_atomic")
     );
+    assert_eq!(call.1["resolved_call_targets"].as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -801,7 +829,36 @@ fn static_property_comprehension_expands_compile_instance_calls() {
         .unwrap();
     assert_eq!(call["kind"], "call");
     assert_eq!(fact["resolved_definitions"].as_array().unwrap().len(), 2);
+    assert_eq!(fact["resolved_call_targets"].as_array().unwrap().len(), 2);
     assert_eq!(fact["type"], "Morphism");
+}
+
+#[test]
+fn repeated_comprehension_call_text_keeps_occurrence_targets_separate() {
+    let path = source_file();
+    let response = compile_ttl_source(
+        &path,
+        "from functools import reduce\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import cycles\n\nclass ModuleA:\n    def init(self) -> Morphism:\n        return identity(cycles(1))\n\nclass ModuleB:\n    def init(self) -> Morphism:\n        return identity(cycles(2))\n\nmodule_a = ModuleA()\nmodule_b = ModuleB()\n\nclass Service:\n    @property\n    def first(self) -> list[ModuleA]:\n        return [module_a]\n\n    @property\n    def second(self) -> list[ModuleB]:\n        return [module_b]\n\n    def init(self) -> Morphism:\n        first_values = [module.init() for module in self.first]\n        second_values = [module.init() for module in self.second]\n        first = reduce(lambda left, right: left | right, first_values)\n        second = reduce(lambda left, right: left | right, second_values)\n        return first >> second\n\nservice = Service()\n\ndef sequence() -> Morphism:\n    return service.init()\n",
+        100_000_000,
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 3);
+}
+
+#[test]
+fn property_comprehension_preserves_repeated_instance_targets() {
+    let path = source_file();
+    let response = compile_ttl_source(
+        &path,
+        "from catseq.morphism import Morphism, identity\nfrom catseq.time_utils import cycles\n\nclass Module:\n    def init(self) -> Morphism:\n        return identity(cycles(1))\n\nmodule_a = Module()\n\nclass Service:\n    @property\n    def modules(self) -> list[Module]:\n        return [module_a, module_a]\n\n    def init(self) -> Morphism:\n        values = [module.init() for module in self.modules]\n        return identity(cycles(len(values)))\n\nservice = Service()\n\ndef sequence() -> Morphism:\n    return service.init()\n",
+        100_000_000,
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 2);
 }
 
 #[test]
@@ -1045,21 +1102,25 @@ fn declarative_repeat_morphism_lowers_to_a_native_loop_node() {
     let path = source_file();
     fs::write(
         &path,
-        "from catseq.morphism import Morphism, identity, repeat_morphism\n\ndef sequence() -> Morphism:\n    return repeat_morphism(identity(1), 3)\n",
+        "from catseq.morphism import Morphism, identity, repeat_morphism\nfrom catseq.time_utils import cycles\n\ndef sequence() -> Morphism:\n    return repeat_morphism(identity(cycles(1)), 3)\n",
     )
     .unwrap();
+    let target_profile_path = ttl_target_profile(&path);
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
             "emit-arena",
             path.to_str().unwrap(),
             "--entry",
             "sequence",
+            "--target-profile",
+            target_profile_path.to_str().unwrap(),
             "--format",
             "json",
         ])
         .output()
         .unwrap();
     fs::remove_file(path).unwrap();
+    fs::remove_file(target_profile_path).unwrap();
 
     assert!(
         output.status.success(),
@@ -1082,21 +1143,25 @@ fn declarative_repeat_morphism_rejects_a_non_positive_count() {
     let path = source_file();
     fs::write(
         &path,
-        "from catseq.morphism import Morphism, identity, repeat_morphism\n\ndef sequence() -> Morphism:\n    return repeat_morphism(identity(1), 0)\n",
+        "from catseq.morphism import Morphism, identity, repeat_morphism\nfrom catseq.time_utils import cycles\n\ndef sequence() -> Morphism:\n    return repeat_morphism(identity(cycles(1)), 0)\n",
     )
     .unwrap();
+    let target_profile_path = ttl_target_profile(&path);
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
             "emit-arena",
             path.to_str().unwrap(),
             "--entry",
             "sequence",
+            "--target-profile",
+            target_profile_path.to_str().unwrap(),
             "--format",
             "json",
         ])
         .output()
         .unwrap();
     fs::remove_file(path).unwrap();
+    fs::remove_file(target_profile_path).unwrap();
 
     assert!(!output.status.success());
     assert!(
@@ -1622,21 +1687,25 @@ fn emit_arena_returns_a_python_free_variadic_morphism_dag() {
     let path = source_file();
     fs::write(
         &path,
-        "from catseq.morphism import Morphism, identity\n\nclass Experiment:\n    def sequence(self) -> Morphism:\n        return identity(1) >> identity(2) >> identity(3)\n",
+        "from catseq.morphism import Morphism, identity\nfrom catseq.time_utils import cycles\n\nclass Experiment:\n    def sequence(self) -> Morphism:\n        return identity(cycles(1)) >> identity(cycles(2)) >> identity(cycles(3))\n",
     )
     .unwrap();
+    let target_profile_path = ttl_target_profile(&path);
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
             "emit-arena",
             path.to_str().unwrap(),
             "--entry",
             "Experiment.sequence",
+            "--target-profile",
+            target_profile_path.to_str().unwrap(),
             "--format",
             "json",
         ])
         .output()
         .unwrap();
     fs::remove_file(path).unwrap();
+    fs::remove_file(target_profile_path).unwrap();
 
     assert!(
         output.status.success(),
@@ -1660,6 +1729,45 @@ fn emit_arena_returns_a_python_free_variadic_morphism_dag() {
     for node in arena["nodes"].as_array().unwrap() {
         assert!(!forbidden.contains(&node["kind"].as_str().unwrap()));
     }
+}
+
+#[test]
+fn emit_arena_uses_the_selected_target_clock() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.morphism import Morphism, identity\nfrom catseq.time_utils import us\n\ndef sequence() -> Morphism:\n    return identity(1 * us)\n",
+    )
+    .unwrap();
+    let target_profile_path = ttl_target_profile_at(&path, 100_000_000);
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--target-profile",
+            target_profile_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    fs::remove_file(target_profile_path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let artifact: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        artifact["value_expr_arena"]["payloads"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!({"kind": "duration_cycles", "value": 100}))
+    );
 }
 
 #[test]
@@ -1735,6 +1843,8 @@ fn compile_emits_a_linked_oasm_call_plan_for_a_ttl_pulse() {
 fn compile_rejects_unitless_duration_spellings() {
     let path = source_file();
     let sources = [
+        "from catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    return identity(1)\n",
+        "from catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    return identity(1.0)\n",
         "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: pulse(1.0)}\n",
         "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    delay = 1e-6\n    return identity(0) >> {ttl0: pulse(delay)}\n",
         "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\n\nDELAY = 1e-6\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: pulse(DELAY)}\n",
@@ -1743,13 +1853,74 @@ fn compile_rejects_unitless_duration_spellings() {
 
     for source in sources {
         let error = compile_ttl_source(&path, source, 250_000_000).unwrap_err();
-        assert!(error.contains("Duration"), "{error}");
+        assert!(error.to_ascii_lowercase().contains("duration"), "{error}");
         assert!(
             error.contains("explicit unit") || error.contains("cycles("),
             "{error}"
         );
     }
     fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn compiler_preserves_same_instant_ttl_order_across_composition_paths() {
+    let path = source_file();
+    let cases = [
+        (
+            "from catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: set_high() >> set_low()}\n",
+            1,
+            0,
+        ),
+        (
+            "from catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, MorphismDef, identity, morphism_template\n\n@morphism_template\ndef toggle() -> MorphismDef:\n    return set_low() >> set_high()\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: toggle()}\n",
+            1,
+            1,
+        ),
+        (
+            "from catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: set_high() >> set_low(), ttl1: set_low() >> set_high()}\n",
+            3,
+            2,
+        ),
+    ];
+
+    for (source, expected_mask, expected_state) in cases {
+        let response = compile_ttl_source(&path, source, 250_000_000).unwrap();
+        let calls = response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"]
+            .as_array()
+            .unwrap();
+        let ttl_calls = calls
+            .iter()
+            .filter(|call| call["function"] == "ttl_set")
+            .collect::<Vec<_>>();
+        assert_eq!(ttl_calls.len(), 1, "{response:#}");
+        assert_eq!(
+            ttl_calls[0]["args"],
+            serde_json::json!([expected_mask, expected_state, "rwg"])
+        );
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn compiler_preserves_same_instant_ttl_order_inside_a_hardware_loop() {
+    let path = source_file();
+    let response = compile_ttl_source(
+        &path,
+        "from catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, identity, repeat_morphism\n\ndef sequence() -> Morphism:\n    return repeat_morphism(identity(0) >> {ttl0: set_high() >> set_low() >> set_high()}, 3)\n",
+        250_000_000,
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    let calls = response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"]
+        .as_array()
+        .unwrap();
+    let ttl_calls = calls
+        .iter()
+        .filter(|call| call["function"] == "ttl_set")
+        .collect::<Vec<_>>();
+    assert_eq!(ttl_calls.len(), 1, "{response:#}");
+    assert_eq!(ttl_calls[0]["args"], serde_json::json!([1, 1, "rwg"]));
 }
 
 #[test]
@@ -1770,8 +1941,390 @@ fn duration_conversion_uses_the_selected_clock_without_implicit_rounding() {
         100_000_000,
     )
     .unwrap_err();
-    assert!(nonintegral.contains("exact non-negative target Cycle Count"));
+    assert!(nonintegral.contains("exact signed target Cycle Delta"));
     fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn negative_duration_rewinds_the_logical_cursor_without_emitting_negative_time() {
+    let path = source_file();
+    let source = "from catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns\n\ndef sequence() -> Morphism:\n    return identity(20 * ns) >> {ttl0: set_high()} >> identity(-10 * ns) >> {ttl0: set_low()}\n";
+    let response = compile_ttl_source(&path, source, 100_000_000).unwrap();
+    let repeated = compile_ttl_source(&path, source, 100_000_000).unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["oasm_call_plan"], repeated["oasm_call_plan"]);
+    assert_eq!(response["logical_duration_cycles"], 2);
+    assert_eq!(
+        response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"],
+        serde_json::json!([
+            {"offset_cycles": 0, "function": "wait", "args": [1]},
+            {"offset_cycles": 1, "function": "ttl_set", "args": [1, 0, "rwg"]},
+            {"offset_cycles": 2, "function": "ttl_set", "args": [1, 1, "rwg"]}
+        ])
+    );
+}
+
+#[test]
+fn negative_duration_cannot_move_before_the_epoch_origin() {
+    let path = source_file();
+    let error = compile_ttl_source(
+        &path,
+        "from catseq.hardware.ttl import set_high\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns\n\ndef sequence() -> Morphism:\n    return identity(-10 * ns) >> {ttl0: set_high()}\n",
+        100_000_000,
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(error.contains("before Epoch origin"), "{error}");
+}
+
+#[test]
+fn negative_duration_cannot_cross_a_nonzero_epoch_origin() {
+    let path = source_file();
+    let error = compile_ttl_source(
+        &path,
+        "from catseq.hardware.sync import global_sync\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns\n\ndef sequence() -> Morphism:\n    return identity(20 * ns) >> global_sync() >> identity(-10 * ns)\n",
+        100_000_000,
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(error.contains("before Epoch origin 2"), "{error}");
+}
+
+#[test]
+fn negative_pulse_width_remains_a_physical_interval_error() {
+    let path = source_file();
+    let error = compile_ttl_source(
+        &path,
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns\n\ndef sequence() -> Morphism:\n    return identity(20 * ns) >> {ttl0: pulse(-10 * ns)}\n",
+        100_000_000,
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        error.contains("physical interval duration must be non-negative"),
+        "{error}"
+    );
+}
+
+#[test]
+fn negative_duration_is_preserved_through_globals_functions_and_cycles() {
+    let path = source_file();
+    for source in [
+        "from catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import Duration, ns\n\nREWIND: Duration = -10 * ns\n\ndef move(delay: Duration) -> Morphism:\n    return identity(delay)\n\ndef sequence() -> Morphism:\n    return identity(20 * ns) >> {ttl0: set_high()} >> move(REWIND) >> {ttl0: set_low()}\n",
+        "from catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import cycles\n\ndef sequence() -> Morphism:\n    return identity(cycles(2)) >> {ttl0: set_high()} >> identity(cycles(-1)) >> {ttl0: set_low()}\n",
+        "import catseq.time_utils as time\nfrom catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns\n\nREWIND = -10 * time.ns\n\ndef sequence() -> Morphism:\n    return identity(20 * ns) >> {ttl0: set_high()} >> identity(REWIND) >> {ttl0: set_low()}\n",
+        "import catseq.time_utils as time\nfrom catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns\n\ndef sequence() -> Morphism:\n    rewind = -10 * time.ns\n    return identity(20 * ns) >> {ttl0: set_high()} >> identity(rewind) >> {ttl0: set_low()}\n",
+        "from catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns as nanos\n\ndef sequence() -> Morphism:\n    return identity(20 * nanos) >> {ttl0: set_high()} >> identity(-10 * nanos) >> {ttl0: set_low()}\n",
+        "from catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import Duration, cycles\n\ndef move(delay: Duration = cycles(-1)) -> Morphism:\n    return identity(delay)\n\ndef sequence() -> Morphism:\n    return identity(cycles(2)) >> {ttl0: set_high()} >> move() >> {ttl0: set_low()}\n",
+    ] {
+        let response = compile_ttl_source(&path, source, 100_000_000).unwrap();
+        assert_eq!(response["logical_duration_cycles"], 2);
+        assert_eq!(
+            response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"][1]["offset_cycles"],
+            1
+        );
+        assert_eq!(
+            response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"][2]["offset_cycles"],
+            2
+        );
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn duration_units_require_the_registered_import_identity() {
+    let path = source_file();
+    let response = compile_ttl_source(
+        &path,
+        "import catseq.time_utils\nfrom catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    return identity(20 * catseq.time_utils.ns)\n",
+        100_000_000,
+    )
+    .unwrap();
+    assert_eq!(response["logical_duration_cycles"], 2);
+
+    for source in [
+        "from unrelated_or_missing_module import ns\nfrom catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    return identity(20 * ns)\n",
+        "from catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns\n\ndef sequence() -> Morphism:\n    ns = 1\n    return identity(ns)\n",
+        "import catseq.time_utils as time\nfrom catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    time = 1\n    return identity(time.ns)\n",
+        "import catseq.time_utils as time\nfrom catseq.morphism import Morphism, identity\n\ndef move(time: float) -> Morphism:\n    return identity(time.ns)\n\ndef sequence() -> Morphism:\n    return move(1.0)\n",
+        "import catseq.time_utils as time\nfrom catseq.morphism import Morphism, identity\n\nclass Fake:\n    us: float = 1.0\n\ntime = Fake()\n\ndef sequence() -> Morphism:\n    return identity(time.us)\n",
+        "import catseq.time_utils as time\nfrom catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    result = identity(time.us)\n    time = 1\n    return result\n",
+        "import catseq.time_utils as time\nfrom catseq.morphism import Morphism, identity\n\nclass Fake:\n    us: float = 1.0\n\nif True:\n    time = Fake()\n\ndef sequence() -> Morphism:\n    return identity(time.us)\n",
+        "import catseq.time_utils as time\nfrom catseq.morphism import Morphism, identity\n\nclass Fake:\n    us: float = 1.0\n\ndef helper(value=(time := Fake())):\n    return value\n\ndef sequence() -> Morphism:\n    return identity(time.us)\n",
+    ] {
+        let error = compile_ttl_source(&path, source, 100_000_000).unwrap_err();
+        assert!(
+            error.contains("identity duration") || error.contains("identity requires a duration"),
+            "{source}\n{error}"
+        );
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn duration_dimension_cannot_be_forged_by_annotation_or_division() {
+    let path = source_file();
+    for (source, entry) in [
+        (
+            "from catseq.morphism import Morphism, identity\nfrom catseq.time_utils import Duration, ns\n\nDELAY: Duration = 1.0 + 0 * ns\n\ndef sequence() -> Morphism:\n    return identity(DELAY)\n",
+            "sequence",
+        ),
+        (
+            "from catseq.morphism import Morphism, identity\nfrom catseq.time_utils import us\n\nclass Experiment:\n    def sequence(self, params: ExpParams) -> Morphism:\n        return identity(params[self.delay] / us)\n",
+            "Experiment.sequence",
+        ),
+    ] {
+        let error = compile_ttl_source_with(
+            &path,
+            source,
+            entry,
+            100_000_000,
+            serde_json::json!({
+                "schema_version": 1,
+                "runtime_values": {"delay": 100},
+                "environment_values": {}
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("Duration compile values require")
+                || error.contains("identity duration")
+                || error.contains("identity requires a duration")
+                || error.contains("type mismatch"),
+            "{error}"
+        );
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn user_cycles_function_cannot_forge_a_link_time_duration() {
+    let path = source_file();
+    for expression in [
+        "cycles(params[self.delay]) * 2",
+        "-cycles(params[self.delay])",
+        "+cycles(params[self.delay])",
+    ] {
+        let source = format!(
+            "from catseq.morphism import Morphism, identity\n\ndef cycles(value: float) -> float:\n    return value\n\nclass Experiment:\n    def sequence(self, params: ExpParams) -> Morphism:\n        return identity({expression})\n"
+        );
+        let error = compile_ttl_source_with(
+            &path,
+            &source,
+            "Experiment.sequence",
+            100_000_000,
+            serde_json::json!({
+                "schema_version": 1,
+                "runtime_values": {"delay": 3.0},
+                "environment_values": {}
+            }),
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("identity duration")
+                || error.contains("identity requires a duration")
+                || error.contains("type mismatch"),
+            "{expression}: {error}"
+        );
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn public_compile_environment_duration_slot_can_rewind() {
+    let path = source_file();
+    let module = path.file_stem().unwrap().to_string_lossy();
+    let environment_key = format!("{module}.Experiment.rewind");
+    let response = compile_ttl_source_with(
+        &path,
+        "from catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import Duration, cycles\n\nclass Experiment:\n    rewind: Duration\n\n    def sequence(self) -> Morphism:\n        return identity(cycles(2)) >> {ttl0: set_high()} >> identity(self.rewind) >> {ttl0: set_low()}\n",
+        "Experiment.sequence",
+        100_000_000,
+        serde_json::json!({
+            "schema_version": 1,
+            "runtime_values": {},
+            "environment_values": {(environment_key): -1}
+        }),
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 2);
+    assert_eq!(
+        response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"],
+        serde_json::json!([
+            {"offset_cycles": 0, "function": "wait", "args": [1]},
+            {"offset_cycles": 1, "function": "ttl_set", "args": [1, 0, "rwg"]},
+            {"offset_cycles": 2, "function": "ttl_set", "args": [1, 1, "rwg"]}
+        ])
+    );
+}
+
+#[test]
+fn environment_slots_are_scoped_to_compile_instances() {
+    let path = source_file();
+    let module = path.file_stem().unwrap().to_string_lossy();
+    let first_key = format!("{module}.service_a.rewind");
+    let second_key = format!("{module}.service_b.rewind");
+    let response = compile_ttl_source_with(
+        &path,
+        "from catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import Duration, cycles\n\nclass Service:\n    rewind: Duration\n\n    def move(self) -> Morphism:\n        return identity(self.rewind)\n\nservice_a = Service()\nservice_b = Service()\n\ndef sequence() -> Morphism:\n    return identity(cycles(5)) >> service_a.move() >> {ttl0: set_high()} >> service_b.move() >> {ttl0: set_low()}\n",
+        "sequence",
+        100_000_000,
+        serde_json::json!({
+            "schema_version": 1,
+            "runtime_values": {},
+            "environment_values": {
+                (first_key): -1,
+                (second_key): -2
+            }
+        }),
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 5);
+    let ttl_calls = response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|call| call["function"] == "ttl_set")
+        .collect::<Vec<_>>();
+    assert_eq!(ttl_calls.len(), 2);
+    assert_eq!(ttl_calls[0]["offset_cycles"], 2);
+    assert_eq!(ttl_calls[0]["args"], serde_json::json!([1, 0, "rwg"]));
+    assert_eq!(ttl_calls[1]["offset_cycles"], 4);
+    assert_eq!(ttl_calls[1]["args"], serde_json::json!([1, 1, "rwg"]));
+}
+
+#[test]
+fn comprehension_environment_slots_keep_each_instance_identity() {
+    let path = source_file();
+    let module = path.file_stem().unwrap().to_string_lossy();
+    let first_key = format!("{module}.module_a.rewind");
+    let second_key = format!("{module}.module_b.rewind");
+    let response = compile_ttl_source_with(
+        &path,
+        "from functools import reduce\nfrom catseq.hardware.ttl import set_high\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import Duration, cycles\n\nclass Module:\n    rewind: Duration\n\n    def init(self) -> Morphism:\n        return identity(self.rewind) >> {ttl0: set_high()}\n\nmodule_a = Module()\nmodule_b = Module()\n\nclass Service:\n    @property\n    def module_list(self) -> list[Module]:\n        return [module_a, module_b]\n\n    def init(self) -> Morphism:\n        values = [module.init() for module in self.module_list]\n        return reduce(lambda left, right: left | right, values)\n\nservice = Service()\n\ndef sequence() -> Morphism:\n    return identity(cycles(5)) >> service.init()\n",
+        "sequence",
+        100_000_000,
+        serde_json::json!({
+            "schema_version": 1,
+            "runtime_values": {},
+            "environment_values": {
+                (first_key): -1,
+                (second_key): -2
+            }
+        }),
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 5);
+    let ttl_offsets = response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|call| call["function"] == "ttl_set")
+        .map(|call| call["offset_cycles"].as_u64().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(ttl_offsets, vec![3, 4]);
+}
+
+#[test]
+fn negative_nonintegral_duration_is_rejected_explicitly() {
+    let path = source_file();
+    let error = compile_ttl_source(
+        &path,
+        "from catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns\n\ndef sequence() -> Morphism:\n    return identity(20 * ns) >> identity(-15 * ns)\n",
+        100_000_000,
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(error.contains("exact signed target Cycle Delta"), "{error}");
+}
+
+#[test]
+fn template_and_parallel_rewinds_share_one_signed_timeline() {
+    let path = source_file();
+    let response = compile_ttl_source(
+        &path,
+        "from catseq.hardware.ttl import hold, set_high, set_low\nfrom catseq.morphism import Morphism, MorphismDef, identity, morphism_template\nfrom catseq.time_utils import ns\n\n@morphism_template\ndef high_then_rewind() -> MorphismDef:\n    return set_high() >> hold(-10 * ns) >> set_low()\n\n@morphism_template\ndef low_then_rewind() -> MorphismDef:\n    return set_low() >> hold(-10 * ns) >> set_high()\n\ndef sequence() -> Morphism:\n    return identity(20 * ns) >> {ttl0: high_then_rewind(), ttl1: low_then_rewind()}\n",
+        100_000_000,
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 2);
+    assert_eq!(
+        response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"],
+        serde_json::json!([
+            {"offset_cycles": 0, "function": "wait", "args": [1]},
+            {"offset_cycles": 1, "function": "ttl_set", "args": [3, 2, "rwg"]},
+            {"offset_cycles": 2, "function": "ttl_set", "args": [3, 1, "rwg"]}
+        ])
+    );
+}
+
+#[test]
+fn rewind_interacts_with_same_instant_writes_by_source_order() {
+    let path = source_file();
+    let response = compile_ttl_source(
+        &path,
+        "from catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns\n\ndef sequence() -> Morphism:\n    return identity(20 * ns) >> {ttl0: set_high()} >> identity(-10 * ns) >> {ttl0: set_low()} >> identity(10 * ns) >> {ttl0: set_low()}\n",
+        100_000_000,
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    let calls = &response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"];
+    assert_eq!(calls[1]["offset_cycles"], 1);
+    assert_eq!(calls[1]["args"], serde_json::json!([1, 0, "rwg"]));
+    assert_eq!(calls[2]["offset_cycles"], 2);
+    assert_eq!(calls[2]["args"], serde_json::json!([1, 0, "rwg"]));
+}
+
+#[test]
+fn rewinding_loop_body_is_expanded_without_losing_timeline_semantics() {
+    let path = source_file();
+    let response = compile_ttl_source(
+        &path,
+        "from catseq.hardware.ttl import set_high\nfrom catseq.morphism import Morphism, identity, repeat_morphism\nfrom catseq.time_utils import ns\n\ndef sequence() -> Morphism:\n    body = identity(20 * ns) >> {ttl0: set_high()} >> identity(-10 * ns)\n    return repeat_morphism(body, 3)\n",
+        100_000_000,
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 4);
+    assert_eq!(
+        response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"],
+        serde_json::json!([
+            {"offset_cycles": 0, "function": "wait", "args": [2]},
+            {"offset_cycles": 2, "function": "ttl_set", "args": [1, 1, "rwg"]},
+            {"offset_cycles": 3, "function": "ttl_set", "args": [1, 1, "rwg"]},
+            {"offset_cycles": 4, "function": "ttl_set", "args": [1, 1, "rwg"]}
+        ])
+    );
+}
+
+#[test]
+fn rewinding_loop_expansion_has_a_compiler_budget() {
+    let path = source_file();
+    let error = compile_ttl_source(
+        &path,
+        "from catseq.morphism import Morphism, identity, repeat_morphism\nfrom catseq.time_utils import cycles\n\ndef sequence() -> Morphism:\n    body = identity(cycles(1)) >> identity(cycles(-1))\n    return repeat_morphism(body, 100001)\n",
+        100_000_000,
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(error.contains("exceeding compiler budget"), "{error}");
 }
 
 #[test]
@@ -1800,6 +2353,28 @@ fn explicit_cycles_constructor_is_preserved_through_a_duration_global() {
     fs::remove_file(path).unwrap();
 
     assert_eq!(response["logical_duration_cycles"], 250);
+}
+
+#[test]
+fn global_cycles_constructor_requires_the_registered_integer_intrinsic() {
+    let path = source_file();
+    let float_count = compile_ttl_source(
+        &path,
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import Duration, cycles\n\nDELAY: Duration = cycles(1.0)\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: pulse(DELAY)}\n",
+        100_000_000,
+    )
+    .unwrap_err();
+    assert!(float_count.contains("integer count"), "{float_count}");
+
+    let user_function = compile_ttl_source(
+        &path,
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\n\ndef cycles(value: float) -> float:\n    return value\n\nDELAY = cycles(1.0)\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: pulse(DELAY)}\n",
+        100_000_000,
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(user_function.contains("Duration"), "{user_function}");
 }
 
 #[test]
@@ -1904,6 +2479,8 @@ fn user_can_compile_a_morphism_template_composed_from_atomic_operations() {
             path.to_str().unwrap(),
             "--entry",
             "sequence",
+            "--target-profile",
+            target_profile_path.to_str().unwrap(),
             "--format",
             "json",
         ])
@@ -1977,6 +2554,8 @@ fn linear_ramp_is_a_structured_native_template_and_compiles_to_oasm() {
         "from catseq.hardware.rwg import initialize, linear_ramp, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import us\nfrom catseq.types import StaticWaveform\n\ndef sequence() -> Morphism:\n    setup = initialize(80.0) >> set_state([StaticWaveform(freq=1.0, amp=0.2, sbg_id=0)])\n    ramp = linear_ramp([StaticWaveform(freq=2.0, amp=0.4)], 1 * us)\n    return identity(0) >> {rwg0: setup} >> {rwg0: ramp}\n",
     )
     .unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
 
     let arena_output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
@@ -1984,6 +2563,8 @@ fn linear_ramp_is_a_structured_native_template_and_compiles_to_oasm() {
             path.to_str().unwrap(),
             "--entry",
             "sequence",
+            "--target-profile",
+            target_profile.to_str().unwrap(),
             "--format",
             "json",
         ])
@@ -2036,8 +2617,6 @@ fn linear_ramp_is_a_structured_native_template_and_compiles_to_oasm() {
         .unwrap(),
     )
     .unwrap();
-    let target_profile =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
         .args([
             "compile",
@@ -2148,7 +2727,7 @@ fn compile_binds_a_scan_duration_when_linking_the_oasm_call_plan() {
     let path = source_file();
     fs::write(
         &path,
-        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import us\n\nclass Experiment:\n    def sequence(self, params: ExpParams) -> Morphism:\n        return identity(0) >> {ttl0: pulse(params[self.pulse_time] * us)}\n",
+        "from catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns, us\n\nclass Experiment:\n    def sequence(self, params: ExpParams) -> Morphism:\n        return identity(8 * ns) >> {ttl0: set_high()} >> identity(params[self.pulse_time] * us) >> {ttl0: set_low()}\n",
     )
     .unwrap();
     let environment_path = path.with_extension("environment.json");
@@ -2209,6 +2788,16 @@ fn compile_binds_a_scan_duration_when_linking_the_oasm_call_plan() {
     )
     .unwrap();
     let nonintegral = run();
+    fs::write(
+        &link_bindings_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "runtime_values": {"self.pulse_time": -0.004}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let rewind = run();
     fs::remove_file(path).unwrap();
     fs::remove_file(environment_path).unwrap();
     fs::remove_file(target_profile_path).unwrap();
@@ -2221,18 +2810,33 @@ fn compile_binds_a_scan_duration_when_linking_the_oasm_call_plan() {
     );
     assert!(!nonintegral.status.success());
     assert!(
-        String::from_utf8_lossy(&nonintegral.stderr)
-            .contains("exact non-negative target Cycle Count")
+        rewind.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rewind.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&nonintegral.stderr).contains("exact signed target Cycle Delta")
     );
     let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(response["logical_duration_cycles"], 5);
+    assert_eq!(response["logical_duration_cycles"], 7);
     assert_eq!(response["clock_hz"], 250_000_000_u64);
     assert_eq!(
         response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"],
         serde_json::json!([
-            {"offset_cycles": 0, "function": "ttl_set", "args": [1, 1, "rwg"]},
-            {"offset_cycles": 1, "function": "wait", "args": [4]},
-            {"offset_cycles": 5, "function": "ttl_set", "args": [1, 0, "rwg"]}
+            {"offset_cycles": 0, "function": "wait", "args": [2]},
+            {"offset_cycles": 2, "function": "ttl_set", "args": [1, 1, "rwg"]},
+            {"offset_cycles": 3, "function": "wait", "args": [4]},
+            {"offset_cycles": 7, "function": "ttl_set", "args": [1, 0, "rwg"]}
+        ])
+    );
+    let rewind: serde_json::Value = serde_json::from_slice(&rewind.stdout).unwrap();
+    assert_eq!(rewind["logical_duration_cycles"], 2);
+    assert_eq!(
+        rewind["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"],
+        serde_json::json!([
+            {"offset_cycles": 0, "function": "wait", "args": [1]},
+            {"offset_cycles": 1, "function": "ttl_set", "args": [1, 0, "rwg"]},
+            {"offset_cycles": 2, "function": "ttl_set", "args": [1, 1, "rwg"]}
         ])
     );
 }

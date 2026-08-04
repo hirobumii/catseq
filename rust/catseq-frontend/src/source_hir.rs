@@ -6,6 +6,7 @@ use nac3ast::{Cmpop, Constant, Expr, ExprKind, Operator, Stmt, StmtKind};
 use serde::{Deserialize, Serialize};
 
 use crate::intrinsics;
+use crate::typed::resolution::resolve_call_path;
 use crate::typed::{SourceType, TypeSignature};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -56,7 +57,7 @@ pub enum SourceHirKind {
 /// CatSeq operations whose identity must survive parsing for native lowering.
 ///
 /// Morphism algebra is recorded separately from scalar arithmetic so both can
-/// lower directly into their canonical arenas without retaining Python AST.
+/// lower directly into native arenas without retaining Python AST.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum MorphismComposition {
     AutoSerial,
@@ -287,6 +288,22 @@ impl DependencyRole {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ResolvedCallTarget {
+    definition: String,
+    instance_identity: Option<String>,
+}
+
+impl ResolvedCallTarget {
+    pub fn definition(&self) -> &str {
+        &self.definition
+    }
+
+    pub fn instance_identity(&self) -> Option<&str> {
+        self.instance_identity.as_deref()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SemanticFact {
     source_type: Option<SourceType>,
     availability: ValueAvailability,
@@ -294,6 +311,10 @@ pub struct SemanticFact {
     resolved_node: Option<u32>,
     resolved_definition: Option<String>,
     resolved_definitions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    resolved_call_targets: Vec<ResolvedCallTarget>,
+    #[serde(default)]
+    module_binding_shadowed: bool,
     phase_frame: Option<String>,
     compile_value: Option<String>,
 }
@@ -321,6 +342,10 @@ impl SemanticFact {
 
     pub fn resolved_definitions(&self) -> &[String] {
         &self.resolved_definitions
+    }
+
+    pub fn resolved_call_targets(&self) -> &[ResolvedCallTarget] {
+        &self.resolved_call_targets
     }
 
     pub fn phase_frame(&self) -> Option<&str> {
@@ -374,6 +399,9 @@ impl TypedSourceHir {
         attributes: &HashMap<String, (SourceType, String)>,
     ) {
         for (node, fact) in self.nodes.iter().zip(&mut self.facts) {
+            if fact.module_binding_shadowed {
+                continue;
+            }
             let Some(symbol) = node.symbol.as_deref() else {
                 continue;
             };
@@ -390,7 +418,7 @@ impl TypedSourceHir {
         symbols: &HashMap<String, (SourceType, String)>,
     ) {
         for (node, fact) in self.nodes.iter().zip(&mut self.facts) {
-            if node.kind != SourceHirKind::Name {
+            if node.kind != SourceHirKind::Name || fact.module_binding_shadowed {
                 continue;
             }
             let Some(symbol) = node.symbol.as_deref() else {
@@ -440,10 +468,17 @@ impl TypedSourceHir {
             .map(|(node, _)| &node.anchor)
     }
 
-    pub(crate) fn resolve_call(&mut self, source_path: &str, resolved: &str) {
+    pub(crate) fn resolve_call(
+        &mut self,
+        source_path: &str,
+        line: usize,
+        column: usize,
+        resolved: &str,
+        instance_identity: Option<&str>,
+    ) {
         for (node, fact) in self.nodes.iter().zip(&mut self.facts) {
-            if node.kind == SourceHirKind::Call && node.symbol.as_deref() == Some(source_path) {
-                record_resolution(fact, resolved);
+            if call_matches(node, source_path, line, column) {
+                record_call_resolution(fact, resolved, instance_identity);
                 if let Some(source_type) =
                     intrinsics::return_type(resolved, fact.source_type.as_ref())
                 {
@@ -462,22 +497,29 @@ impl TypedSourceHir {
         }
     }
 
-    pub(crate) fn resolve_opaque_atomic_call(&mut self, source_path: &str, resolved: &str) {
+    pub(crate) fn mark_opaque_atomic_call(
+        &mut self,
+        source_path: &str,
+        line: usize,
+        column: usize,
+    ) {
         for (node, fact) in self.nodes.iter().zip(&mut self.facts) {
-            if node.kind == SourceHirKind::Call && node.symbol.as_deref() == Some(source_path) {
-                record_resolution(fact, resolved);
+            if call_matches(node, source_path, line, column) {
                 fact.source_type = Some(SourceType::Morphism);
                 fact.availability = ValueAvailability::Compile;
             }
         }
     }
 
-    pub(crate) fn call_anchor(&self, source_path: &str) -> Option<&SourceAnchor> {
+    pub(crate) fn call_anchor(
+        &self,
+        source_path: &str,
+        line: usize,
+        column: usize,
+    ) -> Option<&SourceAnchor> {
         self.nodes
             .iter()
-            .find(|node| {
-                node.kind == SourceHirKind::Call && node.symbol.as_deref() == Some(source_path)
-            })
+            .find(|node| call_matches(node, source_path, line, column))
             .map(|node| &node.anchor)
     }
 
@@ -525,33 +567,41 @@ impl TypedSourceHir {
                     .and_then(|fact| fact.source_type.clone())
             };
             let derived_type = match self.nodes[node_id].kind {
-                SourceHirKind::Return => child_type(0),
+                SourceHirKind::Return => Some(child_type(0)),
                 SourceHirKind::Assignment | SourceHirKind::Expression => {
-                    child_facts.last().and_then(|fact| fact.source_type.clone())
+                    Some(child_facts.last().and_then(|fact| fact.source_type.clone()))
                 }
-                SourceHirKind::ConditionalExpression => child_type(1),
+                SourceHirKind::ConditionalExpression => Some(child_type(1)),
+                SourceHirKind::Unary => Some(child_type(0)),
                 SourceHirKind::Call if child_type(0) == Some(SourceType::MorphismTemplate) => {
-                    Some(SourceType::Morphism)
+                    Some(Some(SourceType::Morphism))
                 }
-                SourceHirKind::Binary
+                SourceHirKind::Binary => Some(
                     if child_facts
                         .iter()
-                        .any(|fact| fact.source_type == Some(SourceType::Morphism)) =>
-                {
-                    Some(SourceType::Morphism)
-                }
-                SourceHirKind::Binary
-                    if !child_facts.is_empty()
+                        .any(|fact| fact.source_type == Some(SourceType::Morphism))
+                    {
+                        Some(SourceType::Morphism)
+                    } else if !child_facts.is_empty()
                         && child_facts
                             .iter()
-                            .all(|fact| fact.source_type == Some(SourceType::MorphismTemplate)) =>
-                {
-                    Some(SourceType::MorphismTemplate)
-                }
+                            .all(|fact| fact.source_type == Some(SourceType::MorphismTemplate))
+                    {
+                        Some(SourceType::MorphismTemplate)
+                    } else {
+                        self.nodes[node_id].value_operation.and_then(|operation| {
+                            scalar_binary_type(
+                                operation,
+                                child_type(0).as_ref(),
+                                child_type(1).as_ref(),
+                            )
+                        })
+                    },
+                ),
                 _ => None,
             };
             if let Some(derived_type) = derived_type {
-                self.facts[node_id].source_type = Some(derived_type);
+                self.facts[node_id].source_type = derived_type;
             }
             if self.nodes[node_id].kind == SourceHirKind::Call
                 && child_type(0) == Some(SourceType::MorphismTemplate)
@@ -565,6 +615,7 @@ impl TypedSourceHir {
                     | SourceHirKind::Assignment
                     | SourceHirKind::Expression
                     | SourceHirKind::ConditionalExpression
+                    | SourceHirKind::Unary
                     | SourceHirKind::Binary
             ) {
                 self.facts[node_id].availability = child_facts
@@ -648,6 +699,13 @@ impl TypedSourceHir {
     }
 }
 
+fn call_matches(node: &SourceHirNode, source_path: &str, line: usize, column: usize) -> bool {
+    node.kind == SourceHirKind::Call
+        && node.symbol.as_deref() == Some(source_path)
+        && node.anchor.line == line
+        && node.anchor.column == column
+}
+
 fn record_resolution(fact: &mut SemanticFact, resolved: &str) {
     if fact.resolved_definition.is_none() {
         fact.resolved_definition = Some(resolved.to_owned());
@@ -659,6 +717,19 @@ fn record_resolution(fact: &mut SemanticFact, resolved: &str) {
     {
         fact.resolved_definitions.push(resolved.to_owned());
     }
+}
+
+fn record_call_resolution(
+    fact: &mut SemanticFact,
+    resolved: &str,
+    instance_identity: Option<&str>,
+) {
+    record_resolution(fact, resolved);
+    let target = ResolvedCallTarget {
+        definition: resolved.to_owned(),
+        instance_identity: instance_identity.map(str::to_owned),
+    };
+    fact.resolved_call_targets.push(target);
 }
 
 fn return_types_compatible(expected: &SourceType, found: &SourceType) -> bool {
@@ -686,14 +757,37 @@ enum Task<'a> {
     Exit(AstNode<'a>),
 }
 
+pub(crate) struct DefinitionHirContext<'a> {
+    module: &'a str,
+    fields: &'a HashMap<String, SourceType>,
+    field_values: &'a HashMap<String, String>,
+    erased_state_names: &'a HashSet<String>,
+    imports: &'a HashMap<String, String>,
+}
+
+impl<'a> DefinitionHirContext<'a> {
+    pub(crate) fn new(
+        module: &'a str,
+        fields: &'a HashMap<String, SourceType>,
+        field_values: &'a HashMap<String, String>,
+        erased_state_names: &'a HashSet<String>,
+        imports: &'a HashMap<String, String>,
+    ) -> Self {
+        Self {
+            module,
+            fields,
+            field_values,
+            erased_state_names,
+            imports,
+        }
+    }
+}
+
 pub(crate) fn lower_definition_hir(
-    module: &str,
     definition: &str,
     body: &[Stmt],
     signature: &TypeSignature,
-    fields: &HashMap<String, SourceType>,
-    field_values: &HashMap<String, String>,
-    erased_state_names: &HashSet<String>,
+    context: &DefinitionHirContext<'_>,
 ) -> TypedSourceHir {
     let parameters: HashMap<_, _> = signature
         .parameters()
@@ -701,6 +795,7 @@ pub(crate) fn lower_definition_hir(
         .map(|parameter| (parameter.name().to_owned(), parameter.source_type().clone()))
         .collect();
     let mut locals = HashMap::<String, LocalBinding>::new();
+    let local_names = function_local_names(body, context.erased_state_names);
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     let mut facts = Vec::new();
@@ -711,7 +806,7 @@ pub(crate) fn lower_definition_hir(
     let mut tasks = Vec::new();
     for statement in body
         .iter()
-        .filter(|statement| !is_erased_state_assignment(statement, erased_state_names))
+        .filter(|statement| !is_erased_state_assignment(statement, context.erased_state_names))
         .rev()
     {
         tasks.push(Task::Enter(AstNode::Statement(statement)));
@@ -721,16 +816,17 @@ pub(crate) fn lower_definition_hir(
         match task {
             Task::Enter(ast_node) => {
                 tasks.push(Task::Exit(ast_node));
-                let children = ast_children(ast_node, erased_state_names);
+                let children = ast_children(ast_node, context.erased_state_names);
                 for child in children.into_iter().rev() {
                     tasks.push(Task::Enter(child));
                 }
             }
             Task::Exit(AstNode::Expression(expression)) => {
-                let child_ids = ast_children(AstNode::Expression(expression), erased_state_names)
-                    .into_iter()
-                    .filter_map(|child| ast_id(child, &expression_ids, &statement_ids))
-                    .collect::<Vec<_>>();
+                let child_ids =
+                    ast_children(AstNode::Expression(expression), context.erased_state_names)
+                        .into_iter()
+                        .filter_map(|child| ast_id(child, &expression_ids, &statement_ids))
+                        .collect::<Vec<_>>();
                 let edge_start = edges.len() as u32;
                 edges.extend_from_slice(&child_ids);
                 let fact = expression_fact(
@@ -739,8 +835,8 @@ pub(crate) fn lower_definition_hir(
                     &facts,
                     &parameters,
                     &locals,
-                    fields,
-                    field_values,
+                    &local_names,
+                    context,
                 );
                 let id = nodes.len() as u32;
                 nodes.push(SourceHirNode {
@@ -750,28 +846,33 @@ pub(crate) fn lower_definition_hir(
                     literal: expression_literal(expression),
                     value_operation: expression_value_operation(expression),
                     comparison_operations: expression_comparison_operations(expression),
-                    call_positional_count: call_shape(expression, erased_state_names).0,
-                    call_keyword_names: call_shape(expression, erased_state_names).1,
+                    call_positional_count: call_shape(expression, context.erased_state_names).0,
+                    call_keyword_names: call_shape(expression, context.erased_state_names).1,
                     control_body_count: 0,
                     control_else_count: 0,
                     edge_start,
                     edge_count: child_ids.len() as u32,
-                    anchor: anchor(module, expression.location.row, expression.location.column),
+                    anchor: anchor(
+                        context.module,
+                        expression.location.row,
+                        expression.location.column,
+                    ),
                 });
                 facts.push(fact);
                 expression_ids.insert(expression_key(expression), id);
             }
             Task::Exit(AstNode::Statement(statement)) => {
-                let child_ids = ast_children(AstNode::Statement(statement), erased_state_names)
-                    .into_iter()
-                    .filter_map(|child| ast_id(child, &expression_ids, &statement_ids))
-                    .collect::<Vec<_>>();
+                let child_ids =
+                    ast_children(AstNode::Statement(statement), context.erased_state_names)
+                        .into_iter()
+                        .filter_map(|child| ast_id(child, &expression_ids, &statement_ids))
+                        .collect::<Vec<_>>();
                 let edge_start = edges.len() as u32;
                 edges.extend_from_slice(&child_ids);
                 let fact = statement_fact(statement, &child_ids, &facts, &mut locals);
                 let id = nodes.len() as u32;
                 let (control_body_count, control_else_count) =
-                    control_shape(statement, erased_state_names);
+                    control_shape(statement, context.erased_state_names);
                 nodes.push(SourceHirNode {
                     kind: statement_kind(statement),
                     symbol: None,
@@ -785,7 +886,11 @@ pub(crate) fn lower_definition_hir(
                     control_else_count,
                     edge_start,
                     edge_count: child_ids.len() as u32,
-                    anchor: anchor(module, statement.location.row, statement.location.column),
+                    anchor: anchor(
+                        context.module,
+                        statement.location.row,
+                        statement.location.column,
+                    ),
                 });
                 facts.push(fact);
                 statement_ids.insert(statement_key(statement), id);
@@ -803,6 +908,58 @@ pub(crate) fn lower_definition_hir(
         edges,
         roots,
         facts,
+    }
+}
+
+fn function_local_names(body: &[Stmt], erased_state_names: &HashSet<String>) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let mut pending = body.iter().map(AstNode::Statement).collect::<Vec<_>>();
+    while let Some(node) = pending.pop() {
+        match node {
+            AstNode::Statement(statement) => match &statement.node {
+                StmtKind::Assign { targets, .. } => {
+                    for target in targets {
+                        collect_target_names(target, &mut names);
+                    }
+                }
+                StmtKind::AnnAssign { target, .. }
+                | StmtKind::AugAssign { target, .. }
+                | StmtKind::For { target, .. } => collect_target_names(target, &mut names),
+                StmtKind::FunctionDef { name, .. } | StmtKind::ClassDef { name, .. } => {
+                    names.insert(name.to_string());
+                }
+                _ => {}
+            },
+            AstNode::Expression(expression) => match &expression.node {
+                ExprKind::NamedExpr { target, .. } => collect_target_names(target, &mut names),
+                ExprKind::ListComp { generators, .. }
+                | ExprKind::SetComp { generators, .. }
+                | ExprKind::GeneratorExp { generators, .. }
+                | ExprKind::DictComp { generators, .. } => {
+                    for generator in generators {
+                        collect_target_names(&generator.target, &mut names);
+                    }
+                }
+                _ => {}
+            },
+        }
+        pending.extend(ast_children(node, erased_state_names));
+    }
+    names
+}
+
+fn collect_target_names(target: &Expr, names: &mut HashSet<String>) {
+    match &target.node {
+        ExprKind::Name { id, .. } => {
+            names.insert(id.to_string());
+        }
+        ExprKind::Tuple { elts, .. } | ExprKind::List { elts, .. } => {
+            for element in elts {
+                collect_target_names(element, names);
+            }
+        }
+        ExprKind::Starred { value, .. } => collect_target_names(value, names),
+        _ => {}
     }
 }
 
@@ -1093,8 +1250,8 @@ fn expression_fact(
     facts: &[SemanticFact],
     parameters: &HashMap<String, SourceType>,
     locals: &HashMap<String, LocalBinding>,
-    fields: &HashMap<String, SourceType>,
-    field_values: &HashMap<String, String>,
+    local_names: &HashSet<String>,
+    context: &DefinitionHirContext<'_>,
 ) -> SemanticFact {
     let child_fact = |index: usize| children.get(index).and_then(|id| facts.get(*id as usize));
     let joined_availability = || {
@@ -1106,6 +1263,8 @@ fn expression_fact(
             .unwrap_or(ValueAvailability::Compile)
     };
     let mut resolved_node = None;
+    let mut resolved_definition = None;
+    let mut module_binding_shadowed = false;
     let phase_frame = expression_path(expression).and_then(|path| {
         path.strip_suffix(".phase")
             .filter(|frame| frame.ends_with("_tracker"))
@@ -1113,11 +1272,16 @@ fn expression_fact(
     });
     let compile_value = expression_path(expression).and_then(|path| {
         path.strip_prefix("self.")
-            .and_then(|field| field_values.get(field).cloned())
+            .and_then(|field| context.field_values.get(field).cloned())
     });
     let (source_type, availability) = match &expression.node {
         ExprKind::Name { id, .. } => {
             let name = id.to_string();
+            module_binding_shadowed = local_names.contains(&name) || parameters.contains_key(&name);
+            let imported = (!module_binding_shadowed)
+                .then(|| resolve_call_path(context.module, context.imports, &name))
+                .filter(|resolved| intrinsics::is_duration_unit(resolved));
+            resolved_definition.clone_from(&imported);
             resolved_node = locals.get(&name).map(|binding| binding.value_node);
             let availability = locals
                 .get(&name)
@@ -1126,10 +1290,7 @@ fn expression_fact(
                 .get(&name)
                 .and_then(|binding| binding.source_type.clone())
                 .or_else(|| parameters.get(&name).cloned())
-                .or(match name.as_str() {
-                    "us" | "ms" | "s" | "ns" => Some(SourceType::Duration),
-                    _ => None,
-                });
+                .or_else(|| imported.map(|_| SourceType::Duration));
             (source_type, availability)
         }
         ExprKind::Constant { value, .. } => (
@@ -1145,17 +1306,43 @@ fn expression_fact(
             ValueAvailability::Compile,
         ),
         ExprKind::Attribute { .. } => {
-            let source_type = expression_path(expression).and_then(|path| {
-                if path == "np.pi" {
-                    return Some(SourceType::Float64);
-                }
-                if path.ends_with("._tracker.phase") {
-                    return Some(SourceType::Float64);
-                }
-                path.strip_prefix("self.")
-                    .and_then(|field| fields.get(field).cloned())
-            });
-            (source_type, ValueAvailability::Compile)
+            let path = expression_path(expression);
+            let root_is_shadowed = path
+                .as_deref()
+                .and_then(|path| path.split('.').next())
+                .is_some_and(|root| local_names.contains(root) || parameters.contains_key(root));
+            module_binding_shadowed = root_is_shadowed;
+            let imported = (!root_is_shadowed)
+                .then(|| {
+                    path.as_deref()
+                        .map(|path| resolve_call_path(context.module, context.imports, path))
+                        .filter(|resolved| intrinsics::is_duration_unit(resolved))
+                })
+                .flatten();
+            resolved_definition.clone_from(&imported);
+            let source_type = if imported.is_some() {
+                Some(SourceType::Duration)
+            } else {
+                path.as_deref().and_then(|path| {
+                    if path == "np.pi" {
+                        return Some(SourceType::Float64);
+                    }
+                    if path.ends_with("._tracker.phase") {
+                        return Some(SourceType::Float64);
+                    }
+                    path.strip_prefix("self.")
+                        .and_then(|field| context.fields.get(field).cloned())
+                })
+            };
+            let availability = path
+                .as_deref()
+                .and_then(|path| path.strip_prefix("self."))
+                .filter(|field| {
+                    context.fields.contains_key(*field)
+                        && !context.field_values.contains_key(*field)
+                })
+                .map_or(ValueAvailability::Compile, |_| ValueAvailability::Link);
+            (source_type, availability)
         }
         ExprKind::Subscript { .. } => {
             let base_type = child_fact(0).and_then(SemanticFact::source_type);
@@ -1224,8 +1411,10 @@ fn expression_fact(
         availability,
         roles: Vec::new(),
         resolved_node,
-        resolved_definition: None,
+        resolved_definition,
         resolved_definitions: Vec::new(),
+        resolved_call_targets: Vec::new(),
+        module_binding_shadowed,
         phase_frame,
         compile_value,
     }
@@ -1246,11 +1435,47 @@ fn binary_type(
                 Some(SourceType::Morphism)
             }
         }
-        Operator::Mult | Operator::Div
-            if left == Some(&SourceType::Duration) || right == Some(&SourceType::Duration) =>
+        Operator::Add => scalar_binary_type(ValueOperation::Add, left, right),
+        Operator::Sub => scalar_binary_type(ValueOperation::Subtract, left, right),
+        Operator::Mult => scalar_binary_type(ValueOperation::Multiply, left, right),
+        Operator::Div => scalar_binary_type(ValueOperation::Divide, left, right),
+        Operator::FloorDiv => scalar_binary_type(ValueOperation::FloorDivide, left, right),
+        Operator::Mod => scalar_binary_type(ValueOperation::Modulo, left, right),
+        Operator::Pow => scalar_binary_type(ValueOperation::Power, left, right),
+        Operator::LShift => scalar_binary_type(ValueOperation::LeftShift, left, right),
+        _ => None,
+    }
+}
+
+fn scalar_binary_type(
+    operation: ValueOperation,
+    left: Option<&SourceType>,
+    right: Option<&SourceType>,
+) -> Option<SourceType> {
+    match operation {
+        ValueOperation::Add | ValueOperation::Subtract
+            if left == Some(&SourceType::Duration) && right == Some(&SourceType::Duration) =>
         {
             Some(SourceType::Duration)
         }
+        ValueOperation::Multiply
+            if (left == Some(&SourceType::Duration) && right.is_some_and(is_numeric_scalar))
+                || (right == Some(&SourceType::Duration)
+                    && left.is_some_and(is_numeric_scalar)) =>
+        {
+            Some(SourceType::Duration)
+        }
+        ValueOperation::Divide
+            if left == Some(&SourceType::Duration) && right.is_some_and(is_numeric_scalar) =>
+        {
+            Some(SourceType::Duration)
+        }
+        ValueOperation::Divide
+            if left == Some(&SourceType::Duration) && right == Some(&SourceType::Duration) =>
+        {
+            Some(SourceType::Float64)
+        }
+        _ if left == Some(&SourceType::Duration) || right == Some(&SourceType::Duration) => None,
         _ if left == Some(&SourceType::Float64) || right == Some(&SourceType::Float64) => {
             Some(SourceType::Float64)
         }
@@ -1259,6 +1484,10 @@ fn binary_type(
         }
         _ => None,
     }
+}
+
+fn is_numeric_scalar(source_type: &SourceType) -> bool {
+    matches!(source_type, SourceType::Int64 | SourceType::Float64)
 }
 
 fn statement_fact(
@@ -1309,6 +1538,8 @@ fn statement_fact(
         resolved_node: None,
         resolved_definition: None,
         resolved_definitions: Vec::new(),
+        resolved_call_targets: Vec::new(),
+        module_binding_shadowed: false,
         phase_frame: None,
         compile_value: None,
     }

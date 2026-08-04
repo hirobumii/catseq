@@ -21,5 +21,5 @@ ordinary service signatures while preserving checked lowering.
 
 Python arbitrary-precision integer behavior is not part of the restricted
 language. Integer literals and constant arithmetic that do not fit `Int64` are
-compile errors. `Duration` remains separately represented as a non-negative
-integer cycle quantity and is not narrowed through `Int64`.
+compile errors. As revised by ADR-0050, `Duration` remains separately
+represented as a signed Cycle Delta and is not narrowed through `Int64`.

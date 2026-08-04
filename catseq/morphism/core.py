@@ -10,9 +10,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Literal, Never, ParamSpec, TypeVar, overload
+from typing import TYPE_CHECKING, Literal, Never, ParamSpec, TypeVar, overload
 
 from ..types.common import Channel
+
+if TYPE_CHECKING:
+    from ..time_utils import Duration
+else:
+    Duration = float
 
 
 class CompilerOnlyError(RuntimeError):
@@ -145,7 +150,7 @@ def arena_build(builder: Callable[_P, _R]) -> Callable[_P, _R]:
     return builder
 
 
-def identity(duration: float | int) -> Morphism:
+def identity(duration: Duration) -> Morphism:
     """Declare a logical wait; Rust validates and lowers its duration."""
 
     del duration

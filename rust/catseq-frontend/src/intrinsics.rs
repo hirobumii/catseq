@@ -196,6 +196,9 @@ pub(crate) fn return_type(path: &str, first_argument: Option<&SourceType>) -> Op
         return Some(SourceType::NativeRecord("CalibrationSnapshot".to_owned()));
     }
     let leaf = path.rsplit('.').next().unwrap_or(path);
+    if leaf == "cycles" && path != "cycles" && path != "catseq.time_utils.cycles" {
+        return None;
+    }
     let intrinsic = INTRINSICS.iter().find(|intrinsic| intrinsic.leaf == leaf);
     if intrinsic.is_none() && path.starts_with("catseq.hardware.") {
         return Some(SourceType::MorphismTemplate);
@@ -233,12 +236,32 @@ pub(crate) fn parameter_types(path: &str) -> Vec<(usize, &'static str, SourceTyp
     }
 }
 
+pub(crate) fn is_duration_unit(path: &str) -> bool {
+    matches!(
+        path,
+        "catseq.time_utils.s"
+            | "catseq.time_utils.ms"
+            | "catseq.time_utils.us"
+            | "catseq.time_utils.ns"
+    )
+}
+
+pub(crate) fn is_identity(path: &str) -> bool {
+    matches!(
+        path,
+        "catseq.morphism.identity" | "catseq.morphism.core.identity"
+    )
+}
+
 pub(crate) fn is_registered(path: &str) -> bool {
     return_type(path, None).is_some()
 }
 
 pub(crate) fn is_compiler_special_form(resolved: &str) -> bool {
-    resolved == "rb1system.utils.dict_to_morphism"
+    matches!(
+        resolved,
+        "rb1system.utils.dict_to_morphism" | "catseq.time_utils.cycles"
+    )
 }
 
 /// Return the precompiled template body associated with a composite hardware

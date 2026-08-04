@@ -10,7 +10,7 @@ from ..time_utils import Duration
 
 
 def hold(duration: Duration) -> MorphismDef:
-    """Wait for ``duration`` seconds without changing channel state."""
+    """Move channel-local logical time without changing channel state."""
     compiler_only("catseq.hardware.common.hold")
 
 

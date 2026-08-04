@@ -43,6 +43,14 @@ pub enum BoundaryPolicy {
     Strict,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitSemantics {
+    LogicalDisplacement,
+    #[default]
+    PhysicalInterval,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MorphismNodeKind {
@@ -61,6 +69,8 @@ pub enum MorphismNodeKind {
 pub enum MorphismPayload {
     Wait {
         duration: ValueExprId,
+        #[serde(default)]
+        semantics: WaitSemantics,
     },
     Atomic {
         operation: OperationId,
@@ -314,12 +324,12 @@ impl MorphismArena {
                 }
                 _ => {}
             }
-            if let Some(payload) = node.payload {
-                if payload.index() >= self.payloads.len() {
-                    return Err(MorphismArenaError::new(format!(
-                        "node {index} references an unknown payload"
-                    )));
-                }
+            if let Some(payload) = node.payload
+                && payload.index() >= self.payloads.len()
+            {
+                return Err(MorphismArenaError::new(format!(
+                    "node {index} references an unknown payload"
+                )));
             }
             let payload = node.payload.map(|payload| &self.payloads[payload.index()]);
             let payload_matches_kind = matches!(
@@ -463,8 +473,32 @@ impl MorphismArenaBuilder {
         self.push_leaf(MorphismNodeKind::Atomic, Some(payload), provenance)
     }
 
-    pub fn wait(&mut self, duration: ValueExprId, provenance: ProvenanceId) -> MorphismNodeId {
-        let payload = self.push_payload(MorphismPayload::Wait { duration });
+    pub fn logical_shift(
+        &mut self,
+        duration: ValueExprId,
+        provenance: ProvenanceId,
+    ) -> MorphismNodeId {
+        self.time_displacement(duration, WaitSemantics::LogicalDisplacement, provenance)
+    }
+
+    pub fn physical_wait(
+        &mut self,
+        duration: ValueExprId,
+        provenance: ProvenanceId,
+    ) -> MorphismNodeId {
+        self.time_displacement(duration, WaitSemantics::PhysicalInterval, provenance)
+    }
+
+    fn time_displacement(
+        &mut self,
+        duration: ValueExprId,
+        semantics: WaitSemantics,
+        provenance: ProvenanceId,
+    ) -> MorphismNodeId {
+        let payload = self.push_payload(MorphismPayload::Wait {
+            duration,
+            semantics,
+        });
         self.push_leaf(MorphismNodeKind::Wait, Some(payload), provenance)
     }
 

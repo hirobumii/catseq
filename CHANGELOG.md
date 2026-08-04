@@ -19,10 +19,16 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- Made TTL/RWG timing parameters require an explicit SI unit (`s`, `ms`, `us`,
-  or `ns`) or `cycles(...)`, including values passed through locals, globals,
-  user functions, and scan bindings. Conversion uses the selected target clock
-  and rejects non-integral Cycle Counts instead of rounding.
+- Made logical and TTL/RWG timing parameters require an explicit SI unit (`s`,
+  `ms`, `us`, or `ns`) or `cycles(...)` (apart from neutral `identity(0)`),
+  including values passed through locals, globals, user functions, environment
+  fields, and scan bindings. Conversion uses the selected target clock
+  and rejects non-integral Cycle Deltas instead of rounding. Negative values
+  rewind the logical cursor; Epoch underflow is rejected, pulse/ramp widths
+  remain non-negative, and rewinding loop bodies are expanded within an
+  explicit compiler resource budget before scheduling.
+- Scoped Environment Slot keys by stable entry-class or module-singleton
+  identity, preventing fields on two instances of one class from colliding.
 - Made host time conversion helpers require an explicit `clock_hz`; removed the
   implicit 250 MHz aliases `CLOCK_FREQ_HZ`, `CYCLE_DURATION_S`,
   `CYCLES_PER_US`, and `mu`.

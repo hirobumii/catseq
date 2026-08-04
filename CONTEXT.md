@@ -104,6 +104,13 @@ The target-independent work product owning canonical Morphism and Value
 Expression arenas, completed Morphism Effects, native schemas, and provenance.
 _Avoid_: Relocatable RTMQ artifact, Source HIR
 
+**Target-Resolved Native Arenas**:
+The Python-free Morphism and Value Expression arena projection emitted by
+`catseqc emit-arena` after SI units have been converted with one Target
+Profile's clock. It is an intermediate compiler diagnostic, not the
+target-independent Canonical Program.
+_Avoid_: Canonical Program, OASM Call Plan
+
 **Relative RTMQ Fragment**:
 A target-lowered board/Epoch work unit whose event offsets and operands remain
 relative Value Expressions until link. Fragments retain DAG composition and
@@ -314,13 +321,15 @@ _Avoid_: Python expression arena, source payload store
 
 **Runtime Bindings**:
 The link-time mapping from Runtime Slots to the concrete values for one scan
-point. Time-valued slots use integer Cycle Counts before RTMQ linking. Changing
+point. Time-valued slots use integer Cycle Deltas before RTMQ linking. Changing
 Runtime Bindings does not change source specialization.
 _Avoid_: Compile Environment, specialization parameters
 
 **Environment Slot**:
 A stable Value Expression input for a topology-independent scalar supplied by
 the Compile Environment but deliberately left relocatable until RTMQ linking.
+Its key is `<module>.<entry-class-or-singleton>.<field>`, so two Compile
+Instances of the same class cannot alias one another's binding.
 _Avoid_: Runtime Slot, structural specialization argument
 
 **Link Bindings**:
@@ -447,14 +456,20 @@ Phi before static scheduling can resume.
 _Avoid_: Cost estimate, timeout
 
 **Cycle Count**:
-The non-negative integer number of RTMQ clock cycles used as the canonical
+The non-negative integer number of RTMQ clock cycles used for an encoded
+hardware interval or Logical Timestamp offset.
+_Avoid_: Floating-point seconds, signed time displacement, absolute timestamp
+
+**Cycle Delta**:
+A signed integer number of RTMQ clock cycles used as the canonical
 representation of a Duration.
-_Avoid_: Floating-point seconds, absolute timestamp
+_Avoid_: Cycle Count, absolute timestamp
 
 **Duration**:
-A non-negative time interval whose concrete representation is a Cycle Count and
-whose symbolic representation evaluates to a Cycle Count.
-_Avoid_: Float, Timestamp
+A signed logical time displacement whose concrete representation is a Cycle
+Delta. A negative Duration moves the Logical Timestamp backward within its
+Epoch; it is not a negative hardware wait.
+_Avoid_: Float, Timestamp, Cycle Count
 
 **Logical Timestamp**:
 A time point identified by an Epoch and a non-negative cycle offset from that

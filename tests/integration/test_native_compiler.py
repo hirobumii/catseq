@@ -6,10 +6,11 @@ from pathlib import Path
 from catseq.compilation.native import compile_entry
 from catseq.morphism import Morphism, identity
 from catseq.targets import rtmq_v2_profile
+from catseq.time_utils import cycles
 
 
 def _compile_entry_sequence() -> Morphism:
-    return identity(1)
+    return identity(cycles(1))
 
 
 def test_pyo3_compiler_api_compiles_a_versioned_request(tmp_path) -> None:
@@ -17,9 +18,10 @@ def test_pyo3_compiler_api_compiles_a_versioned_request(tmp_path) -> None:
 
     source_path = tmp_path / "sequence.py"
     source_path.write_text(
-        "from catseq.morphism import Morphism, identity\n\n"
+        "from catseq.morphism import Morphism, identity\n"
+        "from catseq.time_utils import cycles\n\n"
         "def sequence() -> Morphism:\n"
-        "    return identity(1)\n"
+        "    return identity(cycles(1))\n"
     )
     request = {
         "schema_version": 1,

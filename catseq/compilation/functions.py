@@ -4,6 +4,8 @@ OASM DSL function definitions.
 This module contains the actual OASM DSL functions that will be called
 when executing compiled sequences on the hardware.
 """
+from typing import cast
+
 # Import actual OASM functions
 from oasm.rtmq2 import sfs, amk, wait, send_trig_code, wait_rtlk_trig, asm, nop, P, for_, end, R as RTMQ_R
 from oasm.dev.rwg import fte, rwg, sbg
@@ -205,7 +207,7 @@ def rsp_rf_config(config: RSPWaveformParams):
     R.mua_gan = mua_gan(1.0)
     R.mua_ofs = mua_ofs(0.0)
     R.mua_cpl = mua_cpl(-1.0)
-    R.mua_cph = mua_cph(-1.0+2*config.output_max)
+    R.mua_cph = mua_cph(-1.0 + 2 * cast(float, config.output_max))
     
     R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", "reg")
 
@@ -235,7 +237,7 @@ def rsp_pid_config(config: RSPPIDConfig):
     R.mua_gan = mua_gan(1.0)
     R.mua_ofs = mua_ofs(0.0)
     R.mua_cpl = mua_cpl(-1.0)
-    R.mua_cph = mua_cph(-1.0+2*config.output_max)
+    R.mua_cph = mua_cph(-1.0 + 2 * cast(float, config.output_max))
     
     R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", f"dgt{config.dgt_source}")
     
@@ -262,7 +264,7 @@ def rsp_pid_release(config: RSPPIDConfig):
     R.mua_gan = mua_gan(1.0)
     R.mua_ofs = mua_ofs(0.0)
     R.mua_cpl = mua_cpl(-1.0)
-    R.mua_cph = mua_cph(-1.0+2*config.output_max)
+    R.mua_cph = mua_cph(-1.0 + 2 * cast(float, config.output_max))
     
     R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", "reg")
 
@@ -277,6 +279,6 @@ def rsp_pid_relink(config: RSPPIDConfig):
     R.mua_gan = mua_gan(1.0)
     R.mua_ofs = mua_ofs(0.0)
     R.mua_cpl = mua_cpl(-1.0)
-    R.mua_cph = mua_cph(-1.0+2*config.output_max)
+    R.mua_cph = mua_cph(-1.0 + 2 * cast(float, config.output_max))
     
     R.rfg_inp[config.rf_out] = mod_inp(f"mua{config.rf_out}", f"dgt{config.dgt_source}")

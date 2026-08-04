@@ -77,9 +77,13 @@ executed during compilation.
 
 Hardware time arguments are explicit: use `500 * ms` (or another SI unit) for
 a physical duration, and `cycles(count)` for an intentional target Cycle
-Count. Bare numeric values in `pulse`, `hold`, `rf_pulse`, and `linear_ramp`
-are compile errors. Conversion uses the selected target clock and never rounds
-an inexact Cycle Count.
+Delta. Bare numeric values in `identity`, `pulse`, `hold`, `rf_pulse`, and
+`linear_ramp` are compile errors, except for the neutral `identity(0)` spelling.
+Conversion uses the selected target clock and never rounds
+an inexact Cycle Delta. A negative `Duration` passed to `identity` or `hold`
+rewinds the logical cursor within the current Epoch; pulse and ramp widths stay
+non-negative. The compiler rejects Epoch underflow and expands a rewinding
+loop body before scheduling instead of encoding an invalid hardware loop.
 
 The fully qualified channel key includes the source module name. Keep the
 documented filename `quickstart_ttl.py`, or update
@@ -87,7 +91,11 @@ documented filename `quickstart_ttl.py`, or update
 
 `Compiler.from_system()` captures the source root and typed channel map once.
 A system may additionally provide `opaque_calls`, scalar `environment_values`,
-a target profile, and an incremental `cache_dir`.
+a target profile, and an incremental `cache_dir`. Environment keys use their
+stable compile-instance identity (for example,
+`quickstart_ttl.Experiment.rewind` for an entry class or
+`quickstart_ttl.service.rewind` for a module singleton); a `Duration` value is
+a signed target Cycle Delta.
 
 ## Run on RTMQ hardware
 
@@ -180,6 +188,8 @@ catseqc compile
 
 The command-line interface is primarily for diagnostics, CI, compiler
 development, and explicit external-compiler compatibility checks.
+`emit-arena` and `compile` require `--target-profile` because SI-unit lowering
+cannot be performed without the selected target clock.
 
 ## Development checks
 

@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use nac3ast::{Expr, ExprKind, Stmt, StmtKind};
 
-use crate::source_hir::lower_definition_hir;
+use crate::source_hir::{DefinitionHirContext, lower_definition_hir};
 
 use super::ast_util::{
     callable_path, expression_path, push_expression_analysis_children,
@@ -12,6 +12,7 @@ use super::ast_util::{
 };
 use super::compile_values::{ClassFields, class_fields};
 use super::model::{TypedCheckError, TypedDefinition};
+use super::resolution::module_imports;
 use super::signatures::signature;
 use super::validation::validate_restricted_statements;
 
@@ -95,6 +96,8 @@ pub(super) struct DefinitionAnalysis {
 pub(super) struct ReachableCall {
     pub(super) source_path: String,
     pub(super) target_path: String,
+    pub(super) line: usize,
+    pub(super) column: usize,
 }
 
 pub(super) fn find_definition(
@@ -104,12 +107,38 @@ pub(super) fn find_definition(
     requested: &str,
     class_context: Option<&ClassFields>,
 ) -> Result<Option<DefinitionAnalysis>, TypedCheckError> {
+    let imports = module_imports(file_name, statements);
+    find_definition_with_imports(
+        file_name,
+        statements,
+        scope,
+        requested,
+        class_context,
+        &imports,
+    )
+}
+
+fn find_definition_with_imports(
+    file_name: &str,
+    statements: &[Stmt],
+    scope: &mut Vec<String>,
+    requested: &str,
+    class_context: Option<&ClassFields>,
+    imports: &HashMap<String, String>,
+) -> Result<Option<DefinitionAnalysis>, TypedCheckError> {
     for statement in statements {
         match &statement.node {
             StmtKind::ClassDef { name, body, .. } => {
                 scope.push(name.to_string());
-                let fields = class_fields(body);
-                let found = find_definition(file_name, body, scope, requested, Some(&fields))?;
+                let fields = class_fields(body, file_name, imports);
+                let found = find_definition_with_imports(
+                    file_name,
+                    body,
+                    scope,
+                    requested,
+                    Some(&fields),
+                    imports,
+                )?;
                 scope.pop();
                 if found.is_some() {
                     return Ok(found);
@@ -136,17 +165,19 @@ pub(super) fn find_definition(
                     args,
                     body,
                     returns.as_deref(),
+                    imports,
                 )?;
                 let erased_state_names = legacy_state_bindings(body);
-                let hir = lower_definition_hir(
+                let empty_field_types = HashMap::new();
+                let empty_field_values = HashMap::new();
+                let hir_context = DefinitionHirContext::new(
                     file_name,
-                    &qualified_name,
-                    body,
-                    &signature,
-                    class_context.map_or(&HashMap::new(), |fields| &fields.types),
-                    class_context.map_or(&HashMap::new(), |fields| &fields.values),
+                    class_context.map_or(&empty_field_types, |fields| &fields.types),
+                    class_context.map_or(&empty_field_values, |fields| &fields.values),
                     &erased_state_names,
+                    imports,
                 );
+                let hir = lower_definition_hir(&qualified_name, body, &signature, &hir_context);
                 if returns.is_none() {
                     if let Some(inferred) = hir.inferred_return_type() {
                         signature.return_type = inferred;
@@ -396,11 +427,15 @@ fn visit_expression_calls(
                         } else {
                             format!("{target}.{remainder}")
                         },
+                        line: expression.location.row,
+                        column: expression.location.column,
                     }));
                 } else {
                     calls.push(ReachableCall {
                         source_path: path.clone(),
                         target_path: path,
+                        line: expression.location.row,
+                        column: expression.location.column,
                     });
                 }
             }

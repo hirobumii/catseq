@@ -21,9 +21,19 @@ def test_time_conversion_accepts_decimal_inputs_without_rounding() -> None:
         == 100
     )
 
-    with pytest.raises(ValueError, match="non-integral target Cycle Count"):
+    with pytest.raises(ValueError, match="non-integral target Cycle Delta"):
         time_utils.time_to_cycles(
             Decimal("0.000000015"), clock_hz=100_000_000
+        )
+
+
+def test_time_conversion_preserves_signed_logical_displacements() -> None:
+    assert time_utils.time_to_cycles(-20e-9, clock_hz=100_000_000) == -2
+    assert time_utils.cycles_to_time(-2, clock_hz=100_000_000) == -20e-9
+
+    with pytest.raises(ValueError, match="non-integral target Cycle Delta"):
+        time_utils.time_to_cycles(
+            Decimal("-0.000000015"), clock_hz=100_000_000
         )
 
 

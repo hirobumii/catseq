@@ -8,7 +8,8 @@ use crate::source_hir::SourceHirKind;
 
 use super::ast_util::{expression_path, parse_module};
 use super::compile_values::{
-    class_annotation_type, class_fields, inferred_compile_value_type, normalized_compile_expression,
+    class_annotation_type, class_fields, inferred_compile_value_type,
+    normalized_compile_expression, normalized_compile_expression_in,
 };
 use super::model::{SourceType, TypedCheckError, TypedDefinition};
 use super::resolution::{locate_source_definition, module_imports, resolve_call_path};
@@ -72,7 +73,7 @@ pub(super) fn resolve_bundle_compile_attributes(
                 if let ExprKind::Name { id, .. } = &target.node
                     && let (Some(source_type), Some(normalized)) = (
                         class_annotation_type(annotation),
-                        normalized_compile_expression(value),
+                        normalized_compile_expression_in(value, module, &imports),
                     )
                 {
                     global_attributes.insert(format!("{module}.{id}"), (source_type, normalized));
@@ -89,8 +90,8 @@ pub(super) fn resolve_bundle_compile_attributes(
                 continue;
             };
             if let (Some(source_type), Some(normalized)) = (
-                inferred_compile_value_type(value),
-                normalized_compile_expression(value),
+                inferred_compile_value_type(value, module, &imports),
+                normalized_compile_expression_in(value, module, &imports),
             ) {
                 global_attributes.insert(format!("{module}.{id}"), (source_type, normalized));
             }
@@ -130,7 +131,7 @@ pub(super) fn resolve_bundle_compile_attributes(
             let StmtKind::ClassDef { name, body, .. } = &statement.node else {
                 continue;
             };
-            let fields = class_fields(body);
+            let fields = class_fields(body, module, &imports);
             let mut normalized_fields = fields.values.clone();
             for _ in 0..=normalized_fields.len() {
                 let previous = normalized_fields.clone();

@@ -35,7 +35,7 @@ def set_low() -> MorphismDef:
 
 @morphism_template
 def hold(duration: Duration) -> MorphismDef:
-    """Wait for ``duration`` seconds without changing TTL state."""
+    """Move channel-local logical time without changing TTL state."""
     compiler_only("catseq.hardware.ttl.hold")
 
 

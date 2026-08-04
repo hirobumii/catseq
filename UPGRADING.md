@@ -20,7 +20,9 @@ target_relative = exposure(cycles(125_000_000))
 ```
 
 This rule is checked after values flow through local variables, module globals,
-user functions, and scan bindings. Annotating `duration: float` no longer makes
+user functions, annotated Environment Slots, and scan bindings. It also applies
+to `identity`, apart from the neutral `identity(0)` spelling. Annotating
+`duration: float` no longer makes
 it compatible with `pulse`, `hold`, `rf_pulse`, or `linear_ramp`; annotate it as
 `Duration`. A module constant such as `DELAY: Duration = 0.5` is still invalid
 because the annotation does not supply a unit.
@@ -35,6 +37,14 @@ from catseq.time_utils import time_to_cycles
 
 cycle_count = time_to_cycles(0.5, clock_hz=compiled.clock_hz)
 ```
+
+`Duration` is a signed logical displacement in 0.4.1. For example,
+`identity(-1 * us)` moves the following source operation one microsecond back
+within the current Epoch; it does not emit a negative hardware wait. The
+compiler rejects movement before the Epoch origin. Pulse and ramp widths remain
+non-negative; rewinding loop bodies are expanded before scheduling rather than
+encoded as native hardware loops. `CompiledSequence.logical_duration_cycles`
+remains the non-negative furthest logical timestamp reached by the sequence.
 
 Remove imports of `CLOCK_FREQ_HZ`, `CYCLE_DURATION_S`, `CYCLES_PER_US`, or
 `mu`; those implicit 250 MHz aliases are no longer public. The zero-duration

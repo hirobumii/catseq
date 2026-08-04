@@ -73,6 +73,12 @@ setup: Duration = cycles(25)
 仅写 `delay: Duration = 0.5` 不会凭空赋予单位。`identity(0)` 是零时长组合元，
 不是硬件 duration 的无单位写法。
 
+`Duration` 的规范表示是有符号 `Cycle Delta`。传给 `identity` 或 `hold` 的负值
+会让当前 Epoch 内的逻辑时间游标回移，而不是生成负的硬件 wait；内置 pulse 和
+ramp 的物理宽度仍须非负。回移越过 Epoch 起点会在编译期报错；包含回移的循环
+会在调度前展开，不会错误编码为原生 hardware loop。最终 OASM 时间戳和
+`logical_duration_cycles` 始终非负，后者取序列访问过的最远逻辑时间点。
+
 ## MorphismDef：可编译的 Morphism Template
 
 `MorphismDef` 是 `MorphismTemplate` 的兼容拼写。它不是 Python generator，

@@ -105,7 +105,7 @@ def rf_pulse(duration: Duration) -> MorphismDef:
 
 @morphism_template
 def hold(duration: Duration) -> MorphismDef:
-    """Wait for ``duration`` seconds without changing RWG state."""
+    """Move channel-local logical time without changing RWG state."""
     compiler_only("catseq.hardware.rwg.hold")
 
 

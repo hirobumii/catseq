@@ -207,7 +207,10 @@ pub(super) enum LinkValue {
 impl LinkValue {
     pub(super) fn into_numeric_for(self, value_type: ValueExprType) -> Option<ExactDecimal> {
         match (value_type, self) {
-            (ValueExprType::Duration, Self::Unsigned(value)) => Some(ExactDecimal::from_u64(value)),
+            (ValueExprType::Duration, Self::Unsigned(value)) => {
+                i64::try_from(value).ok().map(ExactDecimal::from_i64)
+            }
+            (ValueExprType::Duration, Self::Signed(value)) => Some(ExactDecimal::from_i64(value)),
             (ValueExprType::Int64, Self::Unsigned(value)) => {
                 i64::try_from(value).ok().map(ExactDecimal::from_i64)
             }
@@ -222,7 +225,7 @@ impl LinkValue {
     pub(super) const fn matches_type(&self, value_type: ValueExprType) -> bool {
         matches!(
             (value_type, self),
-            (ValueExprType::Duration, Self::Unsigned(_))
+            (ValueExprType::Duration, Self::Unsigned(_) | Self::Signed(_))
                 | (ValueExprType::Int64, Self::Unsigned(_) | Self::Signed(_))
                 | (
                     ValueExprType::Float64,

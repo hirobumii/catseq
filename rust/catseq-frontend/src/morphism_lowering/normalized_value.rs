@@ -6,12 +6,85 @@ use catseq_core::exact_decimal::ExactDecimal;
 
 use super::{LoweredValue, MorphismLoweringError, ScalarValue};
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum NumericDimension {
+    Scalar,
+    Duration,
+}
+
 pub(super) fn normalized_has_duration_unit(value: &str) -> bool {
-    value
-        .split(|character: char| {
-            !(character.is_ascii_alphanumeric() || character == '_' || character == ':')
-        })
-        .any(|token| matches!(token, "name:s" | "name:ms" | "name:us" | "name:ns"))
+    normalized_numeric_dimension(value) == Some(NumericDimension::Duration)
+}
+
+fn normalized_numeric_dimension(value: &str) -> Option<NumericDimension> {
+    if normalized_is_cycles_call(value) {
+        return parse_normalized_cycles(value).map(|_| NumericDimension::Duration);
+    }
+    if value.starts_with("constant:Int(")
+        || value.starts_with("constant:Float(")
+        || ExactDecimal::parse(value).is_some()
+    {
+        return Some(NumericDimension::Scalar);
+    }
+    if let Some(unit) = value.strip_prefix("name:") {
+        return matches!(
+            unit,
+            "s" | "ms"
+                | "us"
+                | "ns"
+                | "catseq.time_utils.s"
+                | "catseq.time_utils.ms"
+                | "catseq.time_utils.us"
+                | "catseq.time_utils.ns"
+        )
+        .then_some(NumericDimension::Duration);
+    }
+    for prefix in ["unary:USub(", "unary:UAdd("] {
+        if let Some(operand) = value
+            .strip_prefix(prefix)
+            .and_then(|value| value.strip_suffix(')'))
+        {
+            return normalized_numeric_dimension(operand);
+        }
+    }
+    for (prefix, operation) in [
+        ("bin:Add(", "add"),
+        ("bin:Sub(", "subtract"),
+        ("bin:Mult(", "multiply"),
+        ("bin:Div(", "divide"),
+    ] {
+        let Some(operands) = value
+            .strip_prefix(prefix)
+            .and_then(|value| value.strip_suffix(')'))
+        else {
+            continue;
+        };
+        let (left, right) = split_normalized_operands(operands)?;
+        let left = normalized_numeric_dimension(left)?;
+        let right = normalized_numeric_dimension(right)?;
+        return match (operation, left, right) {
+            ("add" | "subtract", NumericDimension::Scalar, NumericDimension::Scalar) => {
+                Some(NumericDimension::Scalar)
+            }
+            ("add" | "subtract", NumericDimension::Duration, NumericDimension::Duration) => {
+                Some(NumericDimension::Duration)
+            }
+            ("multiply", NumericDimension::Scalar, NumericDimension::Scalar) => {
+                Some(NumericDimension::Scalar)
+            }
+            ("multiply", NumericDimension::Duration, NumericDimension::Scalar)
+            | ("multiply", NumericDimension::Scalar, NumericDimension::Duration)
+            | ("divide", NumericDimension::Duration, NumericDimension::Scalar) => {
+                Some(NumericDimension::Duration)
+            }
+            ("divide", NumericDimension::Scalar, NumericDimension::Scalar)
+            | ("divide", NumericDimension::Duration, NumericDimension::Duration) => {
+                Some(NumericDimension::Scalar)
+            }
+            _ => None,
+        };
+    }
+    None
 }
 
 pub(super) fn normalized_is_cycles_call(value: &str) -> bool {
@@ -21,7 +94,7 @@ pub(super) fn normalized_is_cycles_call(value: &str) -> bool {
     let Some(open) = call.find('(') else {
         return false;
     };
-    call[..open].rsplit('.').next() == Some("cycles")
+    &call[..open] == "catseq.time_utils.cycles"
 }
 
 pub(super) fn parse_normalized_cycles(value: &str) -> Option<ExactDecimal> {
@@ -38,8 +111,11 @@ pub(super) fn parse_normalized_cycles(value: &str) -> Option<ExactDecimal> {
     {
         return None;
     }
-    let cycles = parse_normalized_numeric(positional)?.to_cycle_count()?;
-    Some(ExactDecimal::from_u64(cycles))
+    if positional.contains("Float(") {
+        return None;
+    }
+    let cycles = parse_normalized_numeric(positional)?.to_signed_cycle_delta()?;
+    Some(ExactDecimal::from_i64(cycles))
 }
 
 pub(super) fn lower_normalized_default(value: &str, clock_hz: u64) -> Option<LoweredValue> {
@@ -80,10 +156,10 @@ pub(super) fn parse_normalized_numeric(value: &str) -> Option<ExactDecimal> {
     }
     if let Some(unit) = value.strip_prefix("name:") {
         return match unit {
-            "s" => Some(ExactDecimal::from_u64(1)),
-            "ms" => ExactDecimal::parse("0.001"),
-            "us" => ExactDecimal::parse("0.000001"),
-            "ns" => ExactDecimal::parse("0.000000001"),
+            "s" | "catseq.time_utils.s" => Some(ExactDecimal::from_u64(1)),
+            "ms" | "catseq.time_utils.ms" => ExactDecimal::parse("0.001"),
+            "us" | "catseq.time_utils.us" => ExactDecimal::parse("0.000001"),
+            "ns" | "catseq.time_utils.ns" => ExactDecimal::parse("0.000000001"),
             _ => None,
         };
     }
@@ -330,21 +406,35 @@ mod tests {
         assert!(normalized_has_duration_unit(
             "bin:Mult(constant:Int(80),name:ns)"
         ));
+        assert!(normalized_has_duration_unit(
+            "bin:Div(name:ns,constant:Int(2))"
+        ));
+        assert!(!normalized_has_duration_unit(
+            "bin:Add(constant:Float(1.0),bin:Mult(constant:Int(0),name:ns))"
+        ));
+        assert!(!normalized_has_duration_unit("bin:Div(name:ns,name:us)"));
         assert!(!normalized_has_duration_unit("name:start"));
         assert!(!normalized_has_duration_unit("name:usage"));
     }
 
     #[test]
-    fn normalized_cycles_calls_require_one_non_negative_integer() {
+    fn normalized_cycles_calls_require_one_signed_integer() {
         assert!(normalized_is_cycles_call(
             "call:catseq.time_utils.cycles(constant:Int(250);)"
         ));
         assert_eq!(
-            parse_normalized_cycles("call:cycles(constant:Int(250);)")
+            parse_normalized_cycles("call:catseq.time_utils.cycles(constant:Int(250);)")
                 .and_then(|value| value.to_cycle_count()),
             Some(250)
         );
-        assert!(parse_normalized_cycles("call:cycles(constant:Float(1.5);)").is_none());
-        assert!(parse_normalized_cycles("call:cycles(unary:USub(constant:Int(1));)").is_none());
+        assert!(
+            parse_normalized_cycles("call:catseq.time_utils.cycles(constant:Float(1.5);)")
+                .is_none()
+        );
+        assert_eq!(
+            parse_normalized_cycles("call:catseq.time_utils.cycles(unary:USub(constant:Int(1));)")
+                .and_then(|value| value.to_signed_cycle_delta()),
+            Some(-1)
+        );
     }
 }

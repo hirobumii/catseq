@@ -60,7 +60,7 @@ pub enum ValueExprPayload {
     Bool(bool),
     Int64(i64),
     Float64(f64),
-    DurationCycles(u64),
+    DurationCycles(i64),
     String(String),
     Json(serde_json::Value),
     RuntimeSlot(String),

@@ -12,10 +12,10 @@ from catseq import (
     CompiledSequence,
     EthernetRuntime,
 )
-from catseq.hardware.ttl import pulse
+from catseq.hardware.ttl import pulse, set_high, set_low
 from catseq.morphism import Morphism, identity
 from catseq.targets import rtmq_v2_profile
-from catseq.time_utils import ms
+from catseq.time_utils import Duration, cycles, ms
 from catseq.types import Board, Channel, ChannelType
 
 
@@ -41,6 +41,18 @@ def unused_opaque_call() -> None:
 
 class TestSystemWithOpaqueCall(TestSystem):
     opaque_calls = {"test.unused_opaque_call": unused_opaque_call}
+
+
+class EnvironmentRewindExperiment:
+    rewind: Duration
+
+    def sequence(self) -> Morphism:
+        return (
+            identity(cycles(2))
+            >> {ttl0: set_high()}
+            >> identity(self.rewind)
+            >> {ttl0: set_low()}
+        )
 
 
 def test_oasm_and_raw_transport_helpers_are_not_public_exports() -> None:
@@ -100,6 +112,25 @@ def test_compiler_rejects_non_scalar_environment_values(tmp_path: Path) -> None:
             environment_values={"calibration": [1, 2, 3]},
             cache_dir=tmp_path / "cache",
         )
+
+
+def test_public_environment_duration_can_rewind_the_timeline(tmp_path: Path) -> None:
+    compiled = Compiler(
+        source_root=Path(__file__).parent,
+        channels={"test_public_execution_api.ttl0": ttl0},
+        environment_values={
+            "test_public_execution_api.EnvironmentRewindExperiment.rewind": -1
+        },
+        cache_dir=tmp_path / "cache",
+    ).compile(EnvironmentRewindExperiment().sequence)
+
+    assert compiled.logical_duration_cycles == 2
+    calls = compiled.oasm_call_plan["epochs"][0]["boards"][0]["calls"]
+    assert calls == [
+        {"offset_cycles": 0, "function": "wait", "args": [1]},
+        {"offset_cycles": 1, "function": "ttl_set", "args": [1, 0, "rwg"]},
+        {"offset_cycles": 2, "function": "ttl_set", "args": [1, 1, "rwg"]},
+    ]
 
 
 def test_compiler_rejects_a_zero_target_clock_before_compilation(

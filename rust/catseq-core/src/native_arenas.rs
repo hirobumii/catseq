@@ -24,7 +24,7 @@ impl NativeArenas {
         values.validate()?;
         for payload in morphisms.payloads() {
             match payload {
-                MorphismPayload::Wait { duration } => {
+                MorphismPayload::Wait { duration, .. } => {
                     values.node(*duration)?;
                 }
                 MorphismPayload::Atomic { .. } | MorphismPayload::DefinitionRef { .. } => {

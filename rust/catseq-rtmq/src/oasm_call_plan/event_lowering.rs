@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use catseq_core::morphism_arena::{MorphismNodeKind, MorphismPayload};
+use catseq_core::morphism_arena::{MorphismArena, MorphismNodeKind, MorphismPayload};
 use catseq_core::native_arenas::NativeArenas;
 
 use super::abi_cost::GLOBAL_SYNC_MARGIN_CYCLES;
@@ -15,6 +15,8 @@ use super::model::{
 };
 use super::timing::TimingAnalysis;
 use super::value_eval::eval_cycles;
+
+const MAX_REWIND_LOOP_EXPANDED_NODE_VISITS: u64 = 100_000;
 
 pub(super) struct LoweredEvents {
     pub(super) ttl_events: Vec<TtlEvent>,
@@ -33,16 +35,18 @@ pub(super) fn lower_events(
     let arena = program.morphisms();
     let evaluated_values = &timing.evaluated_values;
     let durations = &timing.durations;
+    let contains_rewind = &timing.contains_rewind;
     let sync_counts = &epochs.sync_counts;
     let mut ttl_events = Vec::<TtlEvent>::new();
     let mut direct_events = Vec::<DirectEvent>::new();
     let mut rwg_states = HashMap::<String, RwgChannelState>::new();
     let mut rsp_pid_configs = HashMap::<String, serde_json::Value>::new();
     let mut loop_regions = Vec::<LoopRegion>::new();
+    let mut expanded_rewind_node_visits = 0_u64;
     enum TraversalTask {
         Visit {
             node_id: usize,
-            start: u64,
+            start: i64,
             epoch: u32,
             channel: Option<usize>,
         },
@@ -149,8 +153,34 @@ pub(super) fn lower_events(
             .payload()
             .map(|payload| &arena.payloads()[payload.index()]);
         match node.kind() {
-            MorphismNodeKind::Wait => {}
+            MorphismNodeKind::Wait => {
+                let end = start
+                    .checked_add(durations[node_id])
+                    .ok_or_else(|| OasmCompileError::new("wait timestamp overflows i64"))?;
+                let origin = i64::try_from(*epoch_origins.get(&epoch).ok_or_else(|| {
+                    OasmCompileError::new(format!("epoch {epoch} has no origin"))
+                })?)
+                .map_err(|_| OasmCompileError::new("Epoch origin exceeds signed timeline range"))?;
+                if end < origin {
+                    let source = &arena.provenance()[node.provenance().index()];
+                    return Err(OasmCompileError::new(format!(
+                        "logical timestamp {end} is before Epoch origin {origin} at {}:{}:{}",
+                        source.owner(),
+                        source.line(),
+                        source.column()
+                    )));
+                }
+            }
             MorphismNodeKind::Atomic => {
+                let start = u64::try_from(start).map_err(|_| {
+                    let source = &arena.provenance()[node.provenance().index()];
+                    OasmCompileError::new(format!(
+                        "logical timestamp is before Epoch origin at {}:{}:{}",
+                        source.owner(),
+                        source.line(),
+                        source.column()
+                    ))
+                })?;
                 let group_id = next_event_id;
                 next_event_id = next_event_id
                     .checked_add(1)
@@ -267,6 +297,11 @@ pub(super) fn lower_events(
                         binding.board
                     ))
                 })?;
+                let duration = u64::try_from(durations[node_id]).map_err(|_| {
+                    OasmCompileError::new(format!(
+                        "physical operation {operation} requires a non-negative duration"
+                    ))
+                })?;
                 lower_atomic_events(
                     schema,
                     channel_key,
@@ -274,7 +309,7 @@ pub(super) fn lower_events(
                     board,
                     start,
                     epoch,
-                    durations[node_id],
+                    duration,
                     arguments,
                     program,
                     evaluated_values,
@@ -320,7 +355,7 @@ pub(super) fn lower_events(
                     });
                     child_start = child_start
                         .checked_add(durations[child.index()])
-                        .ok_or_else(|| OasmCompileError::new("serial timestamp overflows u64"))?;
+                        .ok_or_else(|| OasmCompileError::new("serial timestamp overflows i64"))?;
                     child_epoch = child_epoch
                         .checked_add(sync_counts[child.index()])
                         .ok_or_else(|| OasmCompileError::new("epoch id overflows u32"))?;
@@ -343,19 +378,67 @@ pub(super) fn lower_events(
                 };
                 let count = eval_cycles(evaluated_values, *count)?;
                 let body = children_by_node(arena, node)[0];
-                let body_duration = durations[body.index()];
+                if contains_rewind[body.index()] {
+                    let body_visits = expanded_body_visit_count(arena, body.index())?;
+                    let additional_visits = count.checked_mul(body_visits).ok_or_else(|| {
+                        OasmCompileError::new("rewinding loop expansion size overflows u64")
+                    })?;
+                    expanded_rewind_node_visits = expanded_rewind_node_visits
+                        .checked_add(additional_visits)
+                        .ok_or_else(|| {
+                            OasmCompileError::new("rewinding loop expansion size overflows u64")
+                        })?;
+                    if expanded_rewind_node_visits > MAX_REWIND_LOOP_EXPANDED_NODE_VISITS {
+                        return Err(OasmCompileError::new(format!(
+                            "rewinding loop expansion requires {expanded_rewind_node_visits} node visits, exceeding compiler budget {MAX_REWIND_LOOP_EXPANDED_NODE_VISITS}"
+                        )));
+                    }
+                    let mut iteration_start = start;
+                    let capacity = usize::try_from(count).map_err(|_| {
+                        OasmCompileError::new("rewinding loop iteration count exceeds usize")
+                    })?;
+                    let mut iterations = Vec::with_capacity(capacity);
+                    for _ in 0..count {
+                        iterations.push(TraversalTask::Visit {
+                            node_id: body.index(),
+                            start: iteration_start,
+                            epoch,
+                            channel,
+                        });
+                        iteration_start = iteration_start
+                            .checked_add(durations[body.index()])
+                            .ok_or_else(|| {
+                                OasmCompileError::new(
+                                    "expanded loop timestamp overflows i64 cycles",
+                                )
+                            })?;
+                    }
+                    pending.extend(iterations.into_iter().rev());
+                    continue;
+                }
+                let start = u64::try_from(start).map_err(|_| {
+                    OasmCompileError::new("hardware loop starts before its Epoch origin")
+                })?;
+                let body_duration = u64::try_from(durations[body.index()]).map_err(|_| {
+                    OasmCompileError::new("hardware loop body duration must be non-negative")
+                })?;
+                let total_duration = u64::try_from(durations[node_id]).map_err(|_| {
+                    OasmCompileError::new("hardware loop duration must be non-negative")
+                })?;
                 pending.push(TraversalTask::FinishLoop {
                     start,
                     epoch,
                     body_duration,
-                    total_duration: durations[node_id],
+                    total_duration,
                     count,
                     ttl_start: ttl_events.len(),
                     direct_start: direct_events.len(),
                 });
                 pending.push(TraversalTask::Visit {
                     node_id: body.index(),
-                    start,
+                    start: i64::try_from(start).map_err(|_| {
+                        OasmCompileError::new("hardware loop start exceeds signed timeline range")
+                    })?,
                     epoch,
                     channel,
                 });
@@ -372,4 +455,33 @@ pub(super) fn lower_events(
         loop_regions,
         epoch_origins,
     })
+}
+
+fn expanded_body_visit_count(arena: &MorphismArena, root: usize) -> Result<u64, OasmCompileError> {
+    let mut pending = vec![root];
+    let mut visits = 0_u64;
+    while let Some(node_id) = pending.pop() {
+        visits = visits.checked_add(1).ok_or_else(|| {
+            OasmCompileError::new("rewinding loop body visit count overflows u64")
+        })?;
+        if visits > MAX_REWIND_LOOP_EXPANDED_NODE_VISITS {
+            return Ok(visits);
+        }
+        let node = &arena.nodes()[node_id];
+        if node.kind() == MorphismNodeKind::Instantiate {
+            let Some(MorphismPayload::Instantiate { template, .. }) = node
+                .payload()
+                .map(|payload| &arena.payloads()[payload.index()])
+            else {
+                unreachable!("validated arena has an Instantiate payload")
+            };
+            pending.push(arena.templates()[template.index()].root().index());
+        }
+        pending.extend(
+            children_by_node(arena, node)
+                .iter()
+                .map(|child| child.index()),
+        );
+    }
+    Ok(visits)
 }

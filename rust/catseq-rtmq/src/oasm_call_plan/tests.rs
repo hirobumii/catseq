@@ -25,7 +25,32 @@ fn duration_program(environment_slot: bool) -> NativeArenas {
     let values = values.finish().unwrap();
     let mut morphisms = MorphismArenaBuilder::new();
     let provenance = morphisms.intern_provenance(NativeProvenance::new("test.sequence", 1, 1));
-    let root = morphisms.wait(duration, provenance);
+    let root = morphisms.logical_shift(duration, provenance);
+    NativeArenas::new(morphisms.finish(root).unwrap(), values).unwrap()
+}
+
+fn environment_rewind_program() -> NativeArenas {
+    use catseq_core::morphism_arena::BoundaryPolicy;
+
+    let mut values = ValueExprArenaBuilder::new();
+    let forward = values.constant(ValueExprPayload::DurationCycles(10));
+    let rewind = values.environment_slot("rewind", ValueExprType::Duration);
+    let values = values.finish().unwrap();
+    let mut morphisms = MorphismArenaBuilder::new();
+    let provenance = morphisms.intern_provenance(NativeProvenance::new("test.sequence", 1, 1));
+    let forward = morphisms.logical_shift(forward, provenance);
+    let rewind = morphisms.logical_shift(rewind, provenance);
+    let root = morphisms.serial(&[forward, rewind], &[BoundaryPolicy::Auto], provenance);
+    NativeArenas::new(morphisms.finish(root).unwrap(), values).unwrap()
+}
+
+fn physical_environment_interval_program() -> NativeArenas {
+    let mut values = ValueExprArenaBuilder::new();
+    let duration = values.environment_slot("duration", ValueExprType::Duration);
+    let values = values.finish().unwrap();
+    let mut morphisms = MorphismArenaBuilder::new();
+    let provenance = morphisms.intern_provenance(NativeProvenance::new("test.sequence", 1, 1));
+    let root = morphisms.physical_wait(duration, provenance);
     NativeArenas::new(morphisms.finish(root).unwrap(), values).unwrap()
 }
 
@@ -36,7 +61,7 @@ fn loop_program() -> NativeArenas {
     let values = values.finish().unwrap();
     let mut morphisms = MorphismArenaBuilder::new();
     let provenance = morphisms.intern_provenance(NativeProvenance::new("test.sequence", 1, 1));
-    let body = morphisms.wait(duration, provenance);
+    let body = morphisms.logical_shift(duration, provenance);
     let root = morphisms.loop_region(body, count, provenance);
     NativeArenas::new(morphisms.finish(root).unwrap(), values).unwrap()
 }
@@ -131,6 +156,40 @@ fn link_bindings_supply_environment_slots() {
         compile_oasm_call_plan(&program, &empty_environment(), &target(), &bindings).unwrap();
 
     assert!(plan.epochs()[0].boards().is_empty());
+}
+
+#[test]
+fn environment_duration_bindings_can_rewind_without_epoch_underflow() {
+    let program = environment_rewind_program();
+    let bindings = LinkBindings {
+        schema_version: 1,
+        runtime_values: BTreeMap::new(),
+        environment_values: BTreeMap::from([("rewind".to_owned(), LinkValue::Signed(-4))]),
+    };
+
+    let plan =
+        compile_oasm_call_plan(&program, &empty_environment(), &target(), &bindings).unwrap();
+
+    assert_eq!(plan.logical_duration_cycles(), 10);
+}
+
+#[test]
+fn physical_environment_intervals_remain_non_negative_after_linking() {
+    let program = physical_environment_interval_program();
+    let bindings = LinkBindings {
+        schema_version: 1,
+        runtime_values: BTreeMap::new(),
+        environment_values: BTreeMap::from([("duration".to_owned(), LinkValue::Signed(-1))]),
+    };
+
+    let error =
+        compile_oasm_call_plan(&program, &empty_environment(), &target(), &bindings).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("physical interval duration must be non-negative"),
+        "{error}"
+    );
 }
 
 #[test]

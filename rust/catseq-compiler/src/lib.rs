@@ -246,7 +246,8 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             }
         })
         .transpose()?;
-    if command == CommandKind::Compile && target_profile.is_none() {
+    if matches!(command, CommandKind::Compile | CommandKind::EmitArena) && target_profile.is_none()
+    {
         return Err(format!("--target-profile is required\n{}", usage()));
     }
     let link_bindings = link_bindings_path
@@ -293,12 +294,12 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             (CommandKind::EmitArena, Some(cache_dir)) => {
                 let report = check_typed_entry_incremental(&path, &source, &requested, &cache_dir)
                     .map_err(|error| error.to_string())?;
-                arena_output(report)?
+                arena_output(report, target_profile.as_ref().expect("checked above"))?
             }
             (CommandKind::EmitArena, None) => {
                 let report = check_typed_entry(&path, &source, &requested)
                     .map_err(|error| error.to_string())?;
-                arena_output(report)?
+                arena_output(report, target_profile.as_ref().expect("checked above"))?
             }
             (CommandKind::Compile, Some(cache_dir)) => {
                 let report = check_typed_entry_incremental(&path, &source, &requested, &cache_dir)
@@ -366,9 +367,10 @@ enum CheckedOutput {
     },
 }
 
-fn arena_output(report: TypedCheckReport) -> Result<CheckedOutput, String> {
+fn arena_output(report: TypedCheckReport, target: &TargetProfile) -> Result<CheckedOutput, String> {
+    validate_target_clock(target)?;
     let start = Instant::now();
-    let program = lower_typed_report_to_native_arenas(&report, 250_000_000)
+    let program = lower_typed_report_to_native_arenas(&report, target.clock_hz())
         .map_err(|error| error.to_string())?;
     let lowering_time = start.elapsed();
     Ok(CheckedOutput::Arena {
@@ -467,13 +469,13 @@ fn check_source_bundle(
                 &mut loader,
             )
             .map_err(|error| error.to_string())?;
-            arena_output(report)
+            arena_output(report, compile_inputs.target.expect("validated by caller"))
         }
         (CommandKind::EmitArena, None) => {
             let report =
                 check_typed_bundle_entry_with_loader(&entry_module, requested, &mut loader)
                     .map_err(|error| error.to_string())?;
-            arena_output(report)
+            arena_output(report, compile_inputs.target.expect("validated by caller"))
         }
         (CommandKind::Compile, Some(cache_dir)) => {
             let report = check_typed_bundle_entry_incremental_with_loader_and_opaque_definitions(
@@ -615,7 +617,7 @@ fn print_text_summary(summary: &TypedCheckSummary) {
 
 fn usage() -> String {
     String::from(
-        "usage: catseqc --version\n       catseqc check <source.py> [--source-root <path>] [--entry <qualified-name>] [--format text|json] [--cache-dir <path>]\n       catseqc emit-hir <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]\n       catseqc emit-arena <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]\n       catseqc compile <source.py> [--source-root <path>] --entry <qualified-name> --compile-environment <path> --target-profile <path> [--link-bindings <path>] [--format json] [--cache-dir <path>]",
+        "usage: catseqc --version\n       catseqc check <source.py> [--source-root <path>] [--entry <qualified-name>] [--format text|json] [--cache-dir <path>]\n       catseqc emit-hir <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]\n       catseqc emit-arena <source.py> [--source-root <path>] [--entry <qualified-name>] --target-profile <path> [--format json] [--cache-dir <path>]\n       catseqc compile <source.py> [--source-root <path>] --entry <qualified-name> --compile-environment <path> --target-profile <path> [--link-bindings <path>] [--format json] [--cache-dir <path>]",
     )
 }
 

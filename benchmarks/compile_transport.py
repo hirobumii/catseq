@@ -46,9 +46,10 @@ def main() -> None:
         root = Path(temporary)
         source = root / "sequence.py"
         source.write_text(
-            "from catseq.morphism import Morphism, identity\n\n"
+            "from catseq.morphism import Morphism, identity\n"
+            "from catseq.time_utils import cycles\n\n"
             "def sequence() -> Morphism:\n"
-            "    return identity(1)\n"
+            "    return identity(cycles(1))\n"
         )
         environment = {"schema_version": 1, "channels": {}}
         target = {

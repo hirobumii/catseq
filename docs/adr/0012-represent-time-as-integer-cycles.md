@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0050
 ---
 
 # Represent time as integer cycles

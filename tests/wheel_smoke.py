@@ -16,6 +16,7 @@ from catseq.experiment.device import DeviceList
 from catseq.experiment.params import ExpParam, ExpParams, ScanPoint
 from catseq.morphism import Morphism, identity
 from catseq.targets import rtmq_v2_profile
+from catseq.time_utils import cycles
 
 
 SYNTHETIC_INTERFACE = "catseq-wheel-smoke-interface-that-does-not-exist"
@@ -26,7 +27,7 @@ SYNTHETIC_BOARD_ROUTES = {"rwg0": 60_000}
 
 
 def wheel_public_sequence() -> Morphism:
-    return identity(1)
+    return identity(cycles(1))
 
 
 assert catseq.__version__ == version("catseq")
@@ -69,9 +70,10 @@ with tempfile.TemporaryDirectory(prefix="catseq-wheel-smoke-") as temporary:
     root = Path(temporary)
     source = root / "sequence.py"
     source.write_text(
-        "from catseq.morphism import Morphism, identity\n\n"
+        "from catseq.morphism import Morphism, identity\n"
+        "from catseq.time_utils import cycles\n\n"
         "def sequence() -> Morphism:\n"
-        "    return identity(1)\n"
+        "    return identity(cycles(1))\n"
     )
     request = {
         "schema_version": 1,

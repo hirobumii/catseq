@@ -13,7 +13,7 @@ mod compile_attributes;
 mod compile_values;
 mod definition_analysis;
 mod model;
-mod resolution;
+pub(crate) mod resolution;
 mod signatures;
 mod validation;
 
@@ -128,12 +128,15 @@ where
         for source_call in analysis.calls {
             let call = resolve_self_call(&lexical_name, &source_call.target_path);
             let resolved = resolve_call_path(&module_name, &imports, &call);
-            let resolved =
+            let (resolved, instance_identity) =
                 resolve_compile_instance_call(&mut sources, &mut parsed, loader, &resolved)?;
-            analysis
-                .definition
-                .hir
-                .resolve_call(&source_call.source_path, &resolved);
+            analysis.definition.hir.resolve_call(
+                &source_call.source_path,
+                source_call.line,
+                source_call.column,
+                &resolved,
+                instance_identity.as_deref(),
+            );
             if resolved == "rb1system.utils.get_end_state" {
                 return Err(TypedCheckError::MigrationRequired {
                     file_name: module_name,
@@ -145,10 +148,11 @@ where
                 continue;
             }
             if opaque_definitions.contains(&resolved) {
-                analysis
-                    .definition
-                    .hir
-                    .resolve_opaque_atomic_call(&source_call.source_path, &resolved);
+                analysis.definition.hir.mark_opaque_atomic_call(
+                    &source_call.source_path,
+                    source_call.line,
+                    source_call.column,
+                );
                 continue;
             }
             if let Some((target_module, target_definition)) =
@@ -163,10 +167,11 @@ where
                     &target_definition,
                     "oasm_black_box",
                 ) {
-                    analysis
-                        .definition
-                        .hir
-                        .resolve_opaque_atomic_call(&source_call.source_path, &resolved);
+                    analysis.definition.hir.mark_opaque_atomic_call(
+                        &source_call.source_path,
+                        source_call.line,
+                        source_call.column,
+                    );
                     continue;
                 }
                 if definition_exists(&parsed[&target_module], &target_definition) {
@@ -180,7 +185,11 @@ where
             let anchor = analysis
                 .definition
                 .hir
-                .call_anchor(&source_call.source_path)
+                .call_anchor(
+                    &source_call.source_path,
+                    source_call.line,
+                    source_call.column,
+                )
                 .expect("a collected call must have a Source HIR node");
             return Err(TypedCheckError::ReachableHostCall {
                 file_name: module_name,

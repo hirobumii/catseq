@@ -1,4 +1,4 @@
-//! Direct Typed Source HIR to canonical Morphism arena lowering.
+//! Direct Typed Source HIR to target-resolved native arena lowering.
 
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -7,7 +7,7 @@ use std::fmt::{Display, Formatter};
 use catseq_core::exact_decimal::ExactDecimal;
 use catseq_core::morphism_arena::{
     BoundaryPolicy, MorphismArenaBuilder, MorphismNodeId, MorphismTemplateId, NativeProvenance,
-    ProvenanceId,
+    ProvenanceId, WaitSemantics,
 };
 use catseq_core::native_arenas::NativeArenas;
 use catseq_core::value_expr::{
@@ -16,7 +16,7 @@ use catseq_core::value_expr::{
 
 use crate::intrinsics::{self, NativeMorphismTemplate};
 use crate::{
-    MorphismComposition, SourceHirKind, SourceHirNode, SourceType, TypedCheckReport,
+    MorphismComposition, SourceHirKind, SourceHirNode, SourceLiteral, SourceType, TypedCheckReport,
     TypedDefinition, TypedSourceHir, ValueAvailability,
 };
 
@@ -102,6 +102,7 @@ enum TemplatePlanKind {
     },
     Wait {
         duration: ValueExprId,
+        semantics: WaitSemantics,
     },
     Serial {
         children: Vec<TemplatePlanId>,
@@ -155,7 +156,7 @@ pub fn specialize_typed_report_to_native_arenas(
         ))
     })?;
     let mut lowerer = SpecializationLowerer::new(definitions, clock_hz);
-    let root = match lowerer.lower_definition(entry, &[])? {
+    let root = match lowerer.lower_definition(entry, &[], default_instance_identity(entry))? {
         LoweredValue::Morphism(root) => root,
         _ => {
             return Err(MorphismLoweringError::new(format!(
@@ -223,6 +224,7 @@ impl<'a> SpecializationLowerer<'a> {
         &mut self,
         definition: &'a TypedDefinition,
         arguments: &[SpecializationArgument],
+        instance_identity: String,
     ) -> Result<LoweredValue, MorphismLoweringError> {
         if self
             .active_definitions
@@ -235,7 +237,7 @@ impl<'a> SpecializationLowerer<'a> {
             )));
         }
         self.active_definitions.push(definition.qualified_name());
-        let result = self.lower_definition_body(definition, arguments);
+        let result = self.lower_definition_body(definition, arguments, &instance_identity);
         self.active_definitions.pop();
         result
     }
@@ -244,6 +246,7 @@ impl<'a> SpecializationLowerer<'a> {
         &mut self,
         definition: &'a TypedDefinition,
         arguments: &[SpecializationArgument],
+        instance_identity: &str,
     ) -> Result<LoweredValue, MorphismLoweringError> {
         let hir = definition.hir();
         let mut provenance = Vec::with_capacity(hir.nodes().len());
@@ -329,9 +332,25 @@ impl<'a> SpecializationLowerer<'a> {
                 SourceHirKind::Constant => lower_literal(node)?,
                 SourceHirKind::Name
                     if source_type == Some(&SourceType::Duration)
-                        && matches!(node.symbol(), Some("s" | "ms" | "us" | "ns")) =>
+                        && fact
+                            .resolved_definition()
+                            .is_some_and(intrinsics::is_duration_unit) =>
                 {
-                    lower_duration_unit(node, self.clock_hz)
+                    lower_duration_unit(
+                        fact.resolved_definition().expect("checked above"),
+                        self.clock_hz,
+                    )
+                }
+                SourceHirKind::Attribute
+                    if source_type == Some(&SourceType::Duration)
+                        && fact
+                            .resolved_definition()
+                            .is_some_and(intrinsics::is_duration_unit) =>
+                {
+                    lower_duration_unit(
+                        fact.resolved_definition().expect("checked above"),
+                        self.clock_hz,
+                    )
                 }
                 SourceHirKind::Name
                     if fact.compile_value().is_some()
@@ -346,6 +365,17 @@ impl<'a> SpecializationLowerer<'a> {
                         source_type,
                         self.clock_hz,
                     )?
+                }
+                SourceHirKind::Attribute if fact.availability() == ValueAvailability::Link => {
+                    let value_type = source_type_to_value_type(source_type).ok_or_else(|| {
+                        lowering_error(node, "environment value has no native scalar type")
+                    })?;
+                    Some(LoweredValue::Scalar(ScalarValue::Expr(
+                        self.value_builder.environment_slot(
+                            environment_slot_name(node, instance_identity),
+                            value_type,
+                        ),
+                    )))
                 }
                 SourceHirKind::Attribute
                     if fact.compile_value().is_some()
@@ -421,9 +451,33 @@ impl<'a> SpecializationLowerer<'a> {
                         })
                         .collect::<Vec<_>>();
                     let mut specializations = Vec::new();
-                    for resolved in fact.resolved_definitions() {
-                        if let Some(callee) = self.definitions.get(resolved.as_str()).copied() {
-                            specializations.push(self.lower_definition(callee, &arguments)?);
+                    if fact.resolved_call_targets().is_empty() {
+                        for resolved in fact.resolved_definitions() {
+                            let Some(callee) = self.definitions.get(resolved.as_str()).copied()
+                            else {
+                                continue;
+                            };
+                            specializations.push(self.lower_definition(
+                                callee,
+                                &arguments,
+                                call_instance_identity(node, instance_identity, callee),
+                            )?);
+                        }
+                    } else {
+                        for target in fact.resolved_call_targets() {
+                            let Some(callee) = self.definitions.get(target.definition()).copied()
+                            else {
+                                continue;
+                            };
+                            let target_instance = target.instance_identity().map_or_else(
+                                || call_instance_identity(node, instance_identity, callee),
+                                str::to_owned,
+                            );
+                            specializations.push(self.lower_definition(
+                                callee,
+                                &arguments,
+                                target_instance,
+                            )?);
                         }
                     }
                     match specializations.len() {
@@ -603,10 +657,14 @@ impl<'a> SpecializationLowerer<'a> {
             // analysis into the element call's resolved-definition set.  The
             // aggregate is therefore already complete even though the property
             // itself is not retained as a runtime container in Source HIR.
-            return Ok(match values[*element as usize].clone() {
-                Some(value @ LoweredValue::Aggregate(_)) => Some(value),
-                _ => None,
-            });
+            let element_fact = &hir.facts()[*element as usize];
+            if element_fact.resolved_call_targets().is_empty() {
+                return Ok(None);
+            }
+            return Ok(values[*element as usize].clone().map(|value| match value {
+                value @ LoweredValue::Aggregate(_) => value,
+                value => LoweredValue::Aggregate(vec![value]),
+            }));
         };
         let mut result = Vec::with_capacity(items.len());
         for item in items {
@@ -803,8 +861,31 @@ fn lower_entry(
         let source_type = hir.facts()[node_id].source_type();
         let lowered = match node.kind() {
             SourceHirKind::Constant => lower_literal(node)?,
-            SourceHirKind::Name if source_type == Some(&SourceType::Duration) => {
-                lower_duration_unit(node, clock_hz)
+            SourceHirKind::Name | SourceHirKind::Attribute
+                if source_type == Some(&SourceType::Duration)
+                    && hir.facts()[node_id]
+                        .resolved_definition()
+                        .is_some_and(intrinsics::is_duration_unit) =>
+            {
+                lower_duration_unit(
+                    hir.facts()[node_id]
+                        .resolved_definition()
+                        .expect("checked above"),
+                    clock_hz,
+                )
+            }
+            SourceHirKind::Attribute
+                if hir.facts()[node_id].availability() == ValueAvailability::Link =>
+            {
+                let value_type = source_type_to_value_type(source_type).ok_or_else(|| {
+                    lowering_error(node, "environment value has no native scalar type")
+                })?;
+                Some(LoweredValue::Scalar(ScalarValue::Expr(
+                    value_builder.environment_slot(
+                        environment_slot_name(node, &default_instance_identity(definition)),
+                        value_type,
+                    ),
+                )))
             }
             SourceHirKind::Subscript
                 if hir.facts()[node_id].availability() == ValueAvailability::Link =>
@@ -974,13 +1055,28 @@ fn lower_call(
         SourceType::Morphism if is_repeat_morphism(resolved) => {
             lower_repeat_call(node, children, values, builder, value_builder, provenance)
         }
-        SourceType::Morphism if is_identity(resolved) => {
-            let duration = call_arguments(children, values, value_builder, node)?
+        SourceType::Morphism if intrinsics::is_identity(resolved) => {
+            let mut duration = call_arguments(children, values, value_builder, node)?
                 .first()
                 .copied()
                 .ok_or_else(|| lowering_error(node, "identity requires a duration"))?;
+            if value_builder.value_type(duration) != Some(ValueExprType::Duration) {
+                let explicit_zero = children.get(1).is_some_and(|child| {
+                    matches!(
+                        hir.nodes()[*child as usize].literal(),
+                        Some(SourceLiteral::Int(value)) if value == "0"
+                    )
+                });
+                if !explicit_zero {
+                    return Err(lowering_error(
+                        node,
+                        "identity duration must use an explicit unit (s, ms, us, or ns) or cycles(...); only identity(0) is unitless",
+                    ));
+                }
+                duration = value_builder.constant(ValueExprPayload::DurationCycles(0));
+            }
             Ok(Some(LoweredValue::Morphism(
-                builder.wait(duration, provenance),
+                builder.logical_shift(duration, provenance),
             )))
         }
         SourceType::Morphism if resolved == "rb1system.utils.dict_to_morphism" => {
@@ -1373,7 +1469,17 @@ fn instantiate_template(
                 definition,
                 arguments,
             } => builder.definition_ref(definition, arguments, plan.provenance),
-            TemplatePlanKind::Wait { duration } => builder.wait(*duration, plan.provenance),
+            TemplatePlanKind::Wait {
+                duration,
+                semantics,
+            } => match semantics {
+                WaitSemantics::LogicalDisplacement => {
+                    builder.logical_shift(*duration, plan.provenance)
+                }
+                WaitSemantics::PhysicalInterval => {
+                    builder.physical_wait(*duration, plan.provenance)
+                }
+            },
             TemplatePlanKind::Serial {
                 children,
                 boundaries,
@@ -1421,14 +1527,18 @@ fn push_intrinsic_template_plan(
             });
             id
         };
-    let push_wait = |plans: &mut Vec<TemplatePlan>, duration: ValueExprId| {
-        let id = TemplatePlanId(plans.len());
-        plans.push(TemplatePlan {
-            kind: TemplatePlanKind::Wait { duration },
-            provenance,
-        });
-        id
-    };
+    let push_wait =
+        |plans: &mut Vec<TemplatePlan>, duration: ValueExprId, semantics: WaitSemantics| {
+            let id = TemplatePlanId(plans.len());
+            plans.push(TemplatePlan {
+                kind: TemplatePlanKind::Wait {
+                    duration,
+                    semantics,
+                },
+                provenance,
+            });
+            id
+        };
     let required_argument = |index: usize, description: &str| {
         arguments
             .get(index)
@@ -1456,12 +1566,13 @@ fn push_intrinsic_template_plan(
             return Ok(push_wait(
                 plans,
                 required_duration_argument(0, "hold duration")?,
+                WaitSemantics::LogicalDisplacement,
             ));
         }
         NativeMorphismTemplate::TtlPulse => {
             let duration = required_duration_argument(0, "TTL pulse duration")?;
             let high = push_operation(plans, "catseq.hardware.ttl.set_high", Vec::new());
-            let wait = push_wait(plans, duration);
+            let wait = push_wait(plans, duration, WaitSemantics::PhysicalInterval);
             let low = push_operation(plans, "catseq.hardware.ttl.set_low", Vec::new());
             (vec![high, wait, low], vec![BoundaryPolicy::Auto; 2])
         }
@@ -1480,7 +1591,7 @@ fn push_intrinsic_template_plan(
         NativeMorphismTemplate::RwgRfPulse => {
             let duration = required_duration_argument(0, "RWG RF pulse duration")?;
             let on = push_operation(plans, "catseq.hardware.rwg.rf_on", Vec::new());
-            let wait = push_wait(plans, duration);
+            let wait = push_wait(plans, duration, WaitSemantics::PhysicalInterval);
             let off = push_operation(plans, "catseq.hardware.rwg.rf_off", Vec::new());
             (vec![on, wait, off], vec![BoundaryPolicy::Auto; 2])
         }
@@ -1493,7 +1604,7 @@ fn push_intrinsic_template_plan(
                 values.rwg_waveforms(RwgWaveformDerivation::RampEndpoint, &[ramp_waveforms]);
             let load_ramp = push_operation(plans, "catseq.hardware.rwg.load", vec![ramp_waveforms]);
             let start = push_operation(plans, "catseq.hardware.rwg.play", Vec::new());
-            let wait = push_wait(plans, duration);
+            let wait = push_wait(plans, duration, WaitSemantics::PhysicalInterval);
             let load_endpoint =
                 push_operation(plans, "catseq.hardware.rwg.load", vec![endpoint_waveforms]);
             let finish = push_operation(plans, "catseq.hardware.rwg.play", Vec::new());
@@ -1641,8 +1752,46 @@ fn native_channel_key(hir: &TypedSourceHir, node_id: u32) -> String {
     )
 }
 
-fn is_identity(resolved: &str) -> bool {
-    resolved == "catseq.morphism.identity" || resolved.rsplit('.').next() == Some("identity")
+fn default_instance_identity(definition: &TypedDefinition) -> String {
+    let owner = definition
+        .qualified_name()
+        .rsplit_once('.')
+        .map_or(definition.qualified_name(), |(owner, _)| owner);
+    qualify_source_identity(definition.module(), owner)
+}
+
+fn call_instance_identity(
+    call: &SourceHirNode,
+    current_instance: &str,
+    callee: &TypedDefinition,
+) -> String {
+    let Some((receiver, _method)) = call.symbol().and_then(|path| path.rsplit_once('.')) else {
+        return default_instance_identity(callee);
+    };
+    if receiver == "self" {
+        return current_instance.to_owned();
+    }
+    qualify_source_identity(call.anchor().module(), receiver)
+}
+
+fn environment_slot_name(node: &SourceHirNode, instance_identity: &str) -> String {
+    let field = node
+        .symbol()
+        .and_then(|symbol| symbol.strip_prefix("self."))
+        .unwrap_or("environment_value");
+    format!("{instance_identity}.{field}")
+}
+
+fn qualify_source_identity(module: &str, identity: &str) -> String {
+    if identity == module
+        || identity
+            .strip_prefix(module)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+    {
+        identity.to_owned()
+    } else {
+        format!("{module}.{identity}")
+    }
 }
 
 fn is_repeat_morphism(resolved: &str) -> bool {

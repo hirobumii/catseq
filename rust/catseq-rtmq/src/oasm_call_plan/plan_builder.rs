@@ -23,8 +23,8 @@ pub(super) fn build_call_plan(
     lowered: LoweredEvents,
 ) -> Result<OasmCallPlan, OasmCompileError> {
     let arena = program.morphisms();
-    let durations = &timing.durations;
-    let logical_durations = &timing.logical_durations;
+    let frontiers = &timing.frontiers;
+    let logical_frontiers = &timing.logical_frontiers;
     let sync_counts = &epoch_analysis.sync_counts;
     let LoweredEvents {
         mut ttl_events,
@@ -41,9 +41,12 @@ pub(super) fn build_call_plan(
         &mut direct_events,
         &mut epoch_origins,
     )?;
-    let program_duration = durations[arena.root().index()]
+    let loop_delta = i64::try_from(loop_delta)
+        .map_err(|_| OasmCompileError::new("program loop delta exceeds signed timeline range"))?;
+    let program_duration = frontiers[arena.root().index()]
         .checked_add(loop_delta)
-        .ok_or_else(|| OasmCompileError::new("program duration overflows u64"))?;
+        .and_then(|duration| u64::try_from(duration).ok())
+        .ok_or_else(|| OasmCompileError::new("program duration is negative or overflows u64"))?;
 
     let mut board_ttl_events = BTreeMap::<(u32, String), Vec<TtlEvent>>::new();
     for event in ttl_events {
@@ -159,6 +162,7 @@ pub(super) fn build_call_plan(
     Ok(OasmCallPlan {
         schema_version: 1,
         epochs,
-        logical_duration_cycles: logical_durations[arena.root().index()],
+        logical_duration_cycles: u64::try_from(logical_frontiers[arena.root().index()])
+            .map_err(|_| OasmCompileError::new("logical duration is negative or overflows u64"))?,
     })
 }

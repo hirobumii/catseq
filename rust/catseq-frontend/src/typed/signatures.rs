@@ -1,11 +1,13 @@
 //! Function signature and annotation type analysis.
 
+use std::collections::HashMap;
+
 use nac3ast::{Arg, Arguments, Expr, ExprKind, Stmt};
 
 use super::ast_util::{
     expression_path, push_expression_analysis_children, push_statement_analysis_children,
 };
-use super::compile_values::normalized_compile_expression;
+use super::compile_values::normalized_compile_expression_in;
 use super::model::{SourceType, TypeSignature, TypedCheckError, TypedParameter};
 
 pub(super) fn signature(
@@ -15,6 +17,7 @@ pub(super) fn signature(
     arguments: &Arguments,
     body: &[Stmt],
     returns: Option<&Expr>,
+    imports: &HashMap<String, String>,
 ) -> Result<TypeSignature, TypedCheckError> {
     let mut parameters = Vec::new();
     let positional = arguments
@@ -27,9 +30,9 @@ pub(super) fn signature(
         let default = index
             .checked_sub(default_start)
             .and_then(|index| arguments.defaults.get(index));
-        if let Some(parameter) =
-            parameter(file_name, definition, class_name, argument, body, default)?
-        {
+        if let Some(parameter) = parameter(
+            file_name, definition, class_name, argument, body, default, imports,
+        )? {
             parameters.push(parameter);
         }
     }
@@ -41,6 +44,7 @@ pub(super) fn signature(
             argument,
             body,
             default.as_deref(),
+            imports,
         )? {
             parameters.push(parameter);
         }
@@ -62,6 +66,7 @@ fn parameter(
     argument: &Arg,
     body: &[Stmt],
     default: Option<&Expr>,
+    imports: &HashMap<String, String>,
 ) -> Result<Option<TypedParameter>, TypedCheckError> {
     let name = argument.node.arg.to_string();
     let source_type = match argument.node.annotation.as_deref() {
@@ -89,7 +94,8 @@ fn parameter(
     Ok(Some(TypedParameter {
         name,
         source_type,
-        default_value: default.and_then(normalized_compile_expression),
+        default_value: default
+            .and_then(|value| normalized_compile_expression_in(value, file_name, imports)),
     }))
 }
 

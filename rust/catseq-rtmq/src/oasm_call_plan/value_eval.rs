@@ -106,7 +106,9 @@ pub(super) fn value_to_oasm_argument(
         Some(ValueExprPayload::Bool(value)) => Ok(OasmArgument::Bool(*value)),
         Some(ValueExprPayload::Int64(value)) => Ok(OasmArgument::Signed(*value)),
         Some(ValueExprPayload::Float64(value)) => Ok(OasmArgument::Float(*value)),
-        Some(ValueExprPayload::DurationCycles(value)) => Ok(OasmArgument::Unsigned(*value)),
+        Some(ValueExprPayload::DurationCycles(value)) => u64::try_from(*value)
+            .map(OasmArgument::Unsigned)
+            .map_err(|_| OasmCompileError::new("physical OASM duration must be non-negative")),
         Some(ValueExprPayload::String(value)) => Ok(OasmArgument::String(value.clone())),
         Some(ValueExprPayload::Json(value)) => {
             Ok(OasmArgument::Json(resolve_json_expressions(value, values)?))
@@ -138,7 +140,7 @@ pub(super) fn evaluate_numeric_values(
         let value = match node.kind() {
             ValueExprKind::Constant => match arena.payload(ValueExprId::from_index(index as u32)) {
                 Ok(Some(ValueExprPayload::DurationCycles(value))) => {
-                    Ok(ExactDecimal::from_u64(*value))
+                    Ok(ExactDecimal::from_i64(*value))
                 }
                 Ok(Some(ValueExprPayload::Int64(value))) => Ok(ExactDecimal::from_i64(*value)),
                 Ok(Some(ValueExprPayload::Float64(value))) => {
@@ -275,6 +277,34 @@ pub(super) fn eval_duration_cycles(
     cycles.ok_or_else(|| {
         OasmCompileError::new(format!(
             "duration {} is not {requirement} target Cycle Count (expression {})",
+            value.to_f64(),
+            id.index()
+        ))
+    })
+}
+
+pub(super) fn eval_duration_delta(
+    values: &[Result<ExactDecimal, OasmCompileError>],
+    id: ValueExprId,
+    quantization: DurationQuantization,
+) -> Result<i64, OasmCompileError> {
+    let value = values.get(id.index()).cloned().unwrap_or_else(|| {
+        Err(OasmCompileError::new(format!(
+            "cannot evaluate expression {}",
+            id.index()
+        )))
+    })?;
+    let cycles = match quantization {
+        DurationQuantization::Strict => value.to_signed_cycle_delta(),
+        DurationQuantization::NearestEven => value.to_signed_cycle_delta_rounded(),
+    };
+    let requirement = match quantization {
+        DurationQuantization::Strict => "an exact signed",
+        DurationQuantization::NearestEven => "a signed",
+    };
+    cycles.ok_or_else(|| {
+        OasmCompileError::new(format!(
+            "duration {} is not {requirement} target Cycle Delta (expression {})",
             value.to_f64(),
             id.index()
         ))

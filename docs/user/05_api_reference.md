@@ -19,12 +19,16 @@ CatSeq 编译器编译；每个 scan point 只有 `build_sequence` 和对应的�
 - `catseq.time_utils.Duration`：编译器识别的硬件 duration 注解。用户模板中把
   传给 `pulse`、`hold`、`rf_pulse` 或 `linear_ramp` 的参数标为该类型。
 - `s`、`ms`、`us`、`ns`：source-language SI 单位。编译器按照选中 target 的
-  `clock_hz` 换算，并要求结果是精确的非负 Cycle Count。
-- `cycles(count)`：编译器专用构造器，显式声明非负整数 `count` 已经是目标周期
+  `clock_hz` 换算，并要求结果是精确的有符号 Cycle Delta。
+- `cycles(count)`：编译器专用构造器，显式声明整数 `count` 已经是目标周期
   数；它不能作为普通 CPython 宿主函数执行。
 - `time_to_cycles(..., clock_hz=...)`、`us_to_cycles(..., clock_hz=...)`、
   `cycles_to_time(..., clock_hz=...)` 和 `cycles_to_us(..., clock_hz=...)`：宿主侧
   换算函数，必须显式传入正整数时钟。它们不使用全局默认时钟，也不会隐式舍入。
+
+传给 `identity` 或 `hold` 的负 `Duration` 使逻辑时间游标在当前 Epoch 内回移；
+内置 pulse/ramp 的宽度仍须非负。回移不能越过 Epoch 起点；包含回移的循环会先
+展开再调度。编码后的 OASM 时间戳仍为非负 Cycle Count。
 
 无单位数字不会隐式转换成 `Duration`。通过局部变量、模块常量或函数参数传递
 也不会改变这条规则；如果 duration 是 target-relative 周期数，必须在 source

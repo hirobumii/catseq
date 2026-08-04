@@ -6,6 +6,7 @@ use nac3ast::{Expr, ExprKind, Operator, Stmt, StmtKind};
 
 use super::ast_util::expression_path;
 use super::model::SourceType;
+use super::resolution::resolve_call_path;
 
 #[derive(Default)]
 pub(super) struct ClassFields {
@@ -15,7 +16,11 @@ pub(super) struct ClassFields {
     pub(super) property_elements: HashMap<String, Vec<String>>,
 }
 
-pub(super) fn class_fields(statements: &[Stmt]) -> ClassFields {
+pub(super) fn class_fields(
+    statements: &[Stmt],
+    module: &str,
+    imports: &HashMap<String, String>,
+) -> ClassFields {
     let mut fields = ClassFields::default();
     for statement in statements {
         match &statement.node {
@@ -32,7 +37,9 @@ pub(super) fn class_fields(statements: &[Stmt]) -> ClassFields {
                     fields.types.insert(id.to_string(), source_type);
                 }
                 if let Some(value) = value {
-                    if let Some(normalized) = normalized_compile_expression(value) {
+                    if let Some(normalized) =
+                        normalized_compile_expression_in(value, module, imports)
+                    {
                         fields.values.insert(id.to_string(), normalized);
                     }
                 }
@@ -44,10 +51,10 @@ pub(super) fn class_fields(statements: &[Stmt]) -> ClassFields {
                 let ExprKind::Name { id, .. } = &target.node else {
                     continue;
                 };
-                if let Some(source_type) = inferred_compile_value_type(value) {
+                if let Some(source_type) = inferred_compile_value_type(value, module, imports) {
                     fields.types.insert(id.to_string(), source_type);
                 }
-                if let Some(normalized) = normalized_compile_expression(value) {
+                if let Some(normalized) = normalized_compile_expression_in(value, module, imports) {
                     fields.values.insert(id.to_string(), normalized);
                 }
             }
@@ -86,7 +93,11 @@ fn returned_static_elements(body: &[Stmt]) -> Option<Vec<String>> {
     elements.iter().map(expression_path).collect()
 }
 
-pub(super) fn inferred_compile_value_type(expression: &Expr) -> Option<SourceType> {
+pub(super) fn inferred_compile_value_type(
+    expression: &Expr,
+    module: &str,
+    imports: &HashMap<String, String>,
+) -> Option<SourceType> {
     match &expression.node {
         ExprKind::Constant { value, .. } => match value {
             nac3ast::Constant::Bool(_) => Some(SourceType::Bool),
@@ -96,21 +107,43 @@ pub(super) fn inferred_compile_value_type(expression: &Expr) -> Option<SourceTyp
             _ => None,
         },
         ExprKind::Call { func, .. } => expression_path(func).map(|path| {
+            let resolved = resolve_call_path(module, imports, &path);
             let leaf = path.rsplit('.').next().unwrap_or(&path);
-            if leaf == "cycles" {
+            if resolved == "catseq.time_utils.cycles" {
                 SourceType::Duration
             } else {
                 SourceType::NativeRecord(leaf.to_owned())
             }
         }),
         ExprKind::Name { id, .. }
-            if matches!(id.to_string().as_str(), "s" | "ms" | "us" | "ns") =>
+            if matches!(
+                resolve_call_path(module, imports, id.to_string().as_str()).as_str(),
+                "catseq.time_utils.s"
+                    | "catseq.time_utils.ms"
+                    | "catseq.time_utils.us"
+                    | "catseq.time_utils.ns"
+            ) =>
+        {
+            Some(SourceType::Duration)
+        }
+        ExprKind::Attribute { .. }
+            if expression_path(expression)
+                .map(|path| resolve_call_path(module, imports, &path))
+                .is_some_and(|resolved| {
+                    matches!(
+                        resolved.as_str(),
+                        "catseq.time_utils.s"
+                            | "catseq.time_utils.ms"
+                            | "catseq.time_utils.us"
+                            | "catseq.time_utils.ns"
+                    )
+                }) =>
         {
             Some(SourceType::Duration)
         }
         ExprKind::BinOp { left, op, right } => {
-            let left = inferred_compile_value_type(left)?;
-            let right = inferred_compile_value_type(right)?;
+            let left = inferred_compile_value_type(left, module, imports)?;
+            let right = inferred_compile_value_type(right, module, imports)?;
             match (op, &left, &right) {
                 (Operator::Add | Operator::Sub, SourceType::Duration, SourceType::Duration)
                 | (Operator::Mult, SourceType::Duration, SourceType::Int64 | SourceType::Float64)
@@ -127,26 +160,73 @@ pub(super) fn inferred_compile_value_type(expression: &Expr) -> Option<SourceTyp
                 _ => None,
             }
         }
+        ExprKind::UnaryOp { operand, .. } => inferred_compile_value_type(operand, module, imports),
         ExprKind::Tuple { .. } | ExprKind::List { .. } => Some(SourceType::FixedAggregate),
         _ => None,
     }
 }
 
 pub(super) fn normalized_compile_expression(expression: &Expr) -> Option<String> {
+    normalized_compile_expression_with_context(expression, None)
+}
+
+pub(super) fn normalized_compile_expression_in(
+    expression: &Expr,
+    module: &str,
+    imports: &HashMap<String, String>,
+) -> Option<String> {
+    normalized_compile_expression_with_context(expression, Some((module, imports)))
+}
+
+fn normalized_compile_expression_with_context(
+    expression: &Expr,
+    context: Option<(&str, &HashMap<String, String>)>,
+) -> Option<String> {
     match &expression.node {
         ExprKind::Constant { value, .. } => Some(format!("constant:{value:?}")),
-        ExprKind::Name { id, .. } => Some(format!("name:{id}")),
-        ExprKind::Attribute { .. } => {
-            expression_path(expression).map(|path| format!("path:{path}"))
+        ExprKind::Name { id, .. } => {
+            let name = id.to_string();
+            let name = context.map_or(name.clone(), |(module, imports)| {
+                let resolved = resolve_call_path(module, imports, &name);
+                if matches!(
+                    resolved.as_str(),
+                    "catseq.time_utils.s"
+                        | "catseq.time_utils.ms"
+                        | "catseq.time_utils.us"
+                        | "catseq.time_utils.ns"
+                ) {
+                    resolved
+                } else {
+                    name.clone()
+                }
+            });
+            Some(format!("name:{name}"))
         }
+        ExprKind::Attribute { .. } => expression_path(expression).map(|path| {
+            let resolved =
+                context.map(|(module, imports)| resolve_call_path(module, imports, &path));
+            if resolved.as_deref().is_some_and(|resolved| {
+                matches!(
+                    resolved,
+                    "catseq.time_utils.s"
+                        | "catseq.time_utils.ms"
+                        | "catseq.time_utils.us"
+                        | "catseq.time_utils.ns"
+                )
+            }) {
+                format!("name:{}", resolved.expect("checked above"))
+            } else {
+                format!("path:{path}")
+            }
+        }),
         ExprKind::BinOp { left, op, right } => Some(format!(
             "bin:{op:?}({},{})",
-            normalized_compile_expression(left)?,
-            normalized_compile_expression(right)?
+            normalized_compile_expression_with_context(left, context)?,
+            normalized_compile_expression_with_context(right, context)?
         )),
         ExprKind::UnaryOp { op, operand } => Some(format!(
             "unary:{op:?}({})",
-            normalized_compile_expression(operand)?
+            normalized_compile_expression_with_context(operand, context)?
         )),
         ExprKind::Call {
             func,
@@ -154,9 +234,12 @@ pub(super) fn normalized_compile_expression(expression: &Expr) -> Option<String>
             keywords,
         } => {
             let function = expression_path(func)?;
+            let function = context.map_or(function.clone(), |(module, imports)| {
+                resolve_call_path(module, imports, &function)
+            });
             let args = args
                 .iter()
-                .map(normalized_compile_expression)
+                .map(|argument| normalized_compile_expression_with_context(argument, context))
                 .collect::<Option<Vec<_>>>()?;
             let keywords = keywords
                 .iter()
@@ -167,7 +250,7 @@ pub(super) fn normalized_compile_expression(expression: &Expr) -> Option<String>
                             .node
                             .arg
                             .map_or("**".to_owned(), |arg| arg.to_string()),
-                        normalized_compile_expression(&keyword.node.value)?
+                        normalized_compile_expression_with_context(&keyword.node.value, context)?
                     ))
                 })
                 .collect::<Option<Vec<_>>>()?;
@@ -180,7 +263,7 @@ pub(super) fn normalized_compile_expression(expression: &Expr) -> Option<String>
         ExprKind::Tuple { elts, .. } | ExprKind::List { elts, .. } => {
             let values = elts
                 .iter()
-                .map(normalized_compile_expression)
+                .map(|element| normalized_compile_expression_with_context(element, context))
                 .collect::<Option<Vec<_>>>()?;
             Some(format!("aggregate:[{}]", values.join(",")))
         }

@@ -393,13 +393,14 @@ impl Serialize for FactJson<'_> {
         S: Serializer,
     {
         let fact = self.0;
-        let mut state = serializer.serialize_struct("SemanticFact", 8)?;
+        let mut state = serializer.serialize_struct("SemanticFact", 9)?;
         state.serialize_field("type", &OptionalDisplayJson(fact.source_type()))?;
         state.serialize_field("availability", fact.availability().as_str())?;
         state.serialize_field("roles", &RolesJson(fact))?;
         state.serialize_field("resolved_node", &fact.resolved_node())?;
         state.serialize_field("resolved_definition", &fact.resolved_definition())?;
         state.serialize_field("resolved_definitions", fact.resolved_definitions())?;
+        state.serialize_field("resolved_call_targets", fact.resolved_call_targets())?;
         state.serialize_field("phase_frame", &fact.phase_frame())?;
         state.serialize_field("compile_value", &fact.compile_value())?;
         state.end()

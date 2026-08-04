@@ -1,5 +1,6 @@
 """CatSeq restricted-source DSL and native compiler adapter."""
 
+from ._native_record import replace
 from .compiler import Compiler, CompiledSequence
 from .compilation import (
     CatSeqCompileError,
@@ -60,6 +61,7 @@ __all__ = [
     "morphism_template",
     "ns",
     "repeat_morphism",
+    "replace",
     "s",
     "time_to_cycles",
     "us",

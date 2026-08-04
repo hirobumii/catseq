@@ -518,7 +518,7 @@ impl<'a> SpecializationLowerer<'a> {
                     )?
                 }
                 SourceHirKind::Call if matches!(source_type, Some(SourceType::NativeRecord(_))) => {
-                    lower_native_record_call(node, children, fact, &values)?
+                    lower_native_record_call(node, children, fact, hir, &values)?
                 }
                 SourceHirKind::Call if source_type == Some(&SourceType::FixedAggregate) => {
                     lower_aggregate_intrinsic(node, children, fact, &values)?
@@ -751,7 +751,7 @@ impl<'a> SpecializationLowerer<'a> {
                 lower_cycles_intrinsic(node, children, &evaluated, &mut self.value_builder)?
             }
             SourceHirKind::Call if matches!(source_type, Some(SourceType::NativeRecord(_))) => {
-                lower_native_record_call(node, children, fact, &evaluated)?
+                lower_native_record_call(node, children, fact, hir, &evaluated)?
             }
             SourceHirKind::Call if source_type == Some(&SourceType::FixedAggregate) => {
                 lower_aggregate_intrinsic(node, children, fact, &evaluated)?
@@ -914,7 +914,7 @@ fn lower_entry(
                 lower_cycles_intrinsic(node, children, &values, &mut value_builder)?
             }
             SourceHirKind::Call if matches!(source_type, Some(SourceType::NativeRecord(_))) => {
-                lower_native_record_call(node, children, &hir.facts()[node_id], &values)?
+                lower_native_record_call(node, children, &hir.facts()[node_id], hir, &values)?
             }
             SourceHirKind::Call if source_type == Some(&SourceType::FixedAggregate) => {
                 lower_aggregate_intrinsic(node, children, &hir.facts()[node_id], &values)?
@@ -1168,6 +1168,7 @@ fn lower_native_record_call(
     node: &SourceHirNode,
     children: &[u32],
     fact: &crate::SemanticFact,
+    hir: &TypedSourceHir,
     values: &[Option<LoweredValue>],
 ) -> Result<Option<LoweredValue>, MorphismLoweringError> {
     let resolved = fact.resolved_definition().unwrap_or_default();
@@ -1190,16 +1191,57 @@ fn lower_native_record_call(
     let Some(arguments) = arguments else {
         return Ok(None);
     };
-    if resolved == "dataclasses.replace" {
+    if intrinsics::is_native_record_replace(resolved) {
         let Some((_, LoweredValue::Json(serde_json::Value::Object(mut record)))) =
             arguments.first().cloned()
         else {
-            return Ok(None);
+            return Err(lowering_error(
+                node,
+                "catseq.replace requires a Native Record as its first argument",
+            ));
         };
-        for (name, value) in arguments.into_iter().skip(1) {
+        let schema = record
+            .get("$type")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                lowering_error(
+                    node,
+                    "catseq.replace requires a registered Native Record schema",
+                )
+            })?;
+        let field_names = intrinsics::native_record_field_names(&schema).ok_or_else(|| {
+            lowering_error(
+                node,
+                format!("catseq.replace does not support Native Record `{schema}`"),
+            )
+        })?;
+        for (index, (name, value)) in arguments.into_iter().enumerate().skip(1) {
             let Some(name) = name else {
                 return Err(lowering_error(node, "replace fields must be named"));
             };
+            if !field_names.contains(&name.as_str()) {
+                return Err(lowering_error(
+                    node,
+                    format!("unknown Native Record field `{name}` for `{schema}`"),
+                ));
+            }
+            let expected = intrinsics::native_record_field_type(&schema, &name)
+                .expect("registered Native Record fields must have types");
+            let found = children
+                .get(index + 1)
+                .and_then(|child| hir.facts().get(*child as usize))
+                .and_then(crate::SemanticFact::source_type);
+            if let Some(found) = found
+                && !native_record_field_types_compatible(&expected, found)
+            {
+                return Err(lowering_error(
+                    node,
+                    format!(
+                        "catseq.replace field `{name}` for `{schema}` expects {expected}, found {found}"
+                    ),
+                ));
+            }
             record.insert(name, lowered_to_json(&value)?);
         }
         return Ok(Some(LoweredValue::Json(serde_json::Value::Object(record))));
@@ -1208,28 +1250,8 @@ fn lower_native_record_call(
         Some(SourceType::NativeRecord(schema)) => schema.as_str(),
         _ => resolved.rsplit('.').next().unwrap_or("NativeRecord"),
     };
-    let field_names: &[&str] = match schema {
-        "StaticWaveform" => &["freq", "amp", "sbg_id", "phase", "fct"],
-        "WaveformParams" => &[
-            "sbg_id",
-            "freq_coeffs",
-            "amp_coeffs",
-            "initial_phase",
-            "phase_reset",
-            "fct",
-        ],
-        "RSPPIDConfig" => &[
-            "adc_in",
-            "rf_out",
-            "dgt_source",
-            "setpoint",
-            "kp",
-            "ki",
-            "kd",
-            "output_max",
-        ],
-        "RSPWaveformParams" => &["rf_out", "amp", "output_max"],
-        _ => return Ok(None),
+    let Some(field_names) = intrinsics::native_record_field_names(schema) else {
+        return Ok(None);
     };
     let mut record = serde_json::Map::new();
     record.insert(
@@ -1279,6 +1301,16 @@ fn lower_native_record_call(
         _ => {}
     }
     Ok(Some(LoweredValue::Json(serde_json::Value::Object(record))))
+}
+
+fn native_record_field_types_compatible(expected: &SourceType, found: &SourceType) -> bool {
+    match expected {
+        SourceType::Optional(inner) => {
+            found == &SourceType::Unit || native_record_field_types_compatible(inner, found)
+        }
+        SourceType::Float64 => matches!(found, SourceType::Float64 | SourceType::Int64),
+        _ => expected == found,
+    }
 }
 
 fn lower_composition(

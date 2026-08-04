@@ -476,14 +476,22 @@ impl TypedSourceHir {
         resolved: &str,
         instance_identity: Option<&str>,
     ) {
-        for (node, fact) in self.nodes.iter().zip(&mut self.facts) {
-            if call_matches(node, source_path, line, column) {
-                record_call_resolution(fact, resolved, instance_identity);
-                if let Some(source_type) =
-                    intrinsics::return_type(resolved, fact.source_type.as_ref())
-                {
-                    fact.source_type = Some(source_type);
-                }
+        for node_id in 0..self.nodes.len() {
+            let node = &self.nodes[node_id];
+            if !call_matches(node, source_path, line, column) {
+                continue;
+            }
+            let first_argument_type = node_edges(node, &self.edges)
+                .get(1)
+                .and_then(|child| self.facts.get(*child as usize))
+                .and_then(SemanticFact::source_type)
+                .cloned();
+            let fact = &mut self.facts[node_id];
+            record_call_resolution(fact, resolved, instance_identity);
+            if let Some(source_type) =
+                intrinsics::return_type(resolved, first_argument_type.as_ref())
+            {
+                fact.source_type = Some(source_type);
             }
         }
     }

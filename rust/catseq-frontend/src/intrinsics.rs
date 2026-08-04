@@ -2,7 +2,8 @@
 
 use crate::typed::SourceType;
 
-pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 6;
+pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 7;
+const NATIVE_RECORD_REPLACE: &str = "catseq.replace";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NativeMorphismTemplate {
@@ -23,7 +24,6 @@ enum ResultRule {
     Duration,
     FixedAggregate,
     NativeRecord(&'static str),
-    ReplaceFirstArgument,
 }
 
 #[derive(Clone, Copy)]
@@ -114,10 +114,6 @@ const INTRINSICS: &[Intrinsic] = &[
         result: ResultRule::MorphismTemplate,
     },
     Intrinsic {
-        leaf: "replace",
-        result: ResultRule::ReplaceFirstArgument,
-    },
-    Intrinsic {
         leaf: "arccos",
         result: ResultRule::Float64,
     },
@@ -195,6 +191,12 @@ pub(crate) fn return_type(path: &str, first_argument: Option<&SourceType>) -> Op
     if path == "numpy.load" || path == "np.load" {
         return Some(SourceType::NativeRecord("CalibrationSnapshot".to_owned()));
     }
+    if is_native_record_replace(path) {
+        return Some(match first_argument {
+            Some(SourceType::NativeRecord(schema)) => SourceType::NativeRecord(schema.clone()),
+            _ => SourceType::NativeRecord("NativeRecord".to_owned()),
+        });
+    }
     let leaf = path.rsplit('.').next().unwrap_or(path);
     if leaf == "cycles" && path != "cycles" && path != "catseq.time_utils.cycles" {
         return None;
@@ -213,9 +215,6 @@ pub(crate) fn return_type(path: &str, first_argument: Option<&SourceType>) -> Op
         ResultRule::Duration => SourceType::Duration,
         ResultRule::FixedAggregate => SourceType::FixedAggregate,
         ResultRule::NativeRecord(schema) => SourceType::NativeRecord(schema.to_owned()),
-        ResultRule::ReplaceFirstArgument => first_argument
-            .cloned()
-            .unwrap_or_else(|| SourceType::NativeRecord("dataclass".to_owned())),
     })
 }
 
@@ -255,6 +254,58 @@ pub(crate) fn is_identity(path: &str) -> bool {
 
 pub(crate) fn is_registered(path: &str) -> bool {
     return_type(path, None).is_some()
+}
+
+pub(crate) fn is_native_record_replace(path: &str) -> bool {
+    path == NATIVE_RECORD_REPLACE
+}
+
+pub(crate) fn native_record_field_names(schema: &str) -> Option<&'static [&'static str]> {
+    match schema {
+        "StaticWaveform" => Some(&["freq", "amp", "sbg_id", "phase", "fct"]),
+        "WaveformParams" => Some(&[
+            "sbg_id",
+            "freq_coeffs",
+            "amp_coeffs",
+            "initial_phase",
+            "phase_reset",
+            "fct",
+        ]),
+        "RSPPIDConfig" => Some(&[
+            "adc_in",
+            "rf_out",
+            "dgt_source",
+            "setpoint",
+            "kp",
+            "ki",
+            "kd",
+            "output_max",
+        ]),
+        "RSPWaveformParams" => Some(&["rf_out", "amp", "output_max"]),
+        _ => None,
+    }
+}
+
+pub(crate) fn native_record_field_type(schema: &str, field: &str) -> Option<SourceType> {
+    let optional_float = || SourceType::Optional(Box::new(SourceType::Float64));
+    let optional_int = || SourceType::Optional(Box::new(SourceType::Int64));
+    match (schema, field) {
+        ("StaticWaveform", "freq" | "amp") => Some(optional_float()),
+        ("StaticWaveform", "sbg_id" | "fct") => Some(optional_int()),
+        ("StaticWaveform", "phase") => Some(SourceType::Float64),
+        ("WaveformParams", "sbg_id") => Some(SourceType::Int64),
+        ("WaveformParams", "freq_coeffs" | "amp_coeffs") => Some(SourceType::FixedAggregate),
+        ("WaveformParams", "initial_phase") => Some(optional_float()),
+        ("WaveformParams", "phase_reset") => Some(SourceType::Bool),
+        ("WaveformParams", "fct") => Some(optional_int()),
+        ("RSPPIDConfig", "adc_in" | "rf_out" | "dgt_source") => Some(SourceType::Int64),
+        ("RSPPIDConfig", "setpoint" | "kp" | "ki" | "kd") => Some(SourceType::Float64),
+        ("RSPPIDConfig", "output_max") => Some(optional_float()),
+        ("RSPWaveformParams", "rf_out") => Some(SourceType::Int64),
+        ("RSPWaveformParams", "amp") => Some(SourceType::Float64),
+        ("RSPWaveformParams", "output_max") => Some(optional_float()),
+        _ => None,
+    }
 }
 
 pub(crate) fn is_compiler_special_form(resolved: &str) -> bool {

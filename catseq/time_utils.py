@@ -1,81 +1,106 @@
-"""
-Time conversion utilities for CatSeq framework.
+"""Target-independent time units and explicit clock-aware conversions."""
 
-Uses International System of Units (SI) with seconds as base unit.
-Internal conversion to hardware clock cycles (machine units).
-Hardware: RTMQ clock at 250 MHz (4ns per cycle, mu = 1 cycle)
-"""
+from __future__ import annotations
 
-# Hardware constants
-CLOCK_FREQ_HZ = 250_000_000  # 250 MHz
-CYCLE_DURATION_S = 4e-9      # 4ns per cycle in seconds
+from decimal import Decimal, InvalidOperation
+from numbers import Real
+from typing import TypeAlias
 
-# International unit constants (SI base: seconds)
-s = 1.0           # 1 second (SI base unit)
-ms = 1e-3         # 1 millisecond = 0.001 seconds
-us = 1e-6         # 1 microsecond = 0.000001 seconds
-ns = 1e-9         # 1 nanosecond = 0.000000001 seconds
-mu = 4e-9         # 1 machine unit = 4ns = 1 clock cycle
-
-# Legacy constants for backward compatibility
-CYCLES_PER_US = CLOCK_FREQ_HZ * us
+from .morphism.core import compiler_only
 
 
-def us_to_cycles(microseconds: float) -> int:
-    """将微秒转换为时钟周期数 (Legacy function)
+Duration: TypeAlias = float
+_TimeValue: TypeAlias = Real | Decimal
 
-    Args:
-        microseconds: 时间长度（微秒）
-
-    Returns:
-        对应的时钟周期数
-    """
-    return round(microseconds * CYCLES_PER_US)
-
-
-def cycles_to_us(cycles: int) -> float:
-    """将时钟周期数转换为微秒 (Legacy function)
-
-    Args:
-        cycles: 时钟周期数
-
-    Returns:
-        对应的时间长度（微秒）
-    """
-    return cycles / CYCLES_PER_US
+# Source-language SI units. The Rust frontend converts expressions containing
+# these names with the selected target profile's clock.
+s: Duration = 1.0
+ms: Duration = 1e-3
+us: Duration = 1e-6
+ns: Duration = 1e-9
 
 
-def time_to_cycles(time_seconds: float) -> int:
-    """Convert SI time in seconds to machine units (clock cycles).
+def cycles(count: int) -> Duration:
+    """Spell an exact target Cycle Count in restricted CatSeq source."""
 
-    Args:
-        time_seconds: Time value in seconds (SI unit)
-
-    Returns:
-        Time value in machine units (clock cycles)
-
-    Examples:
-        time_to_cycles(1.0)       -> 250_000_000  # 1 second
-        time_to_cycles(1e-3)      -> 250_000      # 1 millisecond
-        time_to_cycles(1e-6)      -> 250          # 1 microsecond
-        time_to_cycles(4e-9)      -> 1            # 1 machine unit
-    """
-    return round(time_seconds * CLOCK_FREQ_HZ)
+    del count
+    compiler_only("catseq.time_utils.cycles")
 
 
-def cycles_to_time(cycles: int) -> float:
-    """Convert machine units (clock cycles) to SI time in seconds.
+def us_to_cycles(microseconds: _TimeValue, *, clock_hz: int) -> int:
+    """Convert microseconds to an exact Cycle Count for ``clock_hz``."""
 
-    Args:
-        cycles: Time value in machine units (clock cycles)
+    return _seconds_to_cycles(_decimal(microseconds) / 1_000_000, clock_hz)
 
-    Returns:
-        Time value in seconds (SI unit)
 
-    Examples:
-        cycles_to_time(250_000_000) -> 1.0    # 1 second
-        cycles_to_time(250_000)     -> 1e-3   # 1 millisecond
-        cycles_to_time(250)         -> 1e-6   # 1 microsecond
-        cycles_to_time(1)           -> 4e-9   # 1 machine unit
-    """
-    return cycles * CYCLE_DURATION_S
+def cycles_to_us(cycle_count: int, *, clock_hz: int) -> float:
+    """Convert a Cycle Count to microseconds for ``clock_hz``."""
+
+    return cycles_to_time(cycle_count, clock_hz=clock_hz) * 1_000_000
+
+
+def time_to_cycles(time_seconds: _TimeValue, *, clock_hz: int) -> int:
+    """Convert seconds to an exact Cycle Count for ``clock_hz``."""
+
+    return _seconds_to_cycles(_decimal(time_seconds), clock_hz)
+
+
+def cycles_to_time(cycle_count: int, *, clock_hz: int) -> float:
+    """Convert a Cycle Count to seconds for ``clock_hz``."""
+
+    clock = _clock_hz(clock_hz)
+    if isinstance(cycle_count, bool) or not isinstance(cycle_count, int):
+        raise TypeError("cycle_count must be an integer")
+    if cycle_count < 0:
+        raise ValueError("cycle_count must be non-negative")
+    return float(Decimal(cycle_count) / Decimal(clock))
+
+
+def _seconds_to_cycles(seconds: Decimal, clock_hz: int) -> int:
+    clock = _clock_hz(clock_hz)
+    if not seconds.is_finite():
+        raise ValueError("duration must be finite")
+    if seconds < 0:
+        raise ValueError("duration must be non-negative")
+    cycle_count = seconds * clock
+    integral = cycle_count.to_integral_value()
+    if cycle_count != integral:
+        raise ValueError(
+            f"duration produces non-integral target Cycle Count {cycle_count}"
+        )
+    return int(integral)
+
+
+def _clock_hz(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("clock_hz must be an integer")
+    if value <= 0:
+        raise ValueError("clock_hz must be greater than zero")
+    return value
+
+
+def _decimal(value: _TimeValue) -> Decimal:
+    if isinstance(value, bool):
+        raise TypeError("duration must be a real number")
+    try:
+        if isinstance(value, Decimal):
+            return value
+        if isinstance(value, Real):
+            return Decimal(str(value))
+        raise TypeError("duration must be a real number")
+    except (InvalidOperation, ValueError) as error:
+        raise ValueError("duration must be finite") from error
+
+
+__all__ = [
+    "Duration",
+    "cycles",
+    "cycles_to_time",
+    "cycles_to_us",
+    "ms",
+    "ns",
+    "s",
+    "time_to_cycles",
+    "us",
+    "us_to_cycles",
+]

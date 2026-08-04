@@ -6,9 +6,10 @@ parsed by ``catseqc`` and must not be evaluated by the Python host runtime.
 
 from ..morphism import MorphismDef
 from ..morphism.core import compiler_only
+from ..time_utils import Duration
 
 
-def hold(duration: float) -> MorphismDef:
+def hold(duration: Duration) -> MorphismDef:
     """Wait for ``duration`` seconds without changing channel state."""
     compiler_only("catseq.hardware.common.hold")
 

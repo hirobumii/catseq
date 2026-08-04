@@ -1,6 +1,6 @@
-# CatSeq 0.4.0 quickstart
+# CatSeq 0.4.1 quickstart
 
-CatSeq 0.4.0 keeps the Python Morphism composition syntax, but production
+CatSeq 0.4.1 keeps the Python Morphism composition syntax, but production
 compilation starts from a source definition. It does not execute the Python
 builder and does not compile an already-constructed Python `Morphism`.
 
@@ -23,7 +23,7 @@ Save this complete compile-only example as `quickstart_ttl.py`:
 from pathlib import Path
 
 from catseq import Compiler
-from catseq.hardware.ttl import pulse
+from catseq.hardware.ttl import initialize, pulse
 from catseq.morphism import Morphism, identity
 from catseq.time_utils import ms
 from catseq.types import Board, Channel, ChannelType
@@ -35,7 +35,7 @@ ttl0 = Channel(rwg0, local_id=0, channel_type=ChannelType.TTL)
 
 class TtlExperiment:
     def build_sequence(self) -> Morphism:
-        return identity(0) >> {ttl0: pulse(500 * ms)}
+        return identity(0) >> {ttl0: initialize() >> pulse(500 * ms)}
 
 
 class LabSystem:
@@ -52,6 +52,15 @@ print(compiled.oasm_call_plan)
 
 Run it with `uv run python quickstart_ttl.py`. The first line is
 `compiled 125000000 cycles`.
+
+`pulse` and other hardware timing APIs require an explicit duration. Use an SI
+unit such as `500 * ms`, or use `cycles(count)` when the value intentionally
+means target cycles. A bare numeric value is rejected, and an SI duration that
+is not an exact Cycle Count for the selected target clock is also rejected.
+
+The channel key is qualified by the source module. Keep the documented
+`quickstart_ttl.py` filename, or replace `quickstart_ttl.ttl0` with the module
+name of the file you create.
 
 `Compiler.from_system()` reads `source_root` and `channels` from the system. A
 system may also supply `opaque_calls`, scalar `environment_values`, a target

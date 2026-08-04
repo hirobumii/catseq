@@ -249,11 +249,12 @@ impl PyEthernetRuntimeBackend {
             })
             .collect::<Result<Vec<_>, RuntimeContractError>>()
             .map_err(contract_error)?;
+        let timeout_margin_ms = timeout_margin_ms.max(1);
         let config = LinuxRawEthernetRuntimeConfig::new(
             1,
             interface,
             Some(parse_mac(destination)?),
-            timeout_margin_ms.max(1),
+            timeout_margin_ms,
             endpoints,
         )
         .map_err(contract_error)?;
@@ -321,11 +322,10 @@ impl PyEthernetRuntimeBackend {
                 "assembled program reply endpoint does not match EthernetRuntime",
             ));
         }
-        let duration_ms = (u128::from(logical_duration_cycles) * 1_000)
-            .div_ceil(u128::from(clock_hz))
-            .min(u128::from(u64::MAX)) as u64;
         let timeout_ms = timeout_ms
-            .unwrap_or_else(|| duration_ms.saturating_add(self.timeout_margin_ms))
+            .unwrap_or_else(|| {
+                default_timeout_ms(logical_duration_cycles, clock_hz, self.timeout_margin_ms)
+            })
             .max(1);
         let config = LinuxRawEthernetRuntimeConfig::new(
             1,
@@ -337,6 +337,13 @@ impl PyEthernetRuntimeBackend {
         .map_err(contract_error)?;
         runtime_outcome(py, program.inner.clone(), config)
     }
+}
+
+fn default_timeout_ms(logical_duration_cycles: u64, clock_hz: u64, timeout_margin_ms: u64) -> u64 {
+    let duration_ms = (u128::from(logical_duration_cycles) * 1_000)
+        .div_ceil(u128::from(clock_hz))
+        .min(u128::from(u64::MAX)) as u64;
+    duration_ms.saturating_add(timeout_margin_ms).max(1)
 }
 
 #[pyclass(name = "OASMRuntimeSuccess", module = "catseq._native", frozen)]
@@ -514,5 +521,12 @@ mod tests {
             python_evidence(&evidence),
             BTreeMap::from([("rwg0".to_owned(), "launch_submitted".to_owned())])
         );
+    }
+
+    #[test]
+    fn default_timeout_is_ceil_rounded_and_overflow_safe() {
+        assert_eq!(default_timeout_ms(0, 250_000_000, 1), 1);
+        assert_eq!(default_timeout_ms(1, 3, 1), 335);
+        assert_eq!(default_timeout_ms(u64::MAX, 1, u64::MAX), u64::MAX);
     }
 }

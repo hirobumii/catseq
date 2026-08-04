@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "catseq"
-version = "0.4.0"
+version = "0.4.1"
 description = "A Categorical Framework for Hardware Sequence Control"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -50,6 +50,10 @@ ignore = ["E501", "E701"]
 namespace_packages = true
 # Exclude the temporary build directory created by pip/uv to avoid duplicate module errors.
 exclude = ["build/"]
+
+[[tool.mypy.overrides]]
+module = ["oasm.*"]
+ignore_missing_imports = true
 
 [dependency-groups]
 dev = [

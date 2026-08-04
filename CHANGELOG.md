@@ -7,6 +7,41 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-04
+
+### Added
+
+- Added the compiler-only `cycles(count)` constructor and the `Duration` source
+  annotation so timing APIs can distinguish exact target cycles from ordinary
+  `int` and `float` values.
+- Added an executable README quickstart gate, enforced Python type checking,
+  PyO3/stub surface parity checks, and fork-safe public CI coverage.
+
+### Changed
+
+- Made TTL/RWG timing parameters require an explicit SI unit (`s`, `ms`, `us`,
+  or `ns`) or `cycles(...)`, including values passed through locals, globals,
+  user functions, and scan bindings. Conversion uses the selected target clock
+  and rejects non-integral Cycle Counts instead of rounding.
+- Made host time conversion helpers require an explicit `clock_hz`; removed the
+  implicit 250 MHz aliases `CLOCK_FREQ_HZ`, `CYCLE_DURATION_S`,
+  `CYCLES_PER_US`, and `mu`.
+- Removed the site-specific physical validation script and configuration from
+  this repository. Offline transcript and downstream benchmark fixtures now
+  use synthetic routes; real chassis acceptance belongs in a separate,
+  site-private hardware-test workspace.
+
+### Fixed
+
+- Made simultaneous TTL writes deterministic with source-order last-write
+  semantics per channel while retaining one coalesced board write.
+- Rejected zero target clocks, normalized zero runtime timeout margins to one
+  millisecond, and made default-timeout calculation overflow-safe.
+- Made unknown typed OASM records fail at the Python decoder boundary with the
+  record type, exact plan path, supported types, and extension guidance.
+- Changed the built-in RTMQ target to strict duration quantization so an
+  inexact time cannot silently become a different hardware duration.
+
 ## [0.4.0] - 2026-08-04
 
 ### Added

@@ -47,6 +47,55 @@ fn ttl_target_profile(source_path: &std::path::Path) -> std::path::PathBuf {
     path
 }
 
+fn compile_ttl_source(
+    source_path: &std::path::Path,
+    source: &str,
+    clock_hz: u64,
+) -> Result<serde_json::Value, String> {
+    fs::write(source_path, source).unwrap();
+    let channel_key = format!(
+        "{}::ttl0",
+        source_path.file_stem().unwrap().to_string_lossy()
+    );
+    let request = serde_json::to_vec(&serde_json::json!({
+        "schema_version": 1,
+        "source_path": source_path,
+        "source_root": source_path.parent().unwrap(),
+        "entry": "sequence",
+        "compile_environment": {
+            "schema_version": 1,
+            "channels": {
+                channel_key: {"board": "rwg0", "local_id": 0, "kind": "ttl"}
+            }
+        },
+        "target_profile": {
+            "schema_version": 1,
+            "rtmq_abi_version": 2,
+            "clock_hz": clock_hz,
+            "duration_quantization": "strict",
+            "boards": {"rwg0": {"kind": "rwg", "ttl_width": 32}},
+            "operations": {
+                "catseq.hardware.ttl.set_high": {
+                    "lowering": "ttl_set_high",
+                    "instruction_cost_cycles": 0
+                },
+                "catseq.hardware.ttl.set_low": {
+                    "lowering": "ttl_set_low",
+                    "instruction_cost_cycles": 0
+                }
+            }
+        },
+        "link_bindings": {
+            "schema_version": 1,
+            "runtime_values": {},
+            "environment_values": {}
+        }
+    }))
+    .unwrap();
+    compile_json_request(&request)
+        .and_then(|response| serde_json::from_slice(&response).map_err(|error| error.to_string()))
+}
+
 #[test]
 fn shared_compile_request_api_returns_an_oasm_call_plan() {
     let path = source_file();
@@ -1683,11 +1732,96 @@ fn compile_emits_a_linked_oasm_call_plan_for_a_ttl_pulse() {
 }
 
 #[test]
+fn compile_rejects_unitless_duration_spellings() {
+    let path = source_file();
+    let sources = [
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: pulse(1.0)}\n",
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    delay = 1e-6\n    return identity(0) >> {ttl0: pulse(delay)}\n",
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\n\nDELAY = 1e-6\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: pulse(DELAY)}\n",
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import Duration\n\nDELAY: Duration = 1e-6\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: pulse(DELAY)}\n",
+    ];
+
+    for source in sources {
+        let error = compile_ttl_source(&path, source, 250_000_000).unwrap_err();
+        assert!(error.contains("Duration"), "{error}");
+        assert!(
+            error.contains("explicit unit") || error.contains("cycles("),
+            "{error}"
+        );
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn duration_conversion_uses_the_selected_clock_without_implicit_rounding() {
+    let path = source_file();
+    let exact = compile_ttl_source(
+        &path,
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import us\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: pulse(1 * us)}\n",
+        100_000_000,
+    )
+    .unwrap();
+    assert_eq!(exact["clock_hz"], 100_000_000);
+    assert_eq!(exact["logical_duration_cycles"], 100);
+
+    let nonintegral = compile_ttl_source(
+        &path,
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: pulse(15 * ns)}\n",
+        100_000_000,
+    )
+    .unwrap_err();
+    assert!(nonintegral.contains("exact non-negative target Cycle Count"));
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn explicit_cycles_constructor_spells_target_cycles_without_units() {
+    let path = source_file();
+    let response = compile_ttl_source(
+        &path,
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import cycles\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: pulse(cycles(250))}\n",
+        100_000_000,
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 250);
+}
+
+#[test]
+fn explicit_cycles_constructor_is_preserved_through_a_duration_global() {
+    let path = source_file();
+    let response = compile_ttl_source(
+        &path,
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import Duration, cycles\n\nDELAY: Duration = cycles(250)\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: pulse(DELAY)}\n",
+        100_000_000,
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 250);
+}
+
+#[test]
+fn explicit_unit_is_preserved_through_an_unannotated_global() {
+    let path = source_file();
+    let response = compile_ttl_source(
+        &path,
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import us\n\nDELAY = 1 * us\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: pulse(DELAY)}\n",
+        100_000_000,
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 100);
+}
+
+#[test]
 fn compile_specializes_reachable_morphism_definitions_before_oasm_lowering() {
     let path = source_file();
     fs::write(
         &path,
-        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import ns\n\ndef service(duration: float) -> Morphism:\n    return identity(0) >> {ttl0: pulse(duration)}\n\ndef sequence() -> Morphism:\n    return service(40 * ns)\n",
+        "from catseq.hardware.ttl import pulse\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import Duration, ns\n\ndef service(duration: Duration) -> Morphism:\n    return identity(0) >> {ttl0: pulse(duration)}\n\ndef sequence() -> Morphism:\n    return service(40 * ns)\n",
     )
     .unwrap();
     let environment_path = path.with_extension("environment.json");
@@ -1746,7 +1880,7 @@ fn user_can_compile_a_morphism_template_composed_from_atomic_operations() {
     let path = source_file();
     fs::write(
         &path,
-        "from catseq.hardware.ttl import hold, set_high, set_low\nfrom catseq.morphism import Morphism, MorphismDef, identity, morphism_template\nfrom catseq.time_utils import ns\n\n@morphism_template\ndef user_pulse(duration: float) -> MorphismDef:\n    return set_high() >> hold(duration) >> set_low()\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: user_pulse(40 * ns)}\n",
+        "from catseq.hardware.ttl import hold, set_high, set_low\nfrom catseq.morphism import Morphism, MorphismDef, identity, morphism_template\nfrom catseq.time_utils import Duration, ns\n\n@morphism_template\ndef user_pulse(duration: Duration) -> MorphismDef:\n    return set_high() >> hold(duration) >> set_low()\n\ndef sequence() -> Morphism:\n    return identity(0) >> {ttl0: user_pulse(40 * ns)}\n",
     )
     .unwrap();
     let environment_path = path.with_extension("environment.json");

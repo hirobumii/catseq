@@ -2,7 +2,7 @@
 
 use crate::typed::SourceType;
 
-pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 5;
+pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 6;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NativeMorphismTemplate {
@@ -20,6 +20,7 @@ enum ResultRule {
     Float64,
     Int64,
     Bool,
+    Duration,
     FixedAggregate,
     NativeRecord(&'static str),
     ReplaceFirstArgument,
@@ -51,6 +52,10 @@ const INTRINSICS: &[Intrinsic] = &[
     Intrinsic {
         leaf: "hold",
         result: ResultRule::MorphismTemplate,
+    },
+    Intrinsic {
+        leaf: "cycles",
+        result: ResultRule::Duration,
     },
     Intrinsic {
         leaf: "pulse",
@@ -202,12 +207,30 @@ pub(crate) fn return_type(path: &str, first_argument: Option<&SourceType>) -> Op
         ResultRule::Float64 => SourceType::Float64,
         ResultRule::Int64 => SourceType::Int64,
         ResultRule::Bool => SourceType::Bool,
+        ResultRule::Duration => SourceType::Duration,
         ResultRule::FixedAggregate => SourceType::FixedAggregate,
         ResultRule::NativeRecord(schema) => SourceType::NativeRecord(schema.to_owned()),
         ResultRule::ReplaceFirstArgument => first_argument
             .cloned()
             .unwrap_or_else(|| SourceType::NativeRecord("dataclass".to_owned())),
     })
+}
+
+pub(crate) fn parameter_types(path: &str) -> Vec<(usize, &'static str, SourceType)> {
+    match path {
+        "catseq.hardware.common.hold"
+        | "catseq.hardware.rwg.hold"
+        | "catseq.hardware.rwg.rf_pulse"
+        | "catseq.hardware.ttl.hold"
+        | "catseq.hardware.ttl.pulse" => {
+            vec![(0, "duration", SourceType::Duration)]
+        }
+        "catseq.hardware.rwg.linear_ramp" => {
+            vec![(1, "duration", SourceType::Duration)]
+        }
+        "catseq.time_utils.cycles" => vec![(0, "count", SourceType::Int64)],
+        _ => Vec::new(),
+    }
 }
 
 pub(crate) fn is_registered(path: &str) -> bool {

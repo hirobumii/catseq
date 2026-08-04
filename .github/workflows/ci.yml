@@ -53,7 +53,7 @@ jobs:
           enable-cache: true
 
       - name: Configure private Git credentials
-        if: runner.os != 'Windows'
+        if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && runner.os != 'Windows'
         shell: bash
         env:
           GITEA_USERNAME: ${{ secrets.GITEA_USERNAME }}
@@ -68,7 +68,7 @@ jobs:
             "$GITEA_USERNAME" "$GITEA_TOKEN" > "$HOME/.netrc"
 
       - name: Configure private Git credentials
-        if: runner.os == 'Windows'
+        if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && runner.os == 'Windows'
         shell: pwsh
         env:
           GITEA_USERNAME: ${{ secrets.GITEA_USERNAME }}
@@ -86,13 +86,24 @@ jobs:
           "NETRC=$netrc" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Sync the fixed Python environment
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: uv sync --locked --all-extras --dev
 
       - name: Check Python code
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: uv run ruff check catseq tests tools benchmarks
 
       - name: Run Python tests
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: uv run pytest -q
+
+      - name: Run Python type checks
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        run: uv run mypy catseq
+
+      - name: Execute the README quickstart
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        run: uv run python tools/run_readme_quickstart.py
 
       - name: Install the pinned Rust toolchain
         run: |
@@ -118,11 +129,11 @@ jobs:
         run: cargo build --locked --release --bin catseqc
 
       - name: Build the Windows wheel
-        if: runner.os == 'Windows'
+        if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && runner.os == 'Windows'
         run: uv build --wheel
 
       - name: Install the Windows wheel into a clean environment
-        if: runner.os == 'Windows'
+        if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && runner.os == 'Windows'
         shell: pwsh
         run: |
           $venv = Join-Path $env:RUNNER_TEMP "catseq-wheel-test"
@@ -164,6 +175,7 @@ jobs:
 
   python-package:
     name: Build and install the Python package
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
 
     steps:

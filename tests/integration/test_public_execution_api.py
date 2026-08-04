@@ -14,6 +14,7 @@ from catseq import (
 )
 from catseq.hardware.ttl import pulse
 from catseq.morphism import Morphism, identity
+from catseq.targets import rtmq_v2_profile
 from catseq.time_utils import ms
 from catseq.types import Board, Channel, ChannelType
 
@@ -99,6 +100,39 @@ def test_compiler_rejects_non_scalar_environment_values(tmp_path: Path) -> None:
             environment_values={"calibration": [1, 2, 3]},
             cache_dir=tmp_path / "cache",
         )
+
+
+def test_compiler_rejects_a_zero_target_clock_before_compilation(
+    tmp_path: Path,
+) -> None:
+    target = rtmq_v2_profile()
+    target["clock_hz"] = 0
+
+    with pytest.raises(CatSeqCompileError, match="clock_hz must be greater than zero"):
+        Compiler(
+            source_root=tmp_path,
+            channels={},
+            target_profile=target,
+        )
+
+
+@pytest.mark.parametrize(
+    ("configured", "normalized"),
+    [(0, 1), (1, 1), (25, 25)],
+)
+def test_ethernet_runtime_exposes_its_normalized_timeout_margin(
+    configured: int,
+    normalized: int,
+) -> None:
+    runtime = EthernetRuntime(
+        interface="catseq-no-such-interface",
+        destination=SYNTHETIC_DESTINATION,
+        reply=SYNTHETIC_REPLY,
+        boards=SYNTHETIC_BOARD_ROUTES,
+        timeout_margin_ms=configured,
+    )
+
+    assert runtime.timeout_margin_ms == normalized
 
 
 def test_ethernet_runtime_encodes_before_entering_the_rust_transport(

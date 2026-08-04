@@ -1,4 +1,51 @@
-# Upgrading to CatSeq 0.3
+# Upgrading CatSeq
+
+## 0.4.0 to 0.4.1: make every hardware duration explicit
+
+CatSeq 0.4.1 no longer interprets a bare `int` or `float` passed to a hardware
+timing parameter as a target Cycle Count. Use an SI unit when the source value
+is a physical time, or `cycles(...)` when it is deliberately target-relative:
+
+```python
+from catseq.hardware.ttl import pulse
+from catseq.time_utils import Duration, cycles, ms
+
+
+def exposure(duration: Duration):
+    return pulse(duration)
+
+
+physical = exposure(500 * ms)
+target_relative = exposure(cycles(125_000_000))
+```
+
+This rule is checked after values flow through local variables, module globals,
+user functions, and scan bindings. Annotating `duration: float` no longer makes
+it compatible with `pulse`, `hold`, `rf_pulse`, or `linear_ramp`; annotate it as
+`Duration`. A module constant such as `DELAY: Duration = 0.5` is still invalid
+because the annotation does not supply a unit.
+
+Conversion uses the selected target profile's `clock_hz`. The built-in RTMQ
+profile uses strict quantization, so a value such as `15 * ns` at 100 MHz is an
+error rather than an implicitly rounded duration. Host-side conversion helpers
+also require the clock explicitly:
+
+```python
+from catseq.time_utils import time_to_cycles
+
+cycle_count = time_to_cycles(0.5, clock_hz=compiled.clock_hz)
+```
+
+Remove imports of `CLOCK_FREQ_HZ`, `CYCLE_DURATION_S`, `CYCLES_PER_US`, or
+`mu`; those implicit 250 MHz aliases are no longer public. The zero-duration
+`identity(0)` spelling remains the neutral sequencing morphism and does not
+define the unit contract of hardware timing parameters.
+
+When multiple TTL transitions target the same channel and logical cycle,
+0.4.1 applies them in source order and emits the final state. Code must not
+depend on the previous high-wins merge accident.
+
+## Upgrading to CatSeq 0.3
 
 CatSeq 0.3 replaces the Python Morphism compiler with the native source
 compiler. This is an intentional compiler API break.

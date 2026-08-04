@@ -221,7 +221,29 @@ where
             break;
         }
     }
+    let signatures: HashMap<_, _> = definitions
+        .iter()
+        .map(|definition| {
+            (
+                format!("{}.{}", definition.module, definition.hir.definition()),
+                definition.signature.clone(),
+            )
+        })
+        .collect();
     for definition in &definitions {
+        if let Some((anchor, expected, found)) = definition
+            .hir
+            .first_call_argument_type_mismatch(&signatures)
+        {
+            return Err(TypedCheckError::TypeMismatch {
+                file_name: definition.module.clone(),
+                definition: definition.qualified_name.clone(),
+                expected: Box::new(expected),
+                found: Box::new(found),
+                line: anchor.line(),
+                column: anchor.column(),
+            });
+        }
         if !definition.return_type_is_explicit {
             continue;
         }

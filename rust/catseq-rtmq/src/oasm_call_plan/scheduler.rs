@@ -41,7 +41,7 @@ pub(super) fn compile_board(input: BoardEpochInput) -> Result<OasmBoardPlan, Oas
             .checked_sub(origin_cycles)
             .ok_or_else(|| OasmCompileError::new("direct event precedes its epoch origin"))?;
     }
-    events.sort_by_key(|event| (event.offset_cycles, event.local_id));
+    events.sort_by_key(|event| (event.offset_cycles, event.local_id, event.order));
     let mut ttl_direct_events = Vec::new();
     let mut index = 0;
     while index < events.len() {
@@ -49,13 +49,22 @@ pub(super) fn compile_board(input: BoardEpochInput) -> Result<OasmBoardPlan, Oas
         let mut mask = 0_u64;
         let mut state = 0_u64;
         let mut instruction_cost_cycles = 0_u64;
+        let mut order = EventOrder::BOARD;
+        let mut loop_scope = events[index].loop_scope;
         while index < events.len() && events[index].offset_cycles == offset {
             let event = &events[index];
-            mask |= 1_u64 << event.local_id;
+            let channel = 1_u64 << event.local_id;
+            mask |= channel;
             if event.high {
-                state |= 1_u64 << event.local_id;
+                state |= channel;
+            } else {
+                state &= !channel;
             }
             instruction_cost_cycles = instruction_cost_cycles.max(event.instruction_cost_cycles);
+            order = order.max(event.order);
+            if loop_scope != event.loop_scope {
+                loop_scope = None;
+            }
             index += 1;
         }
         ttl_direct_events.push(DirectEvent {
@@ -69,10 +78,10 @@ pub(super) fn compile_board(input: BoardEpochInput) -> Result<OasmBoardPlan, Oas
                 OasmArgument::String(board_kind.oasm_argument().to_owned()),
             ],
             instruction_cost_cycles,
-            order: events[index - 1].order,
-            group_id: events[index - 1].order.sequence,
+            order,
+            group_id: order.sequence,
             preload: false,
-            loop_scope: events[index - 1].loop_scope,
+            loop_scope,
         });
     }
     let scheduled = schedule_board_events([direct_events], ttl_direct_events)?;

@@ -5,11 +5,11 @@
 ![Python](https://img.shields.io/badge/python-3.12-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)
 
-CatSeq 0.4.0 is a categorical timing-composition language, native compiler,
+CatSeq 0.4.1 is a categorical timing-composition language, native compiler,
 RTMQ execution runtime, and host-side experiment controller for hardware
 sequences.
 
-CatSeq 0.4.0 preserves the Python `Morphism`, `MorphismDef`, `>>`, `@`, `|`, and
+CatSeq 0.4.1 preserves the Python `Morphism`, `MorphismDef`, `>>`, `@`, `|`, and
 channel-dictionary syntax. The public `Compiler` parses one sequence entry and
 its reachable definitions, then lowers them to a Rust-owned
 `CompiledSequence`. `EthernetRuntime` separately owns physical chassis routing
@@ -41,7 +41,7 @@ Save this complete compile-only example as `quickstart_ttl.py` and run it with
 from pathlib import Path
 
 from catseq import Compiler
-from catseq.hardware.ttl import pulse
+from catseq.hardware.ttl import initialize, pulse
 from catseq.morphism import Morphism, identity
 from catseq.time_utils import ms
 from catseq.types import Board, Channel, ChannelType
@@ -53,7 +53,7 @@ ttl0 = Channel(rwg0, local_id=0, channel_type=ChannelType.TTL)
 
 class TtlExperiment:
     def build_sequence(self) -> Morphism:
-        return identity(0) >> {ttl0: pulse(500 * ms)}
+        return identity(0) >> {ttl0: initialize() >> pulse(500 * ms)}
 
 
 class LabSystem:
@@ -74,6 +74,16 @@ target clock. `Compiler.compile()` uses the bound method to locate the source
 entry but does not call it. The method body and reachable CatSeq definitions
 are parsed by the native compiler, so arbitrary Python lifecycle code is not
 executed during compilation.
+
+Hardware time arguments are explicit: use `500 * ms` (or another SI unit) for
+a physical duration, and `cycles(count)` for an intentional target Cycle
+Count. Bare numeric values in `pulse`, `hold`, `rf_pulse`, and `linear_ramp`
+are compile errors. Conversion uses the selected target clock and never rounds
+an inexact Cycle Count.
+
+The fully qualified channel key includes the source module name. Keep the
+documented filename `quickstart_ttl.py`, or update
+`LabSystem.channels["<module>.ttl0"]` to match the filename you choose.
 
 `Compiler.from_system()` captures the source root and typed channel map once.
 A system may additionally provide `opaque_calls`, scalar `environment_values`,
@@ -137,7 +147,7 @@ run control, panel publisher, and `H5Writer`. Hardware locks, process policy,
 MQTT transport, and platform-specific device implementations remain in the
 consumer rather than CatSeq.
 
-## 0.4.0 API boundary
+## 0.4.1 API boundary
 
 `Compiler`, `CompiledSequence`, and `EthernetRuntime` are the stable application
 seam. The compiled sequence is immutable and contains the OASM Call Plan,
@@ -175,6 +185,7 @@ development, and explicit external-compiler compatibility checks.
 
 ```bash
 uv run pytest -q
+uv run mypy catseq
 uv run ruff check catseq tests tools benchmarks
 cargo fmt --all --manifest-path rust/Cargo.toml -- --check
 cargo +1.88.0 clippy --locked --workspace --all-targets \
@@ -182,6 +193,11 @@ cargo +1.88.0 clippy --locked --workspace --all-targets \
 cargo test --locked --workspace --all-targets --manifest-path rust/Cargo.toml
 git diff --check
 ```
+
+`benchmarks/rydberg_transfer_pipeline.py` is an offline downstream-RB1
+benchmark, not a CatSeq CI gate. It uses only synthetic routes and a nonexistent
+interface. Real interface, MAC, node, and route configuration belongs in the
+site-private hardware-test workspace outside this repository.
 
 The [development documentation index](docs/development/README.md) identifies
 the current interface and migration records. The top-level

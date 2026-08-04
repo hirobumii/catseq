@@ -56,6 +56,23 @@ C = A | B
 
 在定义操作时，`catseq` 会检查当前状态是否是此操作的合法起始状态。例如，你不能在一个已经是 `ON` 状态的 TTL 通道上再次执行 `on()` 操作。这种机制可以帮助你在编译前就发现大量逻辑错误。
 
+## Duration：显式的硬件时间
+
+硬件时序参数使用 `Duration`，不能用没有单位的 `int` 或 `float`。物理时间应乘
+SI 单位；明确表示目标周期数时使用编译器 intrinsic `cycles(...)`：
+
+```python
+from catseq.time_utils import Duration, cycles, ms
+
+exposure: Duration = 500 * ms
+setup: Duration = cycles(25)
+```
+
+编译器用当前 target profile 的 `clock_hz` 精确换算，并拒绝不能整除为周期数的
+时间。这个类型规则会穿过局部变量、模块全局常量、用户函数参数和 scan binding；
+仅写 `delay: Duration = 0.5` 不会凭空赋予单位。`identity(0)` 是零时长组合元，
+不是硬件 duration 的无单位写法。
+
 ## MorphismDef：可编译的 Morphism Template
 
 `MorphismDef` 是 `MorphismTemplate` 的兼容拼写。它不是 Python generator，
@@ -68,10 +85,11 @@ slot；绑定 Channel 时，Rust Morphism arena 生成引用共享模板体的
 ```python
 from catseq.hardware.ttl import hold, set_high, set_low
 from catseq.morphism import MorphismDef, morphism_template
+from catseq.time_utils import Duration
 
 
 @morphism_template
-def pulse(duration: float) -> MorphismDef:
+def pulse(duration: Duration) -> MorphismDef:
     return set_high() >> hold(duration) >> set_low()
 ```
 

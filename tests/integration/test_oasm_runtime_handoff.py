@@ -34,10 +34,10 @@ FIXTURE = (
 
 def test_oasm_calls_assemble_into_an_immutable_native_program() -> None:
     interface = sim_intf()
-    interface.nod_adr = 21
+    interface.nod_adr = 60_001
     interface.loc_chn = 0
     sequence = assembler(
-        run_cfg(interface, [2], chn=7),
+        run_cfg(interface, [60_000], chn=7),
         [("rwg0", C_RWG)],
     )
 
@@ -64,7 +64,7 @@ def test_oasm_calls_assemble_into_an_immutable_native_program() -> None:
 
     assert isinstance(first, _native.AssembledOASMProgram)
     assert first.schema_version == 1
-    assert first.reply_node == 21
+    assert first.reply_node == 60_001
     assert first.reply_channel == 0
     assert first.boards[0].address == "rwg0"
     assert first.boards[0].exception_handler_word == 20
@@ -76,10 +76,10 @@ def test_oasm_calls_assemble_into_an_immutable_native_program() -> None:
 
 def test_mixed_board_contexts_are_finalized_in_isolation() -> None:
     interface = sim_intf()
-    interface.nod_adr = 20
+    interface.nod_adr = 60_001
     interface.loc_chn = 3
     sequence = assembler(
-        run_cfg(interface, [2, 5], chn=7),
+        run_cfg(interface, [60_000, 60_002], chn=7),
         [("main", C_MAIN), ("rwg0", C_RWG)],
     )
 
@@ -116,10 +116,10 @@ def test_mixed_board_contexts_are_finalized_in_isolation() -> None:
 
 def test_assembly_rejects_empty_or_inconsistent_reply_contexts() -> None:
     interface = sim_intf()
-    interface.nod_adr = 20
+    interface.nod_adr = 60_001
     interface.loc_chn = 3
     sequence = assembler(
-        run_cfg(interface, [2, 5], chn=7),
+        run_cfg(interface, [60_000, 60_002], chn=7),
         [("rwg0", C_RWG), ("rwg1", C_RWG)],
     )
 
@@ -140,7 +140,7 @@ def test_assembly_rejects_empty_or_inconsistent_reply_contexts() -> None:
         for address in (OASMAddress.RWG0, OASMAddress.RWG1)
     }
     other_interface = sim_intf()
-    other_interface.nod_adr = 21
+    other_interface.nod_adr = 60_003
     other_interface.loc_chn = 3
     sequence.asm["rwg1"].intf = other_interface
 
@@ -236,9 +236,11 @@ def test_private_encoder_resolves_opaque_calls_from_the_compiled_sequence() -> N
 
 def test_assembler_callback_errors_propagate_without_execution_fallback() -> None:
     interface = sim_intf()
-    interface.nod_adr = 20
+    interface.nod_adr = 60_001
     interface.loc_chn = 0
-    sequence = assembler(run_cfg(interface, [2], chn=0), [("rwg0", C_RWG)])
+    sequence = assembler(
+        run_cfg(interface, [60_000], chn=0), [("rwg0", C_RWG)]
+    )
 
     def rejected_callback() -> None:
         raise LookupError("calibration missing")

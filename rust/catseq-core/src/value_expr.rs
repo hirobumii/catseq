@@ -254,6 +254,10 @@ impl ValueExprArenaBuilder {
         Self::default()
     }
 
+    pub fn value_type(&self, id: ValueExprId) -> Option<ValueExprType> {
+        self.nodes.get(id.index()).map(|node| node.value_type)
+    }
+
     pub fn constant(&mut self, payload: ValueExprPayload) -> ValueExprId {
         let value_type = match &payload {
             ValueExprPayload::Bool(_) => ValueExprType::Bool,

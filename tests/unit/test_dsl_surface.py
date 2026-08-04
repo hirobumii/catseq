@@ -13,6 +13,7 @@ from catseq.morphism import (
     identity,
     morphism_template,
 )
+from catseq.time_utils import Duration
 
 
 def test_identity_is_a_compiler_only_source_intrinsic() -> None:
@@ -48,7 +49,7 @@ def test_arena_build_is_an_import_time_noop() -> None:
 
 def test_user_morphism_template_keeps_its_python_function_and_compiler_kind() -> None:
     @morphism_template
-    def composite(duration: float) -> MorphismDef:
+    def composite(duration: Duration) -> MorphismDef:
         return pulse(duration)
 
     assert composite.__name__ == "composite"

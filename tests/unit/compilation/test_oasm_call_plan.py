@@ -113,6 +113,41 @@ def test_native_oasm_call_plan_requires_opaque_registry_binding():
         raise AssertionError("missing opaque binding was accepted")
 
 
+def test_unknown_typed_record_is_rejected_at_its_plan_location():
+    plan = {
+        "schema_version": 1,
+        "epochs": [
+            {
+                "id": 0,
+                "origin_cycles": 0,
+                "boards": [
+                    {
+                        "address": "rwg8",
+                        "calls": [
+                            {
+                                "offset_cycles": 0,
+                                "function": "rwg_load_waveform",
+                                "args": [{"$type": "RenamedWaveform", "value": 1}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    try:
+        decode_oasm_call_plan(plan)
+    except ValueError as error:
+        message = str(error)
+        assert "RenamedWaveform" in message
+        assert "epochs[0].boards[rwg8].calls[0].args[0]" in message
+        assert "WaveformParams" in message
+        assert "RSPPIDConfig" in message
+    else:
+        raise AssertionError("unknown typed plan record was accepted")
+
+
 def test_typed_oasm_calls_are_submitted_to_the_explicit_assembler():
     class RecordingAssembler:
         def __init__(self):

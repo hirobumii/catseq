@@ -18,7 +18,7 @@ class RSPUninitialized(RSPState):
 class RSPWaveformParams:
     rf_out: int # RF0/RF1
     amp: float # 0.0 ~ 1.0
-    output_max: float | None = 0.01
+    output_max: float = 0.01
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,7 @@ class RSPPIDConfig:
     kp: float = -1.0
     ki: float = -0.02
     kd: float = 0.0
-    output_max: float | None = 0.01
+    output_max: float = 0.01
     # 可继续加：sign, filter, dgt source, ckg source, units
 
 

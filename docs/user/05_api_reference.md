@@ -14,6 +14,22 @@ CatSeq 编译器编译；每个 scan point 只有 `build_sequence` 和对应的�
 - `catseq.EthernetRuntime`：持有物理网卡与机箱路由，通过 `run(compiled)` 执行
   一个 `CompiledSequence`。
 
+### 时间 API
+
+- `catseq.time_utils.Duration`：编译器识别的硬件 duration 注解。用户模板中把
+  传给 `pulse`、`hold`、`rf_pulse` 或 `linear_ramp` 的参数标为该类型。
+- `s`、`ms`、`us`、`ns`：source-language SI 单位。编译器按照选中 target 的
+  `clock_hz` 换算，并要求结果是精确的非负 Cycle Count。
+- `cycles(count)`：编译器专用构造器，显式声明非负整数 `count` 已经是目标周期
+  数；它不能作为普通 CPython 宿主函数执行。
+- `time_to_cycles(..., clock_hz=...)`、`us_to_cycles(..., clock_hz=...)`、
+  `cycles_to_time(..., clock_hz=...)` 和 `cycles_to_us(..., clock_hz=...)`：宿主侧
+  换算函数，必须显式传入正整数时钟。它们不使用全局默认时钟，也不会隐式舍入。
+
+无单位数字不会隐式转换成 `Duration`。通过局部变量、模块常量或函数参数传递
+也不会改变这条规则；如果 duration 是 target-relative 周期数，必须在 source
+中写成 `cycles(...)`。
+
 ## 宿主实验控制
 
 `catseq.experiment` 只用于组织领域，不从包级 `__init__` 批量重导出类型。

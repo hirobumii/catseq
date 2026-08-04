@@ -5,7 +5,7 @@ use catseq_compiler::{
     CompiledSequence as NativeCompiledSequence, CompilerSession, compile_json_request,
     run_cli as run_rust_cli, run_compiler_thread,
 };
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
@@ -35,8 +35,16 @@ impl PyCompiledSequence {
     }
 
     #[getter]
-    fn total_duration_us(&self) -> f64 {
-        self.inner.logical_duration_cycles() as f64 * 1_000_000.0 / self.inner.clock_hz() as f64
+    fn total_duration_us(&self) -> PyResult<f64> {
+        if self.inner.clock_hz() == 0 {
+            return Err(PyValueError::new_err(
+                "CompiledSequence clock_hz must be greater than zero",
+            ));
+        }
+        Ok(
+            self.inner.logical_duration_cycles() as f64 * 1_000_000.0
+                / self.inner.clock_hz() as f64,
+        )
     }
 
     #[getter]

@@ -1,7 +1,7 @@
 schema_version = 1
 rtmq_abi_version = 2
 clock_hz = 250000000
-duration_quantization = "nearest_even"
+duration_quantization = "strict"
 
 [boards.main]
 kind = "main"

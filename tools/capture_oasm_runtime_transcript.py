@@ -2,10 +2,11 @@
 """Capture the pinned OASM two-board Download protocol transcript.
 
 This is an offline oracle tool. It records bytes emitted by the exact frozen
-OASM package without opening a hardware transport. With no arguments it writes
-the transcript to stdout. This self-contained runtime case does not execute
-CatSeq source. ``--output`` may create a new fixture, but refuses to replace an
-existing file.
+OASM package without opening a hardware transport. All route values are
+synthetic and must not be replaced with site hardware identity. With no
+arguments it writes the transcript to stdout. This self-contained runtime case
+does not execute CatSeq source. ``--output`` may create a new fixture, but
+refuses to replace an existing file.
 """
 
 from __future__ import annotations
@@ -27,7 +28,8 @@ CATSEQ_NEAREST_RELEASE_TAG = "v0.2.4"
 CATSEQ_REFERENCE_BRANCH = "origin/release/0.2"
 OASM_COMMIT = "33b6c2538509e70475b49de5bd5a13ef334d4387"
 OASM_PACKAGE_VERSION = "0.1.21.post1"
-DEFAULT_HOST_NODE = 21
+SYNTHETIC_HOST_NODE = 60_001
+SYNTHETIC_DESTINATION_NODES = (60_000, 60_002)
 
 
 def _sha256_words(words: list[int]) -> str:
@@ -89,7 +91,10 @@ class _RecordingInterface(base_intf):
         return {}
 
 
-def _capture_download(host_node: int) -> tuple[
+def _capture_download(
+    host_node: int,
+    destination_nodes: tuple[int, int],
+) -> tuple[
     _RecordingInterface, list[int], int, dict[str, dict[str, int]]
 ]:
     interface = _RecordingInterface()
@@ -130,8 +135,8 @@ def _capture_download(host_node: int) -> tuple[
     try:
         runner = rtmq2.run_cfg(
             interface,
-            [2, 5],
-            mon=[2, 5],
+            list(destination_nodes),
+            mon=list(destination_nodes),
             chn=0,
             tag=0,
             core=C_RWG,
@@ -149,7 +154,7 @@ def _capture_download(host_node: int) -> tuple[
         raise RuntimeError("the oracle did not expose the exception handler word")
     if len(interface.programs) != 2 or interface.programs[0] != interface.programs[1]:
         raise RuntimeError("the two nodes did not receive one identical loader program each")
-    if interface.monitor_calls != [[2, 5]]:
+    if interface.monitor_calls != [list(destination_nodes)]:
         raise RuntimeError(
             f"unexpected completion monitor calls: {interface.monitor_calls!r}"
         )
@@ -164,15 +169,23 @@ def _capture_download(host_node: int) -> tuple[
 
 
 def capture_transcript(
-    *, host_node: int = DEFAULT_HOST_NODE
+    *,
+    host_node: int = SYNTHETIC_HOST_NODE,
+    destination_nodes: tuple[int, int] = SYNTHETIC_DESTINATION_NODES,
 ) -> dict[str, Any]:
-    """Capture the deterministic transcript without opening a device."""
+    """Capture a deterministic synthetic transcript without opening a device."""
 
     if not 0 <= host_node <= 0xFFFF:
         raise ValueError(f"host node must fit the RTLink address field: {host_node}")
+    if len(set(destination_nodes)) != 2 or any(
+        not 0 <= node <= 0xFFFF for node in destination_nodes
+    ):
+        raise ValueError(
+            "synthetic destination nodes must be two distinct RTLink addresses"
+        )
     _verify_oracle()
     interface, ich_words, exception_handler_word, loader_sections = (
-        _capture_download(host_node)
+        _capture_download(host_node, destination_nodes)
     )
     loader_words = interface.programs[0]
     frame_size = rtmq2.C_BASE.RTLK["N_BYT"]
@@ -219,6 +232,7 @@ def capture_transcript(
                 "kind": "self_contained_oasm_runtime_protocol",
                 "verified_components": ["oasm"],
                 "catseq_source_executed": False,
+                "routing": "synthetic_non_site",
             },
         },
         "input": {
@@ -228,7 +242,7 @@ def capture_transcript(
             "host_node": host_node,
             "channel": 0,
             "tag": 0,
-            "destination_nodes": [2, 5],
+            "destination_nodes": list(destination_nodes),
         },
         "ich_program": {
             "word_count": len(ich_words),
@@ -255,8 +269,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--host-node",
         type=lambda value: int(value, 0),
-        default=DEFAULT_HOST_NODE,
-        help=f"RTLink reply node encoded by OASM (default: {DEFAULT_HOST_NODE})",
+        default=SYNTHETIC_HOST_NODE,
+        help=(
+            "synthetic RTLink reply node encoded by OASM "
+            f"(default: {SYNTHETIC_HOST_NODE})"
+        ),
     )
     parser.add_argument(
         "--output",

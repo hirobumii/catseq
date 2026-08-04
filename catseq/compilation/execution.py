@@ -112,18 +112,29 @@ class _OASMAssembler(Protocol):
 
 _AssemblerT = TypeVar("_AssemblerT", bound=_OASMAssembler)
 
+_SUPPORTED_PLAN_RECORDS = (
+    "RSPPIDConfig",
+    "RSPWaveformParams",
+    "WaveformParams",
+)
 
-def _decode_plan_value(value: Any) -> Any:
+
+def _decode_plan_value(value: Any, *, path: str) -> Any:
     if isinstance(value, list):
-        return tuple(_decode_plan_value(item) for item in value)
+        return tuple(
+            _decode_plan_value(item, path=f"{path}[{index}]")
+            for index, item in enumerate(value)
+        )
     if not isinstance(value, dict):
         return value
     record_type = value.get("$type")
     fields = {
-        name: _decode_plan_value(field)
+        name: _decode_plan_value(field, path=f"{path}.{name}")
         for name, field in value.items()
         if name != "$type"
     }
+    if record_type is None:
+        return fields
     if record_type == "WaveformParams":
         return WaveformParams(**fields)
     if record_type == "RSPPIDConfig":
@@ -133,7 +144,12 @@ def _decode_plan_value(value: Any) -> Any:
     if record_type == "RSPWaveformParams":
         fields["rf_out"] = int(fields["rf_out"])
         return RSPWaveformParams(**fields)
-    return fields
+    supported = ", ".join(_SUPPORTED_PLAN_RECORDS)
+    raise ValueError(
+        f"Unsupported typed OASM plan record {record_type!r} at {path}; "
+        f"supported record types: {supported}. Register a decoder before "
+        "emitting a new typed record."
+    )
 
 
 def decode_oasm_call_plan(
@@ -162,7 +178,7 @@ def decode_oasm_call_plan(
                 raise ValueError(f"Unknown OASM board address {board['address']!r}") from error
             board_calls = calls_by_board.setdefault(address, [])
             previous_offset = 0
-            for raw_call in board.get("calls", ()):
+            for call_index, raw_call in enumerate(board.get("calls", ())):
                 offset = raw_call["offset_cycles"]
                 if offset < previous_offset:
                     raise ValueError(
@@ -175,7 +191,16 @@ def decode_oasm_call_plan(
                     raise ValueError(
                         f"Unknown OASM plan function {raw_call['function']!r}"
                     ) from error
-                args = tuple(_decode_plan_value(arg) for arg in raw_call.get("args", ()))
+                args = tuple(
+                    _decode_plan_value(
+                        arg,
+                        path=(
+                            f"epochs[{expected_id}].boards[{address.value}]"
+                            f".calls[{call_index}].args[{argument_index}]"
+                        ),
+                    )
+                    for argument_index, arg in enumerate(raw_call.get("args", ()))
+                )
                 if function == OASMFunction.USER_DEFINED_FUNC:
                     if len(args) != 3 or not isinstance(args[0], str):
                         raise ValueError("Opaque OASM calls require [callable_key, args, kwargs]")

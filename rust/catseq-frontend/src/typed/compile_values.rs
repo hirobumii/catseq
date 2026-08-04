@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use nac3ast::{Expr, ExprKind, Stmt, StmtKind};
+use nac3ast::{Expr, ExprKind, Operator, Stmt, StmtKind};
 
 use super::ast_util::expression_path;
 use super::model::SourceType;
@@ -96,8 +96,37 @@ pub(super) fn inferred_compile_value_type(expression: &Expr) -> Option<SourceTyp
             _ => None,
         },
         ExprKind::Call { func, .. } => expression_path(func).map(|path| {
-            SourceType::NativeRecord(path.rsplit('.').next().unwrap_or(&path).to_owned())
+            let leaf = path.rsplit('.').next().unwrap_or(&path);
+            if leaf == "cycles" {
+                SourceType::Duration
+            } else {
+                SourceType::NativeRecord(leaf.to_owned())
+            }
         }),
+        ExprKind::Name { id, .. }
+            if matches!(id.to_string().as_str(), "s" | "ms" | "us" | "ns") =>
+        {
+            Some(SourceType::Duration)
+        }
+        ExprKind::BinOp { left, op, right } => {
+            let left = inferred_compile_value_type(left)?;
+            let right = inferred_compile_value_type(right)?;
+            match (op, &left, &right) {
+                (Operator::Add | Operator::Sub, SourceType::Duration, SourceType::Duration)
+                | (Operator::Mult, SourceType::Duration, SourceType::Int64 | SourceType::Float64)
+                | (Operator::Mult, SourceType::Int64 | SourceType::Float64, SourceType::Duration)
+                | (Operator::Div, SourceType::Duration, SourceType::Int64 | SourceType::Float64) => {
+                    Some(SourceType::Duration)
+                }
+                (Operator::Div, SourceType::Duration, SourceType::Duration) => {
+                    Some(SourceType::Float64)
+                }
+                (_, SourceType::Float64, SourceType::Int64 | SourceType::Float64)
+                | (_, SourceType::Int64, SourceType::Float64) => Some(SourceType::Float64),
+                (_, SourceType::Int64, SourceType::Int64) => Some(SourceType::Int64),
+                _ => None,
+            }
+        }
         ExprKind::Tuple { .. } | ExprKind::List { .. } => Some(SourceType::FixedAggregate),
         _ => None,
     }
@@ -159,7 +188,7 @@ pub(super) fn normalized_compile_expression(expression: &Expr) -> Option<String>
     }
 }
 
-fn class_annotation_type(annotation: &Expr) -> Option<SourceType> {
+pub(super) fn class_annotation_type(annotation: &Expr) -> Option<SourceType> {
     if let ExprKind::Subscript { value, slice, .. } = &annotation.node {
         let container = expression_path(value)?;
         let leaf = container.rsplit('.').next().unwrap_or(&container);

@@ -8,7 +8,7 @@ use crate::source_hir::SourceHirKind;
 
 use super::ast_util::{expression_path, parse_module};
 use super::compile_values::{
-    class_fields, inferred_compile_value_type, normalized_compile_expression,
+    class_annotation_type, class_fields, inferred_compile_value_type, normalized_compile_expression,
 };
 use super::model::{SourceType, TypedCheckError, TypedDefinition};
 use super::resolution::{locate_source_definition, module_imports, resolve_call_path};
@@ -62,6 +62,23 @@ pub(super) fn resolve_bundle_compile_attributes(
     for (module, statements) in parsed {
         let imports = module_imports(module, statements);
         for statement in statements {
+            if let StmtKind::AnnAssign {
+                target,
+                annotation,
+                value: Some(value),
+                ..
+            } = &statement.node
+            {
+                if let ExprKind::Name { id, .. } = &target.node
+                    && let (Some(source_type), Some(normalized)) = (
+                        class_annotation_type(annotation),
+                        normalized_compile_expression(value),
+                    )
+                {
+                    global_attributes.insert(format!("{module}.{id}"), (source_type, normalized));
+                }
+                continue;
+            }
             let StmtKind::Assign { targets, value, .. } = &statement.node else {
                 continue;
             };

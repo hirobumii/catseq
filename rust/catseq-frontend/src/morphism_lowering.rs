@@ -11,7 +11,7 @@ use catseq_core::morphism_arena::{
 };
 use catseq_core::native_arenas::NativeArenas;
 use catseq_core::value_expr::{
-    RwgWaveformDerivation, ValueExprArenaBuilder, ValueExprId, ValueExprPayload,
+    RwgWaveformDerivation, ValueExprArenaBuilder, ValueExprId, ValueExprPayload, ValueExprType,
 };
 
 use crate::intrinsics::{self, NativeMorphismTemplate};
@@ -28,9 +28,9 @@ use normalized_value::{
 };
 use value_lowering::{
     call_arguments, is_numeric_intrinsic, lower_aggregate_intrinsic, lower_aggregate_operation,
-    lower_compile_compare, lower_compile_value, lower_duration_unit, lower_literal,
-    lower_numeric_intrinsic, lower_static_subscript, lower_value_operation, lowered_to_json,
-    scalar_to_expr, source_type_to_value_type,
+    lower_compile_compare, lower_compile_value, lower_cycles_intrinsic, lower_duration_unit,
+    lower_literal, lower_numeric_intrinsic, lower_static_subscript, lower_value_operation,
+    lowered_to_json, scalar_to_expr, source_type_to_value_type,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -327,7 +327,10 @@ impl<'a> SpecializationLowerer<'a> {
             let source_type = fact.source_type();
             let lowered = match node.kind() {
                 SourceHirKind::Constant => lower_literal(node)?,
-                SourceHirKind::Name if source_type == Some(&SourceType::Duration) => {
+                SourceHirKind::Name
+                    if source_type == Some(&SourceType::Duration)
+                        && matches!(node.symbol(), Some("s" | "ms" | "us" | "ns")) =>
+                {
                     lower_duration_unit(node, self.clock_hz)
                 }
                 SourceHirKind::Name
@@ -442,6 +445,11 @@ impl<'a> SpecializationLowerer<'a> {
                                 .map(LoweredValue::Morphism)
                         })
                         .transpose()?
+                }
+                SourceHirKind::Call
+                    if fact.resolved_definition() == Some("catseq.time_utils.cycles") =>
+                {
+                    lower_cycles_intrinsic(node, children, &values, &mut self.value_builder)?
                 }
                 SourceHirKind::Call
                     if fact.resolved_definition().is_some_and(is_repeat_morphism) =>
@@ -679,6 +687,11 @@ impl<'a> SpecializationLowerer<'a> {
                 }
                 value
             }
+            SourceHirKind::Call
+                if fact.resolved_definition() == Some("catseq.time_utils.cycles") =>
+            {
+                lower_cycles_intrinsic(node, children, &evaluated, &mut self.value_builder)?
+            }
             SourceHirKind::Call if matches!(source_type, Some(SourceType::NativeRecord(_))) => {
                 lower_native_record_call(node, children, fact, &evaluated)?
             }
@@ -812,6 +825,12 @@ fn lower_entry(
             }
             SourceHirKind::Unary if node.value_operation().is_some() => {
                 lower_value_operation(node, children, &values, source_type, &mut value_builder)?
+            }
+            SourceHirKind::Call
+                if hir.facts()[node_id].resolved_definition()
+                    == Some("catseq.time_utils.cycles") =>
+            {
+                lower_cycles_intrinsic(node, children, &values, &mut value_builder)?
             }
             SourceHirKind::Call if matches!(source_type, Some(SourceType::NativeRecord(_))) => {
                 lower_native_record_call(node, children, &hir.facts()[node_id], &values)?
@@ -1416,16 +1435,31 @@ fn push_intrinsic_template_plan(
             .copied()
             .ok_or_else(|| lowering_error(source, format!("{description} is absent")))
     };
+    let required_duration_argument = |index: usize, description: &str| {
+        let argument = required_argument(index, description)?;
+        if values.value_type(argument) != Some(ValueExprType::Duration) {
+            return Err(lowering_error(
+                source,
+                format!(
+                    "{description} must be a Duration with an explicit unit (s, ms, us, or ns) or cycles(...)"
+                ),
+            ));
+        }
+        Ok(argument)
+    };
 
     let Some(template) = intrinsics::native_morphism_template(operation) else {
         return Ok(push_operation(plans, operation, arguments));
     };
     let (children, boundaries) = match template {
         NativeMorphismTemplate::Hold => {
-            return Ok(push_wait(plans, required_argument(0, "hold duration")?));
+            return Ok(push_wait(
+                plans,
+                required_duration_argument(0, "hold duration")?,
+            ));
         }
         NativeMorphismTemplate::TtlPulse => {
-            let duration = required_argument(0, "TTL pulse duration")?;
+            let duration = required_duration_argument(0, "TTL pulse duration")?;
             let high = push_operation(plans, "catseq.hardware.ttl.set_high", Vec::new());
             let wait = push_wait(plans, duration);
             let low = push_operation(plans, "catseq.hardware.ttl.set_low", Vec::new());
@@ -1444,7 +1478,7 @@ fn push_intrinsic_template_plan(
             (vec![load, play], vec![BoundaryPolicy::Auto])
         }
         NativeMorphismTemplate::RwgRfPulse => {
-            let duration = required_argument(0, "RWG RF pulse duration")?;
+            let duration = required_duration_argument(0, "RWG RF pulse duration")?;
             let on = push_operation(plans, "catseq.hardware.rwg.rf_on", Vec::new());
             let wait = push_wait(plans, duration);
             let off = push_operation(plans, "catseq.hardware.rwg.rf_off", Vec::new());
@@ -1452,7 +1486,7 @@ fn push_intrinsic_template_plan(
         }
         NativeMorphismTemplate::RwgLinearRamp => {
             let targets = required_argument(0, "RWG linear ramp targets")?;
-            let duration = required_argument(1, "RWG linear ramp duration")?;
+            let duration = required_duration_argument(1, "RWG linear ramp duration")?;
             let ramp_waveforms =
                 values.rwg_waveforms(RwgWaveformDerivation::Linear, &[targets, duration]);
             let endpoint_waveforms =

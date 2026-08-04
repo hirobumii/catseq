@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Benchmark the CatSeq 0.3.1 Rydberg-transfer pipeline without device I/O.
+"""Downstream RB1 acceptance benchmark; intentionally not a CatSeq CI gate.
 
-The workload is the static source bundle owned by ``rb1-next``.  This script
-never imports the experiment package and deliberately uses a nonexistent
-interface for the final Rust stage, after loader and RTLink materialization.
+The workload and verifier are owned by the private sibling ``rb1-next``
+checkout. This script uses synthetic routing and a nonexistent interface; it
+contains no site hardware identity and cannot perform physical execution.
 """
 
 from __future__ import annotations
@@ -46,12 +46,10 @@ DEFAULT_RB1_ROOT = CATSEQ_ROOT.parent / "rb1-next"
 TARGET_PROFILE = CATSEQ_ROOT / "catseq" / "targets" / "rtmq_v2.toml"
 NONEXISTENT_INTERFACE = "catseq-benchmark-no-device"
 LINUX_INTERFACE_NAME_MAX_BYTES = 15
-CHASSIS2_MAC = [0x60, 0xCF, 0x84, 0xA7, 0xBC, 0x01]
-CHASSIS2_HOST_NODE = 21
+SYNTHETIC_DESTINATION_MAC = [0x02, 0xCA, 0x75, 0xEE, 0x00, 0x01]
+SYNTHETIC_HOST_NODE = 60_001
+SYNTHETIC_NODE_BASE = 50_000
 CORE_BY_KIND = {"main": C_MAIN, "rsp": C_RSP, "rwg": C_RWG}
-EXPECTED_RUNTIME_PROGRAM_SHA256 = (
-    "96e4efce1ccc28ec10c137d5c9ed9e2d76f4d214a9860ac658c7d9d46b82aac1"
-)
 
 
 def _load_verifier(rb1_root: Path) -> ModuleType:
@@ -120,19 +118,18 @@ def _active_board_cores(
     return cores
 
 
-def _physical_node(address: str) -> int:
-    if address == "main":
-        return 0
-    if address.startswith(("rwg", "rsp")):
-        return int(address[3:]) + 1
-    raise ValueError(f"no physical-node convention for {address!r}")
+def _synthetic_nodes(addresses: list[str]) -> dict[str, int]:
+    return {
+        address: SYNTHETIC_NODE_BASE + index
+        for index, address in enumerate(sorted(addresses))
+    }
 
 
 def _new_assembler(board_cores: list[tuple[str, Any]]) -> Any:
     interface = sim_intf()
-    interface.nod_adr = CHASSIS2_HOST_NODE
+    interface.nod_adr = SYNTHETIC_HOST_NODE
     interface.loc_chn = 0
-    nodes = sorted(_physical_node(address) for address, _core in board_cores)
+    nodes = list(_synthetic_nodes([address for address, _core in board_cores]).values())
     return assembler(run_cfg(interface, nodes), board_cores)
 
 
@@ -154,10 +151,13 @@ def _runtime_config(program: Any) -> Any:
         raise RuntimeError(
             "offline benchmark interface must exceed the Linux interface-name limit"
         )
+    node_by_address = _synthetic_nodes(
+        [board.address for board in program.boards]
+    )
     endpoints = [
         BoardEndpoint(
             board.address,
-            _physical_node(board.address),
+            node_by_address[board.address],
             0,
             131_072,
         )
@@ -166,7 +166,7 @@ def _runtime_config(program: Any) -> Any:
     return LinuxRawEthernetRuntimeConfig(
         1,
         NONEXISTENT_INTERFACE,
-        CHASSIS2_MAC,
+        SYNTHETIC_DESTINATION_MAC,
         5_000,
         endpoints,
     )
@@ -348,12 +348,6 @@ def run_benchmark(
         second_fingerprint, _ = _program_fingerprint(second_program)
         if first_fingerprint != second_fingerprint:
             raise RuntimeError("Rydberg runtime program is not deterministic")
-        if first_fingerprint != EXPECTED_RUNTIME_PROGRAM_SHA256:
-            raise RuntimeError(
-                "Rydberg runtime program differs from its checked-in benchmark baseline: "
-                f"{first_fingerprint}"
-            )
-
         runtime_config = _runtime_config(program)
         values, _ = _measure(
             lambda: _prepare_until_open_failure(program, runtime_config),

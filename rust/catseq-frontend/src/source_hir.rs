@@ -595,6 +595,57 @@ impl TypedSourceHir {
             .filter_map(|(node, fact)| Some((&node.anchor, fact.source_type.as_ref()?)))
             .find(|(_, found)| !return_types_compatible(expected, found))
     }
+
+    pub(crate) fn first_call_argument_type_mismatch(
+        &self,
+        signatures: &HashMap<String, TypeSignature>,
+    ) -> Option<(&SourceAnchor, SourceType, SourceType)> {
+        for (node_id, node) in self.nodes.iter().enumerate() {
+            if node.kind != SourceHirKind::Call {
+                continue;
+            }
+            let children = node_edges(node, &self.edges);
+            for resolved in &self.facts[node_id].resolved_definitions {
+                let parameters = signatures.get(resolved).map_or_else(
+                    || intrinsics::parameter_types(resolved),
+                    |signature| {
+                        signature
+                            .parameters()
+                            .iter()
+                            .filter(|parameter| {
+                                !matches!(parameter.source_type(), SourceType::Instance(_))
+                            })
+                            .enumerate()
+                            .map(|(index, parameter)| {
+                                (index, parameter.name(), parameter.source_type().clone())
+                            })
+                            .collect()
+                    },
+                );
+                for (position, name, expected) in parameters {
+                    let actual = if position < node.call_positional_count as usize {
+                        children.get(position + 1)
+                    } else {
+                        node.call_keyword_names
+                            .iter()
+                            .position(|keyword| keyword == name)
+                            .and_then(|keyword| {
+                                children.get(1 + node.call_positional_count as usize + keyword)
+                            })
+                    };
+                    let found = actual
+                        .and_then(|actual| self.facts.get(*actual as usize))
+                        .and_then(|fact| fact.source_type.as_ref());
+                    if let Some(found) = found
+                        && !argument_types_compatible(&expected, found)
+                    {
+                        return Some((&node.anchor, expected, found.clone()));
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 fn record_resolution(fact: &mut SemanticFact, resolved: &str) {
@@ -617,6 +668,10 @@ fn return_types_compatible(expected: &SourceType, found: &SourceType) -> bool {
             (SourceType::Float64, SourceType::Int64)
                 | (SourceType::Morphism, SourceType::MorphismTemplate)
         )
+}
+
+fn argument_types_compatible(expected: &SourceType, found: &SourceType) -> bool {
+    expected == found || matches!((expected, found), (SourceType::Float64, SourceType::Int64))
 }
 
 #[derive(Clone, Copy)]

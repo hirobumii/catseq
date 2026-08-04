@@ -14,6 +14,34 @@ pub(super) fn normalized_has_duration_unit(value: &str) -> bool {
         .any(|token| matches!(token, "name:s" | "name:ms" | "name:us" | "name:ns"))
 }
 
+pub(super) fn normalized_is_cycles_call(value: &str) -> bool {
+    let Some(call) = value.strip_prefix("call:") else {
+        return false;
+    };
+    let Some(open) = call.find('(') else {
+        return false;
+    };
+    call[..open].rsplit('.').next() == Some("cycles")
+}
+
+pub(super) fn parse_normalized_cycles(value: &str) -> Option<ExactDecimal> {
+    if !normalized_is_cycles_call(value) {
+        return None;
+    }
+    let call = value.strip_prefix("call:")?;
+    let open = call.find('(')?;
+    let arguments = call.get(open + 1..)?.strip_suffix(')')?;
+    let (positional, keywords) = split_normalized_once(arguments, ';')?;
+    if positional.is_empty()
+        || !keywords.is_empty()
+        || split_normalized_once(positional, ',').is_some()
+    {
+        return None;
+    }
+    let cycles = parse_normalized_numeric(positional)?.to_cycle_count()?;
+    Some(ExactDecimal::from_u64(cycles))
+}
+
 pub(super) fn lower_normalized_default(value: &str, clock_hz: u64) -> Option<LoweredValue> {
     let scalar = match value {
         "constant:None" => return Some(LoweredValue::Null),
@@ -26,6 +54,9 @@ pub(super) fn lower_normalized_default(value: &str, clock_hz: u64) -> Option<Low
                 .parse()
                 .ok()?;
             ScalarValue::Int(value)
+        }
+        value if normalized_is_cycles_call(value) => {
+            ScalarValue::DurationCycles(parse_normalized_cycles(value)?)
         }
         value if normalized_has_duration_unit(value) => ScalarValue::DurationCycles(
             parse_normalized_numeric(value)?.checked_mul(ExactDecimal::from_u64(clock_hz))?,
@@ -292,7 +323,7 @@ fn split_normalized_list(mut value: &str, separator: char) -> Vec<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalized_has_duration_unit;
+    use super::{normalized_has_duration_unit, normalized_is_cycles_call, parse_normalized_cycles};
 
     #[test]
     fn normalized_duration_units_are_matched_as_complete_name_tokens() {
@@ -301,5 +332,19 @@ mod tests {
         ));
         assert!(!normalized_has_duration_unit("name:start"));
         assert!(!normalized_has_duration_unit("name:usage"));
+    }
+
+    #[test]
+    fn normalized_cycles_calls_require_one_non_negative_integer() {
+        assert!(normalized_is_cycles_call(
+            "call:catseq.time_utils.cycles(constant:Int(250);)"
+        ));
+        assert_eq!(
+            parse_normalized_cycles("call:cycles(constant:Int(250);)")
+                .and_then(|value| value.to_cycle_count()),
+            Some(250)
+        );
+        assert!(parse_normalized_cycles("call:cycles(constant:Float(1.5);)").is_none());
+        assert!(parse_normalized_cycles("call:cycles(unary:USub(constant:Int(1));)").is_none());
     }
 }

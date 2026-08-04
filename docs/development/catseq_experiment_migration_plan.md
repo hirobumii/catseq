@@ -177,9 +177,8 @@ The source audit on 2026-08-03 established these pre-migration checkpoints:
   `RydbergTransferExp.build_sequence` entry with 47 reachable definitions,
   4,175 HIR nodes, and zero diagnostics.
 - The low-level Compiler/Ethernet Runtime TTL path produced the expected 500 ms
-  plan and successful chassis-2 evidence on 2026-08-02. The current
-  `hardware-tests/chassis2_ttl.py` is an interim RB1/OASM-based `BaseExp`
-  version and is not final acceptance evidence.
+  plan. Physical evidence and site configuration are retained only in the
+  separate, site-private hardware-test workspace.
 
 ## Source decomposition
 
@@ -350,13 +349,10 @@ diagnostics.
 
 ### Phase 7: hardware acceptance
 
-- [x] Rewrite `hardware-tests/chassis2_ttl.py` as a self-contained,
-  human-written `BaseExp` example importing `BaseExp` from
-  `catseq.experiment.base_exp`, module/service bases from
-  `catseq.experiment.base_module`, and compilation/runtime types from CatSeq.
-- [x] Remove all OASM and `rb1system.abstract` imports from that file.
-- [x] Verify the expected 500 ms call plan, successful chassis-2 RWG0 terminal
-  evidence, and a readable H5 experiment record.
+- [x] Keep the physical TTL tracer, concrete routes, and H5 evidence in the
+  separate, site-private hardware-test workspace rather than CatSeq.
+- [x] Verify the expected 500 ms call plan without copying site identifiers or
+  physical result paths into this repository.
 - [ ] Run the Rydberg experiment as the first full RB1 acceptance case after
   the TTL tracer bullet.
 
@@ -379,23 +375,16 @@ The migration is not complete while any of these remain on the new path:
 
 ## Completion evidence
 
-Interim acceptance evidence recorded on 2026-08-03:
+Interim repository-side evidence recorded on 2026-08-03:
 
 - CatSeq commit `c084891` and rb1-next commit `aaa76e4` supplied the local
   experiment framework, compiler, runtime, and migrated RB1 consumers. CatSeq
   is not yet published at a version that rb1-next can pin.
-- The rewritten `hardware-tests/chassis2_ttl.py` compiled
-  `Chassis2TtlExp.build_sequence` to 125,000,000 logical cycles at 250 MHz with
-  zero diagnostics. Its single `rwg0` plan contains `ttl_config`, high, wait,
-  and low calls.
-- The physical command completed through CatSeq `EthernetRuntime` on `eno1`
-  with destination `60:cf:84:a7:bc:01`, reply node 21/channel 0, and
-  `rwg0 -> node 2`; it exited successfully with terminal text
-  `completed chassis 2 RWG0`.
-- The retained record is
-  `/home/hermes/workspaces/exp/hardware-tests/chassis2_ttl_20260803_231742.h5`.
-  It is a readable 13,688-byte schema-1 `Chassis2TtlExp` record containing all
-  six experiment groups and attempted execution index 0.
+- The site-private TTL tracer compiled to 125,000,000 logical cycles at
+  250 MHz with zero diagnostics. Its single-board plan contains `ttl_config`,
+  high, wait, and low calls.
+- Physical terminal evidence, concrete topology, and the H5 result remain
+  outside this repository in the hardware-test workspace.
 
 The full Rydberg hardware acceptance and CatSeq publication/version pin remain
 open. When those gates close, append their evidence below rather than replacing

@@ -6,10 +6,11 @@ Their semantics are implemented by the native compiler and the target profile.
 
 from ..morphism import MorphismDef, atomic_morphism, morphism_template
 from ..morphism.core import compiler_only
+from ..time_utils import Duration
 
 
 @morphism_template
-def pulse(duration: float) -> MorphismDef:
+def pulse(duration: Duration) -> MorphismDef:
     """Emit a high pulse lasting ``duration`` seconds."""
     return set_high() >> hold(duration) >> set_low()
 
@@ -33,7 +34,7 @@ def set_low() -> MorphismDef:
 
 
 @morphism_template
-def hold(duration: float) -> MorphismDef:
+def hold(duration: Duration) -> MorphismDef:
     """Wait for ``duration`` seconds without changing TTL state."""
     compiler_only("catseq.hardware.ttl.hold")
 

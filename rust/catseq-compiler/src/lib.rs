@@ -102,6 +102,7 @@ impl CompilerSession {
             .map_err(|error| format!("cannot decode compile environment: {error}"))?;
         let target_profile = serde_json::from_slice::<TargetProfile>(target_profile)
             .map_err(|error| format!("cannot decode target profile: {error}"))?;
+        validate_target_clock(&target_profile)?;
         let environment_values = serde_json::from_slice::<serde_json::Value>(environment_values)
             .map_err(|error| format!("cannot decode environment values: {error}"))?;
         if !environment_values.is_object() {
@@ -382,6 +383,7 @@ fn compile_output(
     target: &TargetProfile,
     link_bindings: &LinkBindings,
 ) -> Result<CheckedOutput, String> {
+    validate_target_clock(target)?;
     let start = Instant::now();
     let program = specialize_typed_report_to_native_arenas(&report, target.clock_hz())
         .map_err(|error| error.to_string())?;
@@ -393,6 +395,13 @@ fn compile_output(
         clock_hz: target.clock_hz(),
         compile_time: start.elapsed(),
     })
+}
+
+fn validate_target_clock(target: &TargetProfile) -> Result<(), String> {
+    if target.clock_hz() == 0 {
+        return Err("target clock_hz must be greater than zero".to_owned());
+    }
+    Ok(())
 }
 
 fn check_source_bundle(

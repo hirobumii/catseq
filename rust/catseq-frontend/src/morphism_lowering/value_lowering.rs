@@ -7,7 +7,10 @@ use catseq_core::value_expr::{
 
 use crate::{ComparisonOperation, SourceHirNode, SourceLiteral, SourceType, ValueOperation};
 
-use super::normalized_value::{normalized_has_duration_unit, parse_normalized_numeric};
+use super::normalized_value::{
+    normalized_has_duration_unit, normalized_is_cycles_call, parse_normalized_cycles,
+    parse_normalized_numeric,
+};
 use super::{LoweredValue, MorphismLoweringError, ScalarValue, lowering_error};
 
 pub(super) fn lower_aggregate_operation(
@@ -433,6 +436,17 @@ pub(super) fn lower_compile_value(
     source_type: Option<&SourceType>,
     clock_hz: u64,
 ) -> Result<Option<LoweredValue>, MorphismLoweringError> {
+    if normalized_is_cycles_call(value) {
+        let cycles = parse_normalized_cycles(value).ok_or_else(|| {
+            lowering_error(
+                node,
+                "cycles() requires exactly one non-negative integer count",
+            )
+        })?;
+        return Ok(Some(LoweredValue::Scalar(ScalarValue::DurationCycles(
+            cycles,
+        ))));
+    }
     let scalar = match value {
         "True" | "true" => ScalarValue::Bool(true),
         "False" | "false" => ScalarValue::Bool(false),
@@ -445,7 +459,7 @@ pub(super) fn lower_compile_value(
         {
             ScalarValue::String(quoted[1..quoted.len() - 1].to_owned())
         }
-        integer if integer.parse::<i64>().is_ok() => {
+        integer if integer.parse::<i64>().is_ok() && source_type != Some(&SourceType::Duration) => {
             ScalarValue::Int(integer.parse().expect("checked above"))
         }
         numeric => {
@@ -458,9 +472,19 @@ pub(super) fn lower_compile_value(
                     .and_then(|value| i64::try_from(value).ok())
                     .ok_or_else(|| lowering_error(node, "Int64 compile value is not integral"))?;
                 ScalarValue::Int(integer)
-            } else if source_type == Some(&SourceType::Duration)
-                || normalized_has_duration_unit(value)
-            {
+            } else if source_type == Some(&SourceType::Duration) {
+                if !normalized_has_duration_unit(value) {
+                    return Err(lowering_error(
+                        node,
+                        "Duration compile values require an explicit unit (s, ms, us, or ns) or cycles(...)",
+                    ));
+                }
+                ScalarValue::DurationCycles(
+                    numeric
+                        .checked_mul(ExactDecimal::from_u64(clock_hz))
+                        .ok_or_else(|| lowering_error(node, "duration conversion overflows"))?,
+                )
+            } else if normalized_has_duration_unit(value) {
                 ScalarValue::DurationCycles(
                     numeric
                         .checked_mul(ExactDecimal::from_u64(clock_hz))
@@ -485,6 +509,41 @@ pub(super) fn lower_duration_unit(node: &SourceHirNode, clock_hz: u64) -> Option
     Some(LoweredValue::Scalar(ScalarValue::DurationCycles(
         ExactDecimal::from_u64(clock_hz).checked_div(ExactDecimal::from_u64(denominator))?,
     )))
+}
+
+pub(super) fn lower_cycles_intrinsic(
+    node: &SourceHirNode,
+    children: &[u32],
+    values: &[Option<LoweredValue>],
+    builder: &mut ValueExprArenaBuilder,
+) -> Result<Option<LoweredValue>, MorphismLoweringError> {
+    let argument = children
+        .get(1)
+        .and_then(|child| values[*child as usize].clone())
+        .ok_or_else(|| lowering_error(node, "cycles() requires one integer count"))?;
+    let duration = match argument {
+        LoweredValue::Scalar(ScalarValue::Int(value)) if value >= 0 => {
+            ScalarValue::DurationCycles(ExactDecimal::from_i64(value))
+        }
+        LoweredValue::Scalar(ScalarValue::Expr(value)) => {
+            let one = builder.constant(ValueExprPayload::DurationCycles(1));
+            ScalarValue::Expr(builder.operation(
+                ValueExprKind::Multiply,
+                ValueExprType::Duration,
+                &[value, one],
+            ))
+        }
+        LoweredValue::Scalar(ScalarValue::Int(_)) => {
+            return Err(lowering_error(node, "cycles() count must be non-negative"));
+        }
+        _ => {
+            return Err(lowering_error(
+                node,
+                "cycles() count must have source type Int64",
+            ));
+        }
+    };
+    Ok(Some(LoweredValue::Scalar(duration)))
 }
 
 pub(super) fn lower_value_operation(
@@ -691,7 +750,7 @@ pub(super) fn scalar_to_expr(
         ScalarValue::Int(value) => ValueExprPayload::Int64(value),
         ScalarValue::Float(value) => ValueExprPayload::Float64(value.to_f64()),
         ScalarValue::DurationCycles(value) => {
-            let cycles = value.to_cycle_count_rounded().ok_or_else(|| {
+            let cycles = value.to_cycle_count().ok_or_else(|| {
                 lowering_error(
                     node,
                     format!(

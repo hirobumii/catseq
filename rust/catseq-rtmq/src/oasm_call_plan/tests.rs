@@ -5,7 +5,11 @@ use catseq_core::native_arenas::NativeArenas;
 use catseq_core::value_expr::{ValueExprArenaBuilder, ValueExprPayload, ValueExprType};
 
 use super::abi_cost::oasm_call_cost;
-use super::model::{DirectEvent, DurationQuantization, EventOrder, LinkValue, LoopTiming};
+use super::model::{
+    BoardEpochInput, DirectEvent, DurationQuantization, EventOrder, LinkValue, LoopTiming,
+    TargetBoardKind, TtlEvent,
+};
+use super::scheduler::compile_board;
 use super::{
     CompileEnvironment, LinkBindings, OasmArgument, OasmFunction, TargetProfile,
     compile_oasm_call_plan,
@@ -70,6 +74,33 @@ fn direct_event(function: OasmFunction, args: Vec<OasmArgument>) -> DirectEvent 
         preload: false,
         loop_scope: None,
     }
+}
+
+fn ttl_event(local_id: u8, high: bool, sequence: u64) -> TtlEvent {
+    TtlEvent {
+        epoch: 0,
+        offset_cycles: 0,
+        board: "rwg0".to_owned(),
+        local_id,
+        high,
+        instruction_cost_cycles: sequence,
+        order: EventOrder::channel(super::model::ChannelKind::Ttl, local_id, sequence),
+        loop_scope: None,
+    }
+}
+
+fn compile_ttl_events(ttl_events: Vec<TtlEvent>) -> super::model::OasmBoardPlan {
+    compile_board(BoardEpochInput {
+        epoch: 0,
+        origin_cycles: 0,
+        address: "rwg0".to_owned(),
+        board_kind: TargetBoardKind::Rwg,
+        duration_cycles: 0,
+        initial_cursor: 0,
+        ttl_events,
+        direct_events: Vec::new(),
+    })
+    .unwrap()
 }
 
 #[test]
@@ -165,4 +196,60 @@ fn oasm_instruction_occupancy_is_a_target_lowering_property() {
     assert_eq!(oasm_call_cost(&play).unwrap(), 15);
     assert_eq!(oasm_call_cost(&zero_carrier).unwrap(), 16);
     assert_eq!(oasm_call_cost(&ordinary_carrier).unwrap(), 18);
+}
+
+#[test]
+fn same_instant_ttl_writes_use_last_program_order() {
+    for (events, expected_state) in [
+        (vec![ttl_event(0, false, 2), ttl_event(0, true, 1)], 0),
+        (vec![ttl_event(0, true, 2), ttl_event(0, false, 1)], 1),
+        (
+            vec![
+                ttl_event(0, true, 3),
+                ttl_event(0, false, 2),
+                ttl_event(0, true, 1),
+            ],
+            1,
+        ),
+    ] {
+        let plan = compile_ttl_events(events);
+
+        assert_eq!(plan.calls().len(), 1);
+        assert_eq!(plan.calls()[0].function, OasmFunction::TtlSet);
+        assert_eq!(
+            plan.calls()[0].args,
+            vec![
+                OasmArgument::Unsigned(1),
+                OasmArgument::Unsigned(expected_state),
+                OasmArgument::String("rwg".to_owned()),
+            ]
+        );
+    }
+}
+
+#[test]
+fn same_instant_ttl_channels_remain_mask_coalesced_and_deterministic() {
+    let first = compile_ttl_events(vec![
+        ttl_event(1, true, 4),
+        ttl_event(0, false, 3),
+        ttl_event(1, false, 2),
+        ttl_event(0, true, 1),
+    ]);
+    let second = compile_ttl_events(vec![
+        ttl_event(0, true, 1),
+        ttl_event(1, false, 2),
+        ttl_event(0, false, 3),
+        ttl_event(1, true, 4),
+    ]);
+
+    assert_eq!(first, second);
+    assert_eq!(first.calls().len(), 1);
+    assert_eq!(
+        first.calls()[0].args,
+        vec![
+            OasmArgument::Unsigned(0b11),
+            OasmArgument::Unsigned(0b10),
+            OasmArgument::String("rwg".to_owned()),
+        ]
+    );
 }

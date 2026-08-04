@@ -14,6 +14,7 @@ from ..morphism import (
     morphism_template,
 )
 from ..morphism.core import compiler_only
+from ..time_utils import Duration
 from ..types.rwg import (
     RWGActive,
     RWGReady,
@@ -31,7 +32,7 @@ def initialize(carrier_freq: float, hard_init: bool = False) -> MorphismDef:
 
 def _waveforms(
     targets: Sequence[StaticWaveform | None],
-    duration: float | None = None,
+    duration: Duration | None = None,
     phase_reset: bool = False,
     ramp_waveforms: Sequence[WaveformParams] | None = None,
 ) -> list[WaveformParams]:
@@ -65,7 +66,7 @@ def set_state(
 
 @morphism_template
 def linear_ramp(
-    targets: list[StaticWaveform | None], duration: float
+    targets: list[StaticWaveform | None], duration: Duration
 ) -> MorphismDef:
     """Ramp active waveforms linearly over ``duration`` seconds.
 
@@ -97,13 +98,13 @@ def rf_off() -> MorphismDef:
 
 
 @morphism_template
-def rf_pulse(duration: float) -> MorphismDef:
+def rf_pulse(duration: Duration) -> MorphismDef:
     """Emit an RF pulse lasting ``duration`` seconds."""
     return rf_on() >> hold(duration) >> rf_off()
 
 
 @morphism_template
-def hold(duration: float) -> MorphismDef:
+def hold(duration: Duration) -> MorphismDef:
     """Wait for ``duration`` seconds without changing RWG state."""
     compiler_only("catseq.hardware.rwg.hold")
 

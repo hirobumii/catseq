@@ -19,6 +19,18 @@ FIXTURE = (
     / "two_board_noop_download.json"
 )
 CAPTURE = ROOT / "tools" / "capture_oasm_runtime_transcript.py"
+REFRESH_GUIDANCE = (
+    "intentional refresh: run `uv run python "
+    "tools/capture_oasm_runtime_transcript.py --output /tmp/transcript.json`, "
+    "review the synthetic-only diff, then update the fixture and digests together"
+)
+
+
+def _assert_digest(label: str, actual: str, expected: str) -> None:
+    assert actual == expected, (
+        f"{label} digest mismatch: expected={expected} actual={actual}; "
+        f"{REFRESH_GUIDANCE}"
+    )
 
 
 def test_frozen_oasm_two_board_download_transcript_is_reproducible() -> None:
@@ -32,8 +44,6 @@ def test_frozen_oasm_two_board_download_transcript_is_reproducible() -> None:
     recorded = json.loads(completed.stdout)
     expected = json.loads(FIXTURE.read_text())
 
-    assert recorded == expected
-
     assert recorded["provenance"] == {
         "reference_pipeline": {
             "catseq_commit": "eab85d9cc3fb82072ccfe2abdd25f1cb2368d488",
@@ -46,25 +56,30 @@ def test_frozen_oasm_two_board_download_transcript_is_reproducible() -> None:
             "kind": "self_contained_oasm_runtime_protocol",
             "verified_components": ["oasm"],
             "catseq_source_executed": False,
+            "routing": "synthetic_non_site",
         },
     }
-    assert recorded["input"]["destination_nodes"] == [2, 5]
-    assert recorded["input"]["host_node"] == 21
+    assert recorded["input"]["destination_nodes"] == [60_000, 60_002]
+    assert recorded["input"]["host_node"] == 60_001
     assert recorded["input"]["channel"] == 0
     assert recorded["input"]["tag"] == 0
 
     ich = recorded["ich_program"]
     assert ich["word_count"] == 62
     assert ich["exception_handler_word"] == 20
-    assert ich["sha256"] == (
-        "01a6507ace878c2684b066c640d21d1ae116fab83e679b0a94a4bb1735338994"
+    _assert_digest(
+        "ICH",
+        ich["sha256"],
+        "da60b2e4711b34bba246d1778be73b420c3b46974f14072c01b7fbc6aa4d2d14",
     )
     assert len(ich["words"]) == 62
 
     loader = recorded["loader_program"]
     assert loader["word_count"] == 199
-    assert loader["sha256"] == (
-        "466bcedeccc47c0922d7242af8186ac7958844e6274ad69393ef72344cacd9f9"
+    _assert_digest(
+        "loader",
+        loader["sha256"],
+        "42603ee7dc0c17265e7a469fc9eaedbdc6c5e325a310ad6482408443e7be655d",
     )
     assert loader["sections"] == {
         "loader_prologue": {"start": 0, "end": 6},
@@ -75,11 +90,17 @@ def test_frozen_oasm_two_board_download_transcript_is_reproducible() -> None:
 
     rtlink = recorded["rtlink"]
     assert rtlink["frame_size_bytes"] == 14
-    assert rtlink["monitor_nodes"] == [2, 5]
-    assert [write["node"] for write in rtlink["writes"]] == [2, 5]
+    assert rtlink["monitor_nodes"] == [60_000, 60_002]
+    assert [write["node"] for write in rtlink["writes"]] == [60_000, 60_002]
     assert [write["frame_count"] for write in rtlink["writes"]] == [100, 100]
-    assert [write["sha256"] for write in rtlink["writes"]] == [
-        "6a9a8b971df191966a6108346af61c22c5af192fab50eacaba4ac850807ea090",
-        "ec25ba503d40ac7bae99f65dc5777d041b73599e6bcad0d698ca589dee5755ae",
-    ]
+    for write, digest in zip(
+        rtlink["writes"],
+        (
+            "191d96a0b18bb575981ba47c498852281e78d8d85dcc8357a5ee85e8b235f29f",
+            "f7ba0a1bafcc0b9739a955f19fb52a77d7279296360d97cef02514f52a394d49",
+        ),
+        strict=True,
+    ):
+        _assert_digest(f"RTLink node {write['node']}", write["sha256"], digest)
     assert all(len(write["frames"]) == 100 for write in rtlink["writes"])
+    assert recorded == expected, REFRESH_GUIDANCE

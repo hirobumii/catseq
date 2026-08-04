@@ -32,3 +32,39 @@ def test_ci_rust_toolchain_supports_the_workspace_and_installs_check_tools() -> 
     assert "\\\n" not in install_step, (
         "the platform matrix uses both Bash and PowerShell; keep rustup cross-shell"
     )
+
+
+def test_ci_enforces_typing_and_executes_the_marked_readme_quickstart() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+
+    assert "uv run mypy catseq" in workflow
+    assert "uv run python tools/run_readme_quickstart.py" in workflow
+
+
+def test_fork_pull_requests_keep_public_rust_checks_without_private_secrets() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    fork_guard = (
+        "github.event_name != 'pull_request' || "
+        "github.event.pull_request.head.repo.full_name == github.repository"
+    )
+    platform_job = workflow.split("\n  python-package:", 1)[0]
+    private_steps = (
+        "Configure private Git credentials",
+        "Sync the fixed Python environment",
+        "Check Python code",
+        "Run Python tests",
+        "Run Python type checks",
+        "Execute the README quickstart",
+        "Build the Windows wheel",
+        "Install the Windows wheel into a clean environment",
+    )
+    for step_name in private_steps:
+        step = platform_job.split(f"      - name: {step_name}", 1)[1].split(
+            "\n      - name:", 1
+        )[0]
+        assert fork_guard in step, step_name
+
+    python_job = workflow.split("\n  python-package:", 1)[1].split(
+        "\n  release:", 1
+    )[0]
+    assert fork_guard in python_job.split("\n    steps:", 1)[0]

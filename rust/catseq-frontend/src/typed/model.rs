@@ -467,10 +467,17 @@ impl Display for TypedCheckError {
                 found,
                 line,
                 column,
-            } => write!(
-                formatter,
-                "type mismatch in {definition} at {file_name}:{line}:{column}: expected {expected}, found {found}"
-            ),
+            } => {
+                write!(
+                    formatter,
+                    "type mismatch in {definition} at {file_name}:{line}:{column}: expected {expected}"
+                )?;
+                if expected.as_ref() == &SourceType::Duration {
+                    formatter
+                        .write_str(" with an explicit unit (s, ms, us, or ns) or cycles(...)")?;
+                }
+                write!(formatter, ", found {found}")
+            }
             Self::MigrationRequired {
                 file_name,
                 definition,

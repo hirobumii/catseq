@@ -19,10 +19,11 @@ from .morphism import (
     repeat_morphism,
 )
 from .time_utils import (
+    Duration,
+    cycles,
     cycles_to_time,
     cycles_to_us,
     ms,
-    mu,
     ns,
     s,
     time_to_cycles,
@@ -31,7 +32,7 @@ from .time_utils import (
 )
 from .types import Board, Channel, ChannelType, State
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 __all__ = [
     "Board",
@@ -44,18 +45,19 @@ __all__ = [
     "CompilerDefinition",
     "CompilerOnlyError",
     "EthernetRuntime",
+    "Duration",
     "Morphism",
     "MorphismDef",
     "MorphismTemplate",
     "State",
     "atomic_morphism",
     "arena_build",
+    "cycles",
     "cycles_to_time",
     "cycles_to_us",
     "identity",
     "ms",
     "morphism_template",
-    "mu",
     "ns",
     "repeat_morphism",
     "s",

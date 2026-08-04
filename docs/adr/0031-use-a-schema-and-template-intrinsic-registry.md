@@ -17,8 +17,8 @@ precompiled from these primitives into the same native template arena used by
 source definitions; invocation creates an Instantiate node instead of running a
 Rust callback or Python generator.
 
-Only operations that alter language semantics, including supported dataclass
-replacement, identity construction, loop formation, template binding, and
+Only operations that alter language semantics, including supported Native
+Record replacement, identity construction, loop formation, template binding, and
 declared unit conversion, are Rust Special Forms. Pure constants and scalar
 operations lower to native compile values or Value Expressions. Registry
 semantic digests participate in the Query DAG so changing an intrinsic

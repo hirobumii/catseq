@@ -138,6 +138,32 @@ fn compile_rwg_source(
     )
 }
 
+fn emit_rwg_arena(
+    source_path: &std::path::Path,
+    source: &str,
+) -> Result<serde_json::Value, String> {
+    fs::write(source_path, source).unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            source_path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())
+}
+
 fn compile_rwg_source_with_bindings(
     source_path: &std::path::Path,
     source: &str,
@@ -2752,9 +2778,23 @@ fn catseq_replace_desugars_to_an_equivalent_native_record() {
 #[test]
 fn catseq_replace_keeps_link_time_field_values_symbolic_until_linking() {
     let path = source_file();
+    let source = "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\ndef sequence(params: ExpParams) -> Morphism:\n    target = StaticWaveform(freq=1.0, amp=0.2, sbg_id=0)\n    updated = replace(target, freq=params[frequency])\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n";
+    let artifact = emit_rwg_arena(&path, source).unwrap();
+    let value_payloads = artifact["value_expr_arena"]["payloads"].as_array().unwrap();
+    assert!(
+        value_payloads.contains(&serde_json::json!({"kind": "runtime_slot", "value": "frequency"})),
+        "{value_payloads:#?}"
+    );
+    assert!(
+        value_payloads.iter().any(|payload| {
+            payload["kind"] == "json" && payload["value"].to_string().contains("\"$value_expr\"")
+        }),
+        "{value_payloads:#?}"
+    );
+
     let response = compile_rwg_source_with_bindings(
         &path,
-        "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\ndef sequence(params: ExpParams) -> Morphism:\n    target = StaticWaveform(freq=1.0, amp=0.2, sbg_id=0)\n    updated = replace(target, freq=params[frequency])\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n",
+        source,
         serde_json::json!({
             "schema_version": 1,
             "runtime_values": {"frequency": 2.5},
@@ -2770,6 +2810,22 @@ fn catseq_replace_keeps_link_time_field_values_symbolic_until_linking() {
     assert!(calls.iter().any(|call| {
         call["function"] == "rwg_load_waveform" && call["args"][0]["freq_coeffs"][0] == 2.5
     }));
+}
+
+#[test]
+fn catseq_replace_requires_a_positional_native_record_base() {
+    let path = source_file();
+    let error = compile_rwg_source(
+        &path,
+        "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\ndef sequence() -> Morphism:\n    target = StaticWaveform(freq=1.0, amp=0.2, sbg_id=0)\n    updated = replace(record=target, freq=2.0)\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n",
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        error.contains("first argument must be positional"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -2801,6 +2857,20 @@ fn catseq_replace_rejects_a_field_value_with_the_wrong_type() {
 
     assert!(error.contains("freq"), "{error}");
     assert!(error.contains("Float64"), "{error}");
+}
+
+#[test]
+fn catseq_replace_rejects_the_wrong_native_record_aggregate_element_type() {
+    let path = source_file();
+    let error = compile_rwg_source(
+        &path,
+        "from catseq import replace\nfrom catseq.hardware.rwg import initialize, load, play\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import WaveformParams\n\ndef sequence() -> Morphism:\n    target = WaveformParams(sbg_id=0)\n    updated = replace(target, freq_coeffs=('bad',))\n    return identity(0) >> {rwg0: initialize(80.0) >> load([updated]) >> play()}\n",
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(error.contains("freq_coeffs"), "{error}");
+    assert!(error.contains("Optional<Float64>"), "{error}");
 }
 
 #[test]

@@ -23,7 +23,8 @@ publication. Compile-known changes become constants; Link changes remain Value
 Expressions until RTMQ linking. No replacement operation survives in the
 Morphism arena.
 
-`dataclasses.replace` and user-defined functions named `replace` are Host Module
-calls and are rejected when compile-reachable. Host Python may still use
-dataclasses for host-owned configuration; this decision only removes
+`dataclasses.replace` is a Host Module call and is rejected when
+compile-reachable. User-defined functions named `replace` remain ordinary
+source definitions and receive no Special Form semantics. Host Python may
+still use dataclasses for host-owned configuration; this decision only removes
 dataclasses from Native Record replacement semantics.

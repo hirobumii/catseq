@@ -260,59 +260,12 @@ pub(crate) fn is_native_record_replace(path: &str) -> bool {
     path == NATIVE_RECORD_REPLACE
 }
 
-pub(crate) fn native_record_field_names(schema: &str) -> Option<&'static [&'static str]> {
-    match schema {
-        "StaticWaveform" => Some(&["freq", "amp", "sbg_id", "phase", "fct"]),
-        "WaveformParams" => Some(&[
-            "sbg_id",
-            "freq_coeffs",
-            "amp_coeffs",
-            "initial_phase",
-            "phase_reset",
-            "fct",
-        ]),
-        "RSPPIDConfig" => Some(&[
-            "adc_in",
-            "rf_out",
-            "dgt_source",
-            "setpoint",
-            "kp",
-            "ki",
-            "kd",
-            "output_max",
-        ]),
-        "RSPWaveformParams" => Some(&["rf_out", "amp", "output_max"]),
-        _ => None,
-    }
-}
-
-pub(crate) fn native_record_field_type(schema: &str, field: &str) -> Option<SourceType> {
-    let optional_float = || SourceType::Optional(Box::new(SourceType::Float64));
-    let optional_int = || SourceType::Optional(Box::new(SourceType::Int64));
-    match (schema, field) {
-        ("StaticWaveform", "freq" | "amp") => Some(optional_float()),
-        ("StaticWaveform", "sbg_id" | "fct") => Some(optional_int()),
-        ("StaticWaveform", "phase") => Some(SourceType::Float64),
-        ("WaveformParams", "sbg_id") => Some(SourceType::Int64),
-        ("WaveformParams", "freq_coeffs" | "amp_coeffs") => Some(SourceType::FixedAggregate),
-        ("WaveformParams", "initial_phase") => Some(optional_float()),
-        ("WaveformParams", "phase_reset") => Some(SourceType::Bool),
-        ("WaveformParams", "fct") => Some(optional_int()),
-        ("RSPPIDConfig", "adc_in" | "rf_out" | "dgt_source") => Some(SourceType::Int64),
-        ("RSPPIDConfig", "setpoint" | "kp" | "ki" | "kd") => Some(SourceType::Float64),
-        ("RSPPIDConfig", "output_max") => Some(optional_float()),
-        ("RSPWaveformParams", "rf_out") => Some(SourceType::Int64),
-        ("RSPWaveformParams", "amp") => Some(SourceType::Float64),
-        ("RSPWaveformParams", "output_max") => Some(optional_float()),
-        _ => None,
-    }
-}
-
 pub(crate) fn is_compiler_special_form(resolved: &str) -> bool {
-    matches!(
-        resolved,
-        "rb1system.utils.dict_to_morphism" | "catseq.time_utils.cycles"
-    )
+    is_native_record_replace(resolved)
+        || matches!(
+            resolved,
+            "rb1system.utils.dict_to_morphism" | "catseq.time_utils.cycles"
+        )
 }
 
 /// Return the precompiled template body associated with a composite hardware

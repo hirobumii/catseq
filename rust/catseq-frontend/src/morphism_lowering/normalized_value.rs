@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 use catseq_core::exact_decimal::ExactDecimal;
 
+use crate::native_records;
+
 use super::{LoweredValue, MorphismLoweringError, ScalarValue};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -258,53 +260,29 @@ pub(super) fn normalized_to_json(
         && let Some(open) = call.find('(')
         && let Some(arguments) = call.strip_suffix(')')
     {
-        let schema = &call[..open];
+        let schema_path = &call[..open];
         let arguments = &arguments[open + 1..];
         let (positional, keywords) =
             split_normalized_once(arguments, ';').unwrap_or((arguments, ""));
-        let field_names: &[&str] = match schema.rsplit('.').next().unwrap_or(schema) {
-            "StaticWaveform" => &["freq", "amp", "sbg_id", "phase", "fct"],
-            "WaveformParams" => &[
-                "sbg_id",
-                "freq_coeffs",
-                "amp_coeffs",
-                "initial_phase",
-                "phase_reset",
-                "fct",
-            ],
-            "RSPPIDConfig" => &[
-                "adc_in",
-                "rf_out",
-                "dgt_source",
-                "setpoint",
-                "kp",
-                "ki",
-                "kd",
-                "output_max",
-            ],
-            "RSPWaveformParams" => &["rf_out", "amp", "output_max"],
-            other => {
-                let _ = other;
-                return Ok(serde_json::Value::String(value.to_owned()));
-            }
+        let schema_name = schema_path.rsplit('.').next().unwrap_or(schema_path);
+        let Some(schema) = native_records::schema(schema_name) else {
+            return Ok(serde_json::Value::String(value.to_owned()));
         };
         let mut record = serde_json::Map::new();
-        record.insert(
-            "$type".to_owned(),
-            schema
-                .rsplit('.')
-                .next()
-                .unwrap_or(schema)
-                .to_owned()
-                .into(),
-        );
+        record.insert("$type".to_owned(), schema.name().to_owned().into());
         for (index, argument) in split_normalized_list(positional, ',')
             .into_iter()
             .filter(|value| !value.is_empty())
             .enumerate()
         {
+            let field = schema.field_at(index).ok_or_else(|| {
+                MorphismLoweringError::new(format!(
+                    "too many positional fields for Native Record `{}`",
+                    schema.name()
+                ))
+            })?;
             record.insert(
-                field_names[index].to_owned(),
+                field.name().to_owned(),
                 normalized_to_json(argument, fields)?,
             );
         }
@@ -315,7 +293,13 @@ pub(super) fn normalized_to_json(
             let Some((name, value)) = split_normalized_once(keyword, '=') else {
                 continue;
             };
-            record.insert(name.to_owned(), normalized_to_json(value, fields)?);
+            let field = schema.field(name).ok_or_else(|| {
+                MorphismLoweringError::new(format!(
+                    "unknown Native Record field `{name}` for `{}`",
+                    schema.name()
+                ))
+            })?;
+            record.insert(field.name().to_owned(), normalized_to_json(value, fields)?);
         }
         return Ok(serde_json::Value::Object(record));
     }

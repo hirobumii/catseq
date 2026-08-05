@@ -13,7 +13,8 @@ use catseq_frontend::{
     lower_typed_report_to_native_arenas, specialize_typed_report_to_native_arenas,
 };
 use catseq_rtmq::{
-    CompileEnvironment, LinkBindings, OasmCallPlan, TargetProfile, compile_oasm_call_plan,
+    CompileEnvironment, LinkBindings, OasmArgument, OasmCallPlan, OasmFunction, TargetProfile,
+    compile_oasm_call_plan,
 };
 use serde::{Deserialize, Serialize};
 
@@ -72,6 +73,20 @@ impl CompiledSequence {
 
     pub const fn incremental(&self) -> &CompiledIncrementalStats {
         &self.incremental
+    }
+
+    pub fn opaque_callable_keys(&self) -> BTreeSet<String> {
+        self.oasm_call_plan
+            .epochs()
+            .iter()
+            .flat_map(|epoch| epoch.boards())
+            .flat_map(|board| board.calls())
+            .filter(|call| call.function() == OasmFunction::UserDefinedFunc)
+            .filter_map(|call| match call.arguments().first() {
+                Some(OasmArgument::String(key)) => Some(key.clone()),
+                _ => None,
+            })
+            .collect()
     }
 }
 

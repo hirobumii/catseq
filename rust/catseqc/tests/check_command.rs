@@ -397,11 +397,11 @@ fn unsupported_expression_is_not_silently_dropped_from_hir() {
 }
 
 #[test]
-fn oasm_black_box_definition_is_an_opaque_atomic_boundary() {
+fn black_box_definition_remains_a_source_composition_boundary() {
     let path = source_file();
     fs::write(
         &path,
-        "from catseq.morphism import Morphism\n\ndef sequence() -> Morphism:\n    return legacy_atomic()\n\ndef legacy_atomic() -> Morphism:\n    while True:\n        break\n    return oasm_black_box({})\n",
+        "from catseq.oasm import black_box\nfrom catseq.morphism import Morphism\n\ndef sequence() -> Morphism:\n    return legacy_atomic()\n\ndef legacy_atomic() -> Morphism:\n    return black_box(duration_cycles=1, board_funcs={})\n",
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
@@ -423,8 +423,17 @@ fn oasm_black_box_definition_is_an_opaque_atomic_boundary() {
         String::from_utf8_lossy(&output.stderr)
     );
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["definitions"].as_array().unwrap().len(), 1);
-    let definition = &report["definitions"][0];
+    assert_eq!(report["definitions"].as_array().unwrap().len(), 2);
+    let definition = report["definitions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|definition| {
+            definition["qualified_name"]
+                .as_str()
+                .is_some_and(|name| name.ends_with(".sequence") || name == "sequence")
+        })
+        .unwrap();
     let nodes = definition["hir"]["nodes"].as_array().unwrap();
     let facts = definition["hir"]["facts"].as_array().unwrap();
     let call = nodes
@@ -440,6 +449,206 @@ fn oasm_black_box_definition_is_an_opaque_atomic_boundary() {
             .ends_with(".legacy_atomic")
     );
     assert_eq!(call.1["resolved_call_targets"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn black_box_keeps_board_calls_without_state_schema_in_the_native_arena() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.oasm import black_box\nfrom catseq.morphism import Morphism\nfrom catseq.types import Board\n\nboard = Board('rwg0')\n\ndef callback() -> None:\n    pass\n\ndef sequence() -> Morphism:\n    return black_box(\n        duration_cycles=12,\n        board_funcs={board: callback},\n    )\n",
+    )
+    .unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let artifact: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let arena = &artifact["morphism_arena"];
+    let root = arena["root"].as_u64().unwrap() as usize;
+    assert_eq!(arena["nodes"][root]["kind"], "opaque");
+    assert_eq!(arena["opaque_calls"].as_array().unwrap().len(), 1);
+    assert_eq!(arena["opaque_calls"][0]["board"], "rwg0");
+    assert!(
+        arena["opaque_calls"][0]["callable"]
+            .as_str()
+            .unwrap()
+            .ends_with(".callback")
+    );
+    assert!(arena.get("opaque_state_effects").is_none());
+}
+
+#[test]
+fn black_box_rejects_a_same_named_foreign_board_constructor() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.oasm import black_box\nfrom catseq.morphism import Morphism\n\nclass Board:\n    def __init__(self, board_id: str) -> None:\n        self.id = board_id\n\nboard: Board = Board('rwg0')\n\ndef callback() -> None:\n    pass\n\ndef sequence() -> Morphism:\n    return black_box(\n        duration_cycles=12,\n        board_funcs={board: callback},\n    )\n",
+    )
+    .unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("blackbox board key must resolve to a static Board"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn black_box_rejects_a_class_binding_shadowing_the_board_import() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.oasm import black_box\nfrom catseq.morphism import Morphism\nfrom catseq.types import Board\n\ndef host_board(board_id: str):\n    return board_id\n\ndef callback() -> None:\n    pass\n\nclass Experiment:\n    Board = host_board\n    board = Board('rwg0')\n\n    def sequence(self) -> Morphism:\n        return black_box(\n            duration_cycles=12,\n            board_funcs={self.board: callback},\n        )\n",
+    )
+    .unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "Experiment.sequence",
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("blackbox board key must resolve to a static Board"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn black_box_rejects_a_class_method_shadowing_the_board_import() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.oasm import black_box\nfrom catseq.morphism import Morphism\nfrom catseq.types import Board\n\ndef callback() -> None:\n    pass\n\nclass Experiment:\n    def Board(board_id: str):\n        return board_id\n\n    board = Board('rwg0')\n\n    def sequence(self) -> Morphism:\n        return black_box(\n            duration_cycles=12,\n            board_funcs={self.board: callback},\n        )\n",
+    )
+    .unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "Experiment.sequence",
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("blackbox board key must resolve to a static Board"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn black_box_rejects_extra_board_fields_without_panicking() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.oasm import black_box\nfrom catseq.morphism import Morphism\nfrom catseq.types import Board\n\nboard = Board('rwg0', 'extra')\n\ndef callback() -> None:\n    pass\n\ndef sequence() -> Morphism:\n    return black_box(\n        duration_cycles=12,\n        board_funcs={board: callback},\n    )\n",
+    )
+    .unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("native record Board accepts at most 1 positional field, got 2"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+#[test]
+fn unrelated_black_box_is_rejected_as_a_reachable_host_call() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "import time\nfrom catseq.morphism import Morphism\n\ndef sequence() -> Morphism:\n    return time.black_box()\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("reachable Host call time.black_box"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -2845,7 +3054,7 @@ fn compile_known_native_record_attribute_lowers_for_emit_arena() {
     let path = source_file();
     fs::write(
         &path,
-        "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\nclass Experiment:\n    target = StaticWaveform(freq=1.0, sbg_id=0)\n\n    def sequence(self) -> Morphism:\n        updated = replace(self.target, freq=2.0)\n        return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n",
+        "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform as Waveform\n\nclass Experiment:\n    Waveform = Waveform(freq=1.0, sbg_id=0)\n\n    def sequence(self) -> Morphism:\n        updated = replace(self.Waveform, freq=2.0)\n        return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n",
     )
     .unwrap();
     let target_profile =
@@ -3317,6 +3526,34 @@ fn typed_check_does_not_accept_a_same_named_compile_field_constructor() {
         "{stderr}"
     );
     assert!(stderr.contains(":8:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_rejects_a_class_binding_shadowing_a_native_record_import() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.types import StaticWaveform\n\ndef host_waveform(freq, sbg_id):\n    return freq\n\nclass Experiment:\n    StaticWaveform = host_waveform\n    target = StaticWaveform(freq=1.0, sbg_id=0)\n\n    def sequence(self):\n        return replace(self.target, freq=2.0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "check",
+            path.to_str().unwrap(),
+            "--entry",
+            "Experiment.sequence",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("catseq.replace requires a Native Record"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":12:"), "{stderr}");
 }
 
 #[test]

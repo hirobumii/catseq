@@ -1,10 +1,10 @@
 //! Compile-instance discovery and compile-attribute normalization.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use nac3ast::{Expr, ExprKind, Stmt, StmtKind};
 
-use crate::source_hir::SourceHirKind;
+use crate::{intrinsics, source_hir::SourceHirKind};
 
 use super::ast_util::{expression_path, parse_module};
 use super::compile_values::{
@@ -32,15 +32,31 @@ where
             continue;
         };
         let imports = module_imports(definition.module(), statements);
-        for node in definition.hir().nodes() {
-            if node.kind() != &SourceHirKind::Name {
+        for (node, fact) in definition
+            .hir()
+            .nodes()
+            .iter()
+            .zip(definition.hir().facts())
+        {
+            if !matches!(node.kind(), SourceHirKind::Name | SourceHirKind::Attribute) {
                 continue;
             }
-            let Some(imported) = node.symbol().and_then(|name| imports.get(name)) else {
+            if fact.module_binding_shadowed() {
+                continue;
+            }
+            let Some(symbol) = node.symbol() else {
                 continue;
             };
-            if !references.contains(imported) {
-                references.push(imported.clone());
+            if !symbol
+                .split('.')
+                .next()
+                .is_some_and(|root| imports.contains_key(root))
+            {
+                continue;
+            }
+            let resolved = resolve_call_path(definition.module(), &imports, symbol);
+            if !references.contains(&resolved) {
+                references.push(resolved);
             }
         }
     }
@@ -60,6 +76,10 @@ pub(super) fn resolve_bundle_compile_attributes(
     parsed: &HashMap<String, Vec<Stmt>>,
     definitions: &mut [TypedDefinition],
 ) {
+    let source_definitions = definitions
+        .iter()
+        .map(|definition| definition.qualified_name().to_owned())
+        .collect::<HashSet<_>>();
     let mut singleton_classes = HashMap::<String, String>::new();
     let mut global_symbols = HashMap::<String, SourceType>::new();
     let mut global_attributes = HashMap::<String, CompileAttribute>::new();
@@ -71,6 +91,17 @@ pub(super) fn resolve_bundle_compile_attributes(
         let mut module_types = HashMap::<String, SourceType>::new();
         let mut module_aggregate_element_types = HashMap::<String, Vec<SourceType>>::new();
         for statement in statements {
+            if let StmtKind::FunctionDef { name, .. } = &statement.node {
+                // Module-level functions may be referenced as opaque host
+                // callables without becoming reachable CatSeq definitions.
+                // Unit is sufficient here: the black-box special form reads
+                // only the stable resolved definition identity.
+                let canonical = format!("{module}.{name}");
+                if !source_definitions.contains(&canonical) {
+                    global_symbols.insert(canonical, SourceType::Unit);
+                }
+                continue;
+            }
             if let StmtKind::AnnAssign {
                 target,
                 annotation,
@@ -179,6 +210,7 @@ pub(super) fn resolve_bundle_compile_attributes(
             let Some(class) = expression_path(func) else {
                 continue;
             };
+            let resolved_class = resolve_call_path(module, &imports, &class);
             match class.rsplit('.').next() {
                 Some("Channel") => {
                     let canonical = format!("{module}.{id}");
@@ -190,15 +222,12 @@ pub(super) fn resolve_bundle_compile_attributes(
                         );
                     }
                 }
-                Some("Board") => {
+                Some("Board") if intrinsics::is_board_constructor(&resolved_class) => {
                     global_symbols.insert(format!("{module}.{id}"), SourceType::Board);
                 }
                 _ => {}
             }
-            singleton_classes.insert(
-                format!("{module}.{id}"),
-                resolve_call_path(module, &imports, &class),
-            );
+            singleton_classes.insert(format!("{module}.{id}"), resolved_class);
         }
         module_compile_values.insert(module.clone(), module_values);
     }
@@ -266,12 +295,20 @@ pub(super) fn resolve_bundle_compile_attributes(
             {
                 symbols.insert(local.to_owned(), (source_type.clone(), canonical.clone()));
             }
+            for (alias, imported) in &imports {
+                if let Some(suffix) = canonical.strip_prefix(&format!("{imported}.")) {
+                    symbols.insert(
+                        format!("{alias}.{suffix}"),
+                        (source_type.clone(), canonical.clone()),
+                    );
+                }
+            }
         }
-        for (local, imported) in imports {
-            if let Some(source_type) = global_symbols.get(&imported) {
+        for (local, imported) in &imports {
+            if let Some(source_type) = global_symbols.get(imported) {
                 symbols.insert(local.clone(), (source_type.clone(), imported.clone()));
             }
-            let Some(class) = singleton_classes.get(&imported) else {
+            let Some(class) = singleton_classes.get(imported) else {
                 continue;
             };
             let Some(fields) = class_values.get(class) else {

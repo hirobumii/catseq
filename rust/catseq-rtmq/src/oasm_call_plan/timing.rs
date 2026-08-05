@@ -128,6 +128,24 @@ pub(super) fn analyze_timing(
                     _ => unreachable!("validated arena has an Atomic payload"),
                 }
             }
+            MorphismNodeKind::Opaque => match payload {
+                Some(MorphismPayload::Opaque { duration, .. }) => {
+                    let duration = eval_cycles(&evaluated_values, *duration).map_err(|error| {
+                        let source = &arena.provenance()[node.provenance().index()];
+                        OasmCompileError::new(format!(
+                            "invalid blackbox duration at {}:{}:{}: {error}",
+                            source.owner(),
+                            source.line(),
+                            source.column()
+                        ))
+                    })?;
+                    let duration = i64::try_from(duration).map_err(|_| {
+                        OasmCompileError::new("blackbox duration exceeds signed Cycle Delta range")
+                    })?;
+                    (duration, duration, duration, duration, false)
+                }
+                _ => unreachable!("validated arena has an Opaque payload"),
+            },
             MorphismNodeKind::Instantiate => match payload {
                 Some(MorphismPayload::Instantiate { template, .. }) => {
                     let root = arena.templates()[template.index()].root().index();

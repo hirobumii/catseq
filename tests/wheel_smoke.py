@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib.util import find_spec
 from importlib.metadata import version
 import json
 from pathlib import Path
@@ -15,6 +16,7 @@ from catseq.experiment.descartes import DescartesGenerator
 from catseq.experiment.device import DeviceList
 from catseq.experiment.params import ExpParam, ExpParams, ScanPoint
 from catseq.morphism import Morphism, identity
+from catseq.oasm import black_box
 from catseq.targets import rtmq_v2_profile
 from catseq.time_utils import cycles
 
@@ -33,6 +35,8 @@ def wheel_public_sequence() -> Morphism:
 assert catseq.__version__ == version("catseq")
 assert callable(_native.compile)
 assert callable(_native.execute_oasm_program)
+assert black_box.__module__ == "catseq.oasm"
+assert find_spec("catseq.atomic") is None
 assert _native.Compiler.__module__ == "catseq._native"
 assert _native.CompiledSequence.__module__ == "catseq._native"
 assert _native.EthernetRuntimeBackend.__module__ == "catseq._native"

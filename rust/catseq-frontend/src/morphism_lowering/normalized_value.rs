@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use catseq_core::exact_decimal::ExactDecimal;
 
-use crate::native_records;
+use crate::{intrinsics, native_records};
 
 use super::{LoweredValue, MorphismLoweringError, ScalarValue};
 
@@ -271,6 +271,33 @@ pub(super) fn normalized_to_json(
         let arguments = &arguments[open + 1..];
         let (positional, keywords) =
             split_normalized_once(arguments, ';').unwrap_or((arguments, ""));
+        if intrinsics::is_board_constructor(schema_path) {
+            let positional = split_normalized_list(positional, ',')
+                .into_iter()
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>();
+            if positional.len() > 1 {
+                return Err(MorphismLoweringError::new(format!(
+                    "native record Board accepts at most 1 positional field, got {}",
+                    positional.len(),
+                )));
+            }
+            let mut record = serde_json::Map::new();
+            record.insert("$type".to_owned(), "Board".into());
+            if let Some(argument) = positional.first() {
+                record.insert("id".to_owned(), normalized_to_json(argument, fields)?);
+            }
+            for keyword in split_normalized_list(keywords, ',') {
+                if keyword.is_empty() {
+                    continue;
+                }
+                let Some((name, value)) = split_normalized_once(keyword, '=') else {
+                    continue;
+                };
+                record.insert(name.to_owned(), normalized_to_json(value, fields)?);
+            }
+            return Ok(serde_json::Value::Object(record));
+        }
         let Some(schema) = native_records::schema_for_constructor(schema_path) else {
             return Ok(serde_json::Value::String(value.to_owned()));
         };
@@ -311,6 +338,20 @@ pub(super) fn normalized_to_json(
         return Ok(serde_json::Value::Object(record));
     }
     Ok(serde_json::Value::String(value.to_owned()))
+}
+
+pub(super) fn normalized_board_id(value: &str) -> Result<Option<String>, MorphismLoweringError> {
+    let normalized = normalized_to_json(value, &HashMap::new())?;
+    let Some(record) = normalized.as_object() else {
+        return Ok(None);
+    };
+    if record.get("$type").and_then(serde_json::Value::as_str) != Some("Board") {
+        return Ok(None);
+    }
+    Ok(record
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned))
 }
 
 fn parse_normalized_numeric_with_fields(

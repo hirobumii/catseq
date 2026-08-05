@@ -97,6 +97,48 @@ stable compile-instance identity (for example,
 `quickstart_ttl.service.rewind` for a module singleton); a `Duration` value is
 a signed target Cycle Delta.
 
+## Compose downstream OASM with a blackbox
+
+Use `black_box` when a downstream module must emit raw OASM while CatSeq
+continues to own timing, board-level composition, and conflict checking:
+
+```python
+from catseq.morphism import Morphism
+from catseq.oasm import black_box
+
+
+def emit_raw_oasm() -> None:
+    # Site-owned OASM instructions stay in the downstream repository.
+    ...
+
+
+def blackbox_sequence() -> Morphism:
+    return black_box(
+        duration_cycles=12,
+        board_funcs={rwg_board: emit_raw_oasm},
+    )
+```
+
+The callback must be a module-level function. CatSeq does not execute the
+sequence builder or serialize a Python callable into its native arenas;
+instead, it stores the callback's stable source identity in the OASM Call Plan
+and retains the live callable only in the host-side `CompiledSequence`.
+Captured values therefore belong in `user_args` or `user_kwargs`, rather than
+in a nested function or lambda. The `board_funcs` keys are the participating
+boards and receive one callback each. No downstream Atomic Schema or channel
+state declaration is required for this source-level blackbox. Module-qualified
+callbacks and callbacks in a directly executed source file retain stable source
+identities for host-side resolution.
+`duration_cycles` is each callback's declared board occupancy; the callback
+must emit exactly that duration, and CatSeq does not append a second wait for
+the same interval. Board occupancy is exclusive and half-open: any ordinary
+same-board morphism whose occupancy intersects the region is rejected, including
+one that begins earlier and spans it. A morphism or another black box may start
+exactly at the region's end.
+CatSeq deliberately does not inspect or track state changes made by raw OASM.
+The user must preserve state or explicitly re-establish it before composing a
+later state-dependent native operation.
+
 ## Run on RTMQ hardware
 
 Physical routing is deployment configuration, not sequence source. For

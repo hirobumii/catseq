@@ -40,53 +40,6 @@ pub(super) fn definition_exists(statements: &[Stmt], requested: &str) -> bool {
     false
 }
 
-pub(super) fn definition_contains_call(
-    statements: &[Stmt],
-    requested: &str,
-    call_leaf: &str,
-) -> bool {
-    let mut pending = vec![(statements, Vec::<String>::new())];
-    while let Some((statements, scope)) = pending.pop() {
-        for statement in statements {
-            match &statement.node {
-                StmtKind::ClassDef { name, body, .. } => {
-                    let mut nested = scope.clone();
-                    nested.push(name.to_string());
-                    pending.push((body, nested));
-                }
-                StmtKind::FunctionDef { name, body, .. } => {
-                    let mut qualified = scope.clone();
-                    qualified.push(name.to_string());
-                    if qualified.join(".") != requested {
-                        continue;
-                    }
-                    let mut statements: Vec<_> = body.iter().collect();
-                    let mut expressions = Vec::new();
-                    while let Some(statement) = statements.pop() {
-                        push_statement_analysis_children(
-                            statement,
-                            &mut statements,
-                            &mut expressions,
-                        );
-                    }
-                    while let Some(expression) = expressions.pop() {
-                        if let ExprKind::Call { func, .. } = &expression.node
-                            && callable_path(func)
-                                .is_some_and(|path| path.rsplit('.').next() == Some(call_leaf))
-                        {
-                            return true;
-                        }
-                        push_expression_analysis_children(expression, &mut expressions);
-                    }
-                    return false;
-                }
-                _ => {}
-            }
-        }
-    }
-    false
-}
-
 pub(super) struct DefinitionAnalysis {
     pub(super) definition: TypedDefinition,
     pub(super) calls: Vec<ReachableCall>,

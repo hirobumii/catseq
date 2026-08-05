@@ -295,6 +295,16 @@ pub struct OasmCall {
     pub(super) args: Vec<OasmArgument>,
 }
 
+impl OasmCall {
+    pub const fn function(&self) -> OasmFunction {
+        self.function
+    }
+
+    pub fn arguments(&self) -> &[OasmArgument] {
+        &self.args
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OasmFunction {

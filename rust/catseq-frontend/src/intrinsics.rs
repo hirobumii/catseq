@@ -3,7 +3,7 @@
 use crate::native_records;
 use crate::typed::SourceType;
 
-pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 8;
+pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 9;
 const NATIVE_RECORD_REPLACE: &str = "catseq.replace";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -192,6 +192,9 @@ pub(crate) fn return_type(path: &str, first_argument: Option<&SourceType>) -> Op
     if let Some(schema) = native_records::schema_for_constructor(path) {
         return Some(SourceType::NativeRecord(schema.name().to_owned()));
     }
+    if path == "catseq.oasm.black_box" {
+        return Some(SourceType::Morphism);
+    }
     let leaf = path.rsplit('.').next().unwrap_or(path);
     if leaf == "cycles" && path != "cycles" && path != "catseq.time_utils.cycles" {
         return None;
@@ -225,6 +228,9 @@ pub(crate) fn parameter_types(path: &str) -> Vec<(usize, &'static str, SourceTyp
             vec![(1, "duration", SourceType::Duration)]
         }
         "catseq.time_utils.cycles" => vec![(0, "count", SourceType::Int64)],
+        "catseq.oasm.black_box" => {
+            vec![(0, "duration_cycles", SourceType::Int64)]
+        }
         _ => Vec::new(),
     }
 }
@@ -236,6 +242,13 @@ pub(crate) fn is_duration_unit(path: &str) -> bool {
             | "catseq.time_utils.ms"
             | "catseq.time_utils.us"
             | "catseq.time_utils.ns"
+    )
+}
+
+pub(crate) fn is_board_constructor(path: &str) -> bool {
+    matches!(
+        path,
+        "catseq.Board" | "catseq.types.Board" | "catseq.types.common.Board"
     )
 }
 
@@ -258,8 +271,14 @@ pub(crate) fn is_compiler_special_form(resolved: &str) -> bool {
     is_native_record_replace(resolved)
         || matches!(
             resolved,
-            "rb1system.utils.dict_to_morphism" | "catseq.time_utils.cycles"
+            "rb1system.utils.dict_to_morphism"
+                | "catseq.time_utils.cycles"
+                | "catseq.oasm.black_box"
         )
+}
+
+pub(crate) fn is_oasm_black_box(path: &str) -> bool {
+    path == "catseq.oasm.black_box"
 }
 
 /// Return the precompiled template body associated with a composite hardware
@@ -275,5 +294,29 @@ pub(crate) fn native_morphism_template(path: &str) -> Option<NativeMorphismTempl
         "catseq.hardware.rwg.rf_pulse" => Some(NativeMorphismTemplate::RwgRfPulse),
         "catseq.hardware.rwg.linear_ramp" => Some(NativeMorphismTemplate::RwgLinearRamp),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn black_box_is_registered_only_at_its_public_path() {
+        assert_eq!(
+            return_type("catseq.oasm.black_box", None),
+            Some(SourceType::Morphism)
+        );
+        assert_eq!(return_type("example.black_box", None), None);
+        assert_eq!(return_type("black_box", None), None);
+        assert_eq!(return_type("catseq.atomic.oasm_black_box", None), None);
+        assert_eq!(
+            parameter_types("catseq.oasm.black_box"),
+            vec![(0, "duration_cycles", SourceType::Int64)]
+        );
+        assert!(is_compiler_special_form("catseq.oasm.black_box"));
+        assert!(is_oasm_black_box("catseq.oasm.black_box"));
+        assert!(!is_compiler_special_form("example.black_box"));
+        assert!(!is_oasm_black_box("example.black_box"));
     }
 }

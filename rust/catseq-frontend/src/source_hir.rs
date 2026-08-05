@@ -362,6 +362,10 @@ impl SemanticFact {
     pub fn compile_aggregate_element_types(&self) -> &[SourceType] {
         &self.compile_aggregate_element_types
     }
+
+    pub(crate) const fn module_binding_shadowed(&self) -> bool {
+        self.module_binding_shadowed
+    }
 }
 
 #[derive(Clone)]
@@ -426,7 +430,9 @@ impl TypedSourceHir {
         symbols: &HashMap<String, (SourceType, String)>,
     ) {
         for (node, fact) in self.nodes.iter().zip(&mut self.facts) {
-            if node.kind != SourceHirKind::Name || fact.module_binding_shadowed {
+            if !matches!(node.kind, SourceHirKind::Name | SourceHirKind::Attribute)
+                || fact.module_binding_shadowed
+            {
                 continue;
             }
             let Some(symbol) = node.symbol.as_deref() else {

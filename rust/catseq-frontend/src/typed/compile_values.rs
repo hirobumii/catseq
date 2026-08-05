@@ -4,11 +4,11 @@ use std::collections::{HashMap, HashSet};
 
 use nac3ast::{Expr, ExprKind, Operator, Stmt, StmtKind};
 
-use crate::native_records;
+use crate::{intrinsics, native_records};
 
 use super::ast_util::expression_path;
 use super::model::SourceType;
-use super::resolution::resolve_call_path;
+use super::resolution::{resolve_call_path, update_visible_imports};
 
 #[derive(Default)]
 pub(super) struct ClassFields {
@@ -59,7 +59,10 @@ pub(super) fn class_fields(
     module_values: &HashMap<String, String>,
 ) -> ClassFields {
     let mut fields = ClassFields::default();
+    let mut visible_imports = imports.clone();
     for statement in statements {
+        let statement_imports = visible_imports.clone();
+        update_visible_imports(module, &mut visible_imports, statement);
         match &statement.node {
             StmtKind::AnnAssign {
                 target,
@@ -76,7 +79,7 @@ pub(super) fn class_fields(
                     annotation,
                     value.as_deref(),
                     module,
-                    imports,
+                    &statement_imports,
                     &known_values,
                 ) {
                     fields.types.insert(id.to_string(), source_type);
@@ -85,7 +88,7 @@ pub(super) fn class_fields(
                     if let Some(element_types) = inferred_compile_aggregate_element_types(
                         value,
                         module,
-                        imports,
+                        &statement_imports,
                         &fields.types,
                         &fields.aggregate_element_types,
                     ) {
@@ -96,7 +99,7 @@ pub(super) fn class_fields(
                     if let Some(normalized) = normalized_compile_expression_in_with_known(
                         value,
                         module,
-                        imports,
+                        &statement_imports,
                         &known_values,
                     ) {
                         fields.values.insert(id.to_string(), normalized);
@@ -112,15 +115,18 @@ pub(super) fn class_fields(
                 };
                 let mut known_values = module_values.clone();
                 known_values.extend(fields.values.clone());
-                if let Some(source_type) =
-                    inferred_compile_value_type_with_known(value, module, imports, &fields.types)
-                {
+                if let Some(source_type) = inferred_compile_value_type_with_known(
+                    value,
+                    module,
+                    &statement_imports,
+                    &fields.types,
+                ) {
                     fields.types.insert(id.to_string(), source_type);
                 }
                 if let Some(element_types) = inferred_compile_aggregate_element_types(
                     value,
                     module,
-                    imports,
+                    &statement_imports,
                     &fields.types,
                     &fields.aggregate_element_types,
                 ) {
@@ -131,7 +137,7 @@ pub(super) fn class_fields(
                 if let Some(normalized) = normalized_compile_expression_in_with_known(
                     value,
                     module,
-                    imports,
+                    &statement_imports,
                     &known_values,
                 ) {
                     fields.values.insert(id.to_string(), normalized);
@@ -189,6 +195,8 @@ pub(super) fn inferred_compile_value_type(
             let resolved = resolve_call_path(module, imports, &path);
             if resolved == "catseq.time_utils.cycles" {
                 Some(SourceType::Duration)
+            } else if intrinsics::is_board_constructor(&resolved) {
+                Some(SourceType::Board)
             } else {
                 native_records::schema_for_constructor(&resolved)
                     .map(|schema| SourceType::NativeRecord(schema.name().to_owned()))
@@ -448,7 +456,8 @@ pub(super) fn class_annotation_type(
         "Morphism" => Some(SourceType::Morphism),
         "MorphismDef" | "MorphismTemplate" => Some(SourceType::MorphismTemplate),
         "Channel" => Some(SourceType::Channel),
-        "Board" => Some(SourceType::Board),
+        "Board" => intrinsics::is_board_constructor(&resolve_call_path(module, imports, &path))
+            .then_some(SourceType::Board),
         _ => {
             let resolved = resolve_call_path(module, imports, &path);
             native_records::schema_for_constructor(&resolved)

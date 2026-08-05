@@ -1,6 +1,6 @@
 //! Direct Typed Source HIR to target-resolved native arena lowering.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -25,7 +25,7 @@ mod normalized_value;
 mod value_lowering;
 
 use normalized_value::{
-    lower_normalized_default, normalized_has_duration_unit, normalized_to_json,
+    lower_normalized_default, normalized_board_id, normalized_has_duration_unit, normalized_to_json,
 };
 use value_lowering::{
     call_arguments, is_numeric_intrinsic, lower_aggregate_intrinsic, lower_aggregate_operation,
@@ -289,6 +289,7 @@ impl<'a> SpecializationLowerer<'a> {
             }
         }
         let definition_names = self.definitions.keys().copied().collect::<HashSet<_>>();
+        let special_form_dictionaries = special_form_dictionaries(hir);
         let mut values = vec![None::<LoweredValue>; hir.nodes().len()];
         let nested_statements = nested_control_statements(hir);
         let mut local_bindings = HashMap::<String, LoweredValue>::new();
@@ -557,7 +558,23 @@ impl<'a> SpecializationLowerer<'a> {
                     &mut self.value_builder,
                     provenance[node_id],
                 )?,
-                SourceHirKind::Dictionary => lower_dictionary(children, hir, &values)?,
+                SourceHirKind::Dictionary
+                    if special_form_dictionaries
+                        .native_payloads
+                        .contains(&(node_id as u32)) =>
+                {
+                    Some(LoweredValue::Json(serde_json::Value::Object(
+                        lower_string_dictionary(hir, node_id as u32, &values, node)?,
+                    )))
+                }
+                SourceHirKind::Dictionary => lower_dictionary(
+                    children,
+                    hir,
+                    &values,
+                    special_form_dictionaries
+                        .deferred
+                        .contains(&(node_id as u32)),
+                )?,
                 SourceHirKind::Aggregate => children
                     .iter()
                     .map(|child| values[*child as usize].clone())
@@ -861,6 +878,7 @@ fn lower_entry(
     let mut values = vec![None::<LoweredValue>; hir.nodes().len()];
     let mut template_plans = Vec::<TemplatePlan>::new();
     let mut published_templates = Vec::<Option<MorphismTemplateId>>::new();
+    let special_form_dictionaries = special_form_dictionaries(hir);
     for node_id in 0..hir.nodes().len() {
         if let Some(resolved) = hir.facts()[node_id].resolved_node() {
             values[node_id] = values[resolved as usize].clone();
@@ -957,7 +975,23 @@ fn lower_entry(
                 &mut value_builder,
                 provenance[node_id],
             )?,
-            SourceHirKind::Dictionary => lower_dictionary(children, hir, &values)?,
+            SourceHirKind::Dictionary
+                if special_form_dictionaries
+                    .native_payloads
+                    .contains(&(node_id as u32)) =>
+            {
+                Some(LoweredValue::Json(serde_json::Value::Object(
+                    lower_string_dictionary(hir, node_id as u32, &values, node)?,
+                )))
+            }
+            SourceHirKind::Dictionary => lower_dictionary(
+                children,
+                hir,
+                &values,
+                special_form_dictionaries
+                    .deferred
+                    .contains(&(node_id as u32)),
+            )?,
             SourceHirKind::Aggregate => children
                 .iter()
                 .map(|child| values[*child as usize].clone())
@@ -1080,6 +1114,15 @@ fn lower_call(
         SourceType::Morphism if is_repeat_morphism(resolved) => {
             lower_repeat_call(node, children, values, builder, value_builder, provenance)
         }
+        SourceType::Morphism if intrinsics::is_oasm_black_box(resolved) => lower_oasm_black_box(
+            node,
+            children,
+            hir,
+            values,
+            builder,
+            value_builder,
+            provenance,
+        ),
         SourceType::Morphism if intrinsics::is_identity(resolved) => {
             let mut duration = call_arguments(children, values, value_builder, node)?
                 .first()
@@ -1168,18 +1211,19 @@ fn lower_dictionary(
     children: &[u32],
     hir: &TypedSourceHir,
     values: &[Option<LoweredValue>],
+    deferred_to_special_form: bool,
 ) -> Result<Option<LoweredValue>, MorphismLoweringError> {
     let half = children.len() / 2;
     let mut bindings = Vec::with_capacity(half);
     for (channel, template) in children[..half].iter().zip(&children[half..]) {
-        let template = match values[*template as usize].clone() {
-            Some(LoweredValue::Template(template)) => template,
-            _ => {
-                return Err(lowering_error(
-                    &hir.nodes()[*template as usize],
-                    "channel binding value is not a MorphismTemplate",
-                ));
+        let Some(LoweredValue::Template(template)) = values[*template as usize].clone() else {
+            if deferred_to_special_form {
+                return Ok(None);
             }
+            return Err(lowering_error(
+                &hir.nodes()[*template as usize],
+                "channel binding value is not a MorphismTemplate",
+            ));
         };
         bindings.push(ChannelBinding {
             channel: native_channel_key(hir, *channel),
@@ -1187,6 +1231,285 @@ fn lower_dictionary(
         });
     }
     Ok(Some(LoweredValue::ChannelBindings(bindings)))
+}
+
+#[derive(Default)]
+struct SpecialFormDictionaries {
+    deferred: HashSet<u32>,
+    native_payloads: HashSet<u32>,
+}
+
+fn special_form_dictionaries(hir: &TypedSourceHir) -> SpecialFormDictionaries {
+    let mut dictionaries = SpecialFormDictionaries::default();
+    for (node_id, node) in hir.nodes().iter().enumerate() {
+        if node.kind() != &SourceHirKind::Call
+            || !hir.facts()[node_id]
+                .resolved_definition()
+                .is_some_and(intrinsics::is_oasm_black_box)
+        {
+            continue;
+        }
+
+        let children = node_children(node, hir);
+        for argument in children.iter().skip(1) {
+            let mut candidate = *argument;
+            let mut resolved = HashSet::new();
+            while resolved.insert(candidate) {
+                let Some(next) = hir.facts()[candidate as usize].resolved_node() else {
+                    break;
+                };
+                candidate = next;
+            }
+            if hir.nodes()[candidate as usize].kind() == &SourceHirKind::Dictionary {
+                dictionaries.deferred.insert(candidate);
+            }
+        }
+
+        for (position, name) in [(2, "user_args"), (3, "user_kwargs"), (4, "metadata")] {
+            if let Some(argument) = call_argument_node(node, children, position, name) {
+                collect_native_payload_dictionaries(
+                    hir,
+                    argument,
+                    &mut dictionaries.native_payloads,
+                );
+            }
+        }
+    }
+    dictionaries
+}
+
+fn collect_native_payload_dictionaries(
+    hir: &TypedSourceHir,
+    root: u32,
+    dictionaries: &mut HashSet<u32>,
+) {
+    let mut pending = vec![root];
+    let mut visited = HashSet::new();
+    while let Some(candidate) = pending.pop() {
+        if !visited.insert(candidate) {
+            continue;
+        }
+        if hir.nodes()[candidate as usize].kind() == &SourceHirKind::Dictionary {
+            dictionaries.insert(candidate);
+        }
+        if let Some(resolved) = hir.facts()[candidate as usize].resolved_node() {
+            pending.push(resolved);
+        }
+        pending.extend(node_children(&hir.nodes()[candidate as usize], hir));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_oasm_black_box(
+    node: &SourceHirNode,
+    children: &[u32],
+    hir: &TypedSourceHir,
+    values: &[Option<LoweredValue>],
+    builder: &mut MorphismArenaBuilder,
+    value_builder: &mut ValueExprArenaBuilder,
+    provenance: ProvenanceId,
+) -> Result<Option<LoweredValue>, MorphismLoweringError> {
+    const PARAMETERS: [&str; 5] = [
+        "duration_cycles",
+        "board_funcs",
+        "user_args",
+        "user_kwargs",
+        "metadata",
+    ];
+    let positional_count = node.call_positional_count() as usize;
+    if positional_count > PARAMETERS.len() {
+        return Err(lowering_error(
+            node,
+            format!(
+                "black_box accepts at most {} positional arguments",
+                PARAMETERS.len()
+            ),
+        ));
+    }
+    for keyword in node.call_keyword_names() {
+        let Some(position) = PARAMETERS.iter().position(|parameter| parameter == keyword) else {
+            return Err(lowering_error(
+                node,
+                format!("black_box got unexpected keyword argument {keyword:?}"),
+            ));
+        };
+        if position < positional_count {
+            return Err(lowering_error(
+                node,
+                format!("black_box got multiple values for argument {keyword:?}"),
+            ));
+        }
+    }
+
+    let duration_node = call_argument_node(node, children, 0, "duration_cycles")
+        .ok_or_else(|| lowering_error(node, "black_box requires duration_cycles"))?;
+    let board_funcs_node = call_argument_node(node, children, 1, "board_funcs")
+        .ok_or_else(|| lowering_error(node, "black_box requires board_funcs"))?;
+
+    let duration_value = values[duration_node as usize]
+        .clone()
+        .ok_or_else(|| lowering_error(node, "blackbox duration is not compile/link evaluable"))?;
+    let LoweredValue::Scalar(duration_value) = duration_value else {
+        return Err(lowering_error(
+            node,
+            "blackbox duration_cycles must be an integer Cycle Count",
+        ));
+    };
+    let duration = scalar_to_expr(duration_value, value_builder, node)?;
+    if value_builder.value_type(duration) != Some(ValueExprType::Int64) {
+        return Err(lowering_error(
+            node,
+            "blackbox duration_cycles must have type int",
+        ));
+    }
+
+    let arguments_json = call_argument_node(node, children, 2, "user_args")
+        .and_then(|argument| values[argument as usize].as_ref())
+        .map(lowered_to_json)
+        .transpose()?
+        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    if !arguments_json.is_array() {
+        return Err(lowering_error(
+            node,
+            "blackbox user_args must be a tuple or list",
+        ));
+    }
+    let keyword_arguments_json = call_argument_node(node, children, 3, "user_kwargs")
+        .map(|argument| lower_string_dictionary(hir, argument, values, node))
+        .transpose()?
+        .unwrap_or_default();
+    let metadata_json = call_argument_node(node, children, 4, "metadata")
+        .map(|argument| lower_string_dictionary(hir, argument, values, node))
+        .transpose()?
+        .unwrap_or_default();
+    let arguments = value_builder.constant(ValueExprPayload::Json(arguments_json));
+    let keyword_arguments = value_builder.constant(ValueExprPayload::Json(
+        serde_json::Value::Object(keyword_arguments_json),
+    ));
+    let metadata = value_builder.constant(ValueExprPayload::Json(serde_json::Value::Object(
+        metadata_json,
+    )));
+
+    let mut boards = BTreeSet::new();
+    let mut calls = Vec::new();
+    for (board_node, callable_node) in dictionary_entries(hir, board_funcs_node, node)? {
+        let board_source = &hir.nodes()[board_node as usize];
+        let board_fact = &hir.facts()[board_node as usize];
+        let board = board_fact
+            .compile_value()
+            .map(normalized_board_id)
+            .transpose()
+            .map_err(|error| lowering_error(board_source, error.to_string()))?
+            .flatten()
+            .ok_or_else(|| {
+                lowering_error(
+                    board_source,
+                    "blackbox board key must resolve to a static Board",
+                )
+            })?;
+        if !boards.insert(board.clone()) {
+            return Err(lowering_error(
+                board_source,
+                format!("blackbox board {board:?} has more than one callback"),
+            ));
+        }
+        let callable = hir.facts()[callable_node as usize]
+            .resolved_definition()
+            .filter(|definition| !definition.contains("<locals>"))
+            .ok_or_else(|| {
+                lowering_error(
+                    &hir.nodes()[callable_node as usize],
+                    "blackbox callback must be a module-level function",
+                )
+            })?
+            .to_owned();
+        calls.push((board, callable, arguments, keyword_arguments));
+    }
+    if calls.is_empty() {
+        return Err(lowering_error(
+            node,
+            "black_box board_funcs cannot be empty",
+        ));
+    }
+
+    Ok(Some(LoweredValue::Morphism(
+        builder.opaque(duration, &calls, metadata, provenance),
+    )))
+}
+
+fn call_argument_node(
+    call: &SourceHirNode,
+    children: &[u32],
+    position: usize,
+    name: &str,
+) -> Option<u32> {
+    if position < call.call_positional_count() as usize {
+        return children.get(position + 1).copied();
+    }
+    call.call_keyword_names()
+        .iter()
+        .position(|keyword| keyword == name)
+        .and_then(|keyword| children.get(1 + call.call_positional_count() as usize + keyword))
+        .copied()
+}
+
+fn dictionary_entries(
+    hir: &TypedSourceHir,
+    mut dictionary: u32,
+    call: &SourceHirNode,
+) -> Result<Vec<(u32, u32)>, MorphismLoweringError> {
+    let mut visited = BTreeSet::new();
+    while visited.insert(dictionary) {
+        let Some(resolved) = hir.facts()[dictionary as usize].resolved_node() else {
+            break;
+        };
+        dictionary = resolved;
+    }
+    let dictionary_node = &hir.nodes()[dictionary as usize];
+    if dictionary_node.kind() != &SourceHirKind::Dictionary {
+        return Err(lowering_error(
+            call,
+            "blackbox argument must be a dictionary literal",
+        ));
+    }
+    let children = node_children(dictionary_node, hir);
+    if !children.len().is_multiple_of(2) {
+        return Err(lowering_error(
+            call,
+            "blackbox dictionary has an invalid shape",
+        ));
+    }
+    let half = children.len() / 2;
+    Ok(children[..half]
+        .iter()
+        .copied()
+        .zip(children[half..].iter().copied())
+        .collect())
+}
+
+fn lower_string_dictionary(
+    hir: &TypedSourceHir,
+    dictionary: u32,
+    values: &[Option<LoweredValue>],
+    call: &SourceHirNode,
+) -> Result<serde_json::Map<String, serde_json::Value>, MorphismLoweringError> {
+    if matches!(values[dictionary as usize], Some(LoweredValue::Null)) {
+        return Ok(serde_json::Map::new());
+    }
+    let mut lowered = serde_json::Map::new();
+    for (key, value) in dictionary_entries(hir, dictionary, call)? {
+        let Some(SourceLiteral::String(key)) = hir.nodes()[key as usize].literal() else {
+            return Err(lowering_error(
+                &hir.nodes()[key as usize],
+                "blackbox keyword keys must be string literals",
+            ));
+        };
+        let value = values[value as usize]
+            .as_ref()
+            .ok_or_else(|| lowering_error(call, "blackbox keyword value is not evaluable"))?;
+        lowered.insert(key.clone(), lowered_to_json(value)?);
+    }
+    Ok(lowered)
 }
 
 fn lower_native_record_call(

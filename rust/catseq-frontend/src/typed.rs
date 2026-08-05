@@ -19,7 +19,7 @@ mod validation;
 
 use ast_util::parse_module;
 use compile_attributes::{load_referenced_compile_modules, resolve_bundle_compile_attributes};
-use definition_analysis::{definition_contains_call, definition_exists, find_definition};
+use definition_analysis::{definition_exists, find_definition};
 use resolution::{
     load_source_module, locate_source_definition, module_imports, resolve_call_path,
     resolve_compile_instance_call, resolve_self_call,
@@ -189,18 +189,6 @@ where
                 if !parsed.contains_key(&target_module) {
                     let source = &sources[&target_module];
                     parsed.insert(target_module.clone(), parse_module(&target_module, source)?);
-                }
-                if definition_contains_call(
-                    &parsed[&target_module],
-                    &target_definition,
-                    "oasm_black_box",
-                ) {
-                    analysis.definition.hir.mark_opaque_atomic_call(
-                        &source_call.source_path,
-                        source_call.line,
-                        source_call.column,
-                    );
-                    continue;
                 }
                 if definition_exists(&parsed[&target_module], &target_definition) {
                     pending.push_back((target_module, target_definition));

@@ -32,6 +32,16 @@ impl NativeArenas {
                         values.node(*argument)?;
                     }
                 }
+                MorphismPayload::Opaque {
+                    duration, metadata, ..
+                } => {
+                    values.node(*duration)?;
+                    values.node(*metadata)?;
+                    for call in morphisms.opaque_calls(payload)? {
+                        values.node(call.arguments())?;
+                        values.node(call.keyword_arguments())?;
+                    }
+                }
                 MorphismPayload::Instantiate { .. } => {}
                 MorphismPayload::Loop { count } => {
                     values.node(*count)?;

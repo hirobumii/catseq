@@ -72,6 +72,7 @@ pub(super) fn analyze_epochs(
                 0
             }
             MorphismNodeKind::Wait
+            | MorphismNodeKind::Opaque
             | MorphismNodeKind::DefinitionRef
             | MorphismNodeKind::SyncPhi => 0,
         };

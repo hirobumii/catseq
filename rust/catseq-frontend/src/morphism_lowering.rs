@@ -288,7 +288,7 @@ impl<'a> SpecializationLowerer<'a> {
             }
         }
         let definition_names = self.definitions.keys().copied().collect::<HashSet<_>>();
-        let deferred_dictionaries = deferred_special_form_dictionaries(hir);
+        let special_form_dictionaries = special_form_dictionaries(hir);
         let mut values = vec![None::<LoweredValue>; hir.nodes().len()];
         let nested_statements = nested_control_statements(hir);
         let mut local_bindings = HashMap::<String, LoweredValue>::new();
@@ -548,11 +548,22 @@ impl<'a> SpecializationLowerer<'a> {
                     &mut self.value_builder,
                     provenance[node_id],
                 )?,
+                SourceHirKind::Dictionary
+                    if special_form_dictionaries
+                        .native_payloads
+                        .contains(&(node_id as u32)) =>
+                {
+                    Some(LoweredValue::Json(serde_json::Value::Object(
+                        lower_string_dictionary(hir, node_id as u32, &values, node)?,
+                    )))
+                }
                 SourceHirKind::Dictionary => lower_dictionary(
                     children,
                     hir,
                     &values,
-                    deferred_dictionaries.contains(&(node_id as u32)),
+                    special_form_dictionaries
+                        .deferred
+                        .contains(&(node_id as u32)),
                 )?,
                 SourceHirKind::Aggregate => children
                     .iter()
@@ -857,7 +868,7 @@ fn lower_entry(
     let mut values = vec![None::<LoweredValue>; hir.nodes().len()];
     let mut template_plans = Vec::<TemplatePlan>::new();
     let mut published_templates = Vec::<Option<MorphismTemplateId>>::new();
-    let deferred_dictionaries = deferred_special_form_dictionaries(hir);
+    let special_form_dictionaries = special_form_dictionaries(hir);
     for node_id in 0..hir.nodes().len() {
         if let Some(resolved) = hir.facts()[node_id].resolved_node() {
             values[node_id] = values[resolved as usize].clone();
@@ -948,11 +959,22 @@ fn lower_entry(
                 &mut value_builder,
                 provenance[node_id],
             )?,
+            SourceHirKind::Dictionary
+                if special_form_dictionaries
+                    .native_payloads
+                    .contains(&(node_id as u32)) =>
+            {
+                Some(LoweredValue::Json(serde_json::Value::Object(
+                    lower_string_dictionary(hir, node_id as u32, &values, node)?,
+                )))
+            }
             SourceHirKind::Dictionary => lower_dictionary(
                 children,
                 hir,
                 &values,
-                deferred_dictionaries.contains(&(node_id as u32)),
+                special_form_dictionaries
+                    .deferred
+                    .contains(&(node_id as u32)),
             )?,
             SourceHirKind::Aggregate => children
                 .iter()
@@ -1195,8 +1217,14 @@ fn lower_dictionary(
     Ok(Some(LoweredValue::ChannelBindings(bindings)))
 }
 
-fn deferred_special_form_dictionaries(hir: &TypedSourceHir) -> HashSet<u32> {
-    let mut dictionaries = HashSet::new();
+#[derive(Default)]
+struct SpecialFormDictionaries {
+    deferred: HashSet<u32>,
+    native_payloads: HashSet<u32>,
+}
+
+fn special_form_dictionaries(hir: &TypedSourceHir) -> SpecialFormDictionaries {
+    let mut dictionaries = SpecialFormDictionaries::default();
     for (node_id, node) in hir.nodes().iter().enumerate() {
         if node.kind() != &SourceHirKind::Call
             || !hir.facts()[node_id]
@@ -1205,21 +1233,54 @@ fn deferred_special_form_dictionaries(hir: &TypedSourceHir) -> HashSet<u32> {
         {
             continue;
         }
-        for argument in node_children(node, hir).iter().skip(1) {
+
+        let children = node_children(node, hir);
+        for argument in children.iter().skip(1) {
             let mut candidate = *argument;
-            let mut visited = HashSet::new();
-            while visited.insert(candidate) {
-                let Some(resolved) = hir.facts()[candidate as usize].resolved_node() else {
+            let mut resolved = HashSet::new();
+            while resolved.insert(candidate) {
+                let Some(next) = hir.facts()[candidate as usize].resolved_node() else {
                     break;
                 };
-                candidate = resolved;
+                candidate = next;
             }
             if hir.nodes()[candidate as usize].kind() == &SourceHirKind::Dictionary {
-                dictionaries.insert(candidate);
+                dictionaries.deferred.insert(candidate);
+            }
+        }
+
+        for (position, name) in [(2, "user_args"), (3, "user_kwargs"), (4, "metadata")] {
+            if let Some(argument) = call_argument_node(node, children, position, name) {
+                collect_native_payload_dictionaries(
+                    hir,
+                    argument,
+                    &mut dictionaries.native_payloads,
+                );
             }
         }
     }
     dictionaries
+}
+
+fn collect_native_payload_dictionaries(
+    hir: &TypedSourceHir,
+    root: u32,
+    dictionaries: &mut HashSet<u32>,
+) {
+    let mut pending = vec![root];
+    let mut visited = HashSet::new();
+    while let Some(candidate) = pending.pop() {
+        if !visited.insert(candidate) {
+            continue;
+        }
+        if hir.nodes()[candidate as usize].kind() == &SourceHirKind::Dictionary {
+            dictionaries.insert(candidate);
+        }
+        if let Some(resolved) = hir.facts()[candidate as usize].resolved_node() {
+            pending.push(resolved);
+        }
+        pending.extend(node_children(&hir.nodes()[candidate as usize], hir));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1316,19 +1377,23 @@ fn lower_oasm_black_box(
     let mut boards = BTreeSet::new();
     let mut calls = Vec::new();
     for (board_node, callable_node) in dictionary_entries(hir, board_funcs_node, node)? {
+        let board_source = &hir.nodes()[board_node as usize];
         let board_fact = &hir.facts()[board_node as usize];
         let board = board_fact
             .compile_value()
-            .and_then(normalized_board_id)
+            .map(normalized_board_id)
+            .transpose()
+            .map_err(|error| lowering_error(board_source, error.to_string()))?
+            .flatten()
             .ok_or_else(|| {
                 lowering_error(
-                    &hir.nodes()[board_node as usize],
+                    board_source,
                     "blackbox board key must resolve to a static Board",
                 )
             })?;
         if !boards.insert(board.clone()) {
             return Err(lowering_error(
-                &hir.nodes()[board_node as usize],
+                board_source,
                 format!("blackbox board {board:?} has more than one callback"),
             ));
         }

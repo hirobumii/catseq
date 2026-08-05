@@ -404,6 +404,40 @@ fn black_box_keeps_board_calls_without_state_schema_in_the_native_arena() {
 }
 
 #[test]
+fn black_box_rejects_extra_board_fields_without_panicking() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.oasm import black_box\nfrom catseq.morphism import Morphism\nfrom catseq.types import Board\n\nboard = Board('rwg0', 'extra')\n\ndef callback() -> None:\n    pass\n\ndef sequence() -> Morphism:\n    return black_box(\n        duration_cycles=12,\n        board_funcs={board: callback},\n    )\n",
+    )
+    .unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("native record Board accepts at most 1 positional field, got 2"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+#[test]
 fn unrelated_black_box_is_rejected_as_a_reachable_host_call() {
     let path = source_file();
     fs::write(

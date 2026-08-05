@@ -75,6 +75,21 @@ def multi_board_blackbox_sequence() -> Morphism:
     )
 
 
+def blackbox_with_nested_payload_sequence() -> Morphism:
+    return black_box(
+        duration_cycles=12,
+        board_funcs={rwg0: emit_raw_oasm},
+        user_args=(
+            {
+                "shape": {"n": 2},
+                "segments": [{"duration_cycles": 4}],
+            },
+        ),
+        user_kwargs={"config": {"trigger": {"source": "ttl0"}}},
+        metadata={"origin": {"kind": "integration-test"}},
+    )
+
+
 def adjacent_same_board_blackboxes_sequence() -> Morphism:
     return black_box(
         duration_cycles=12,
@@ -377,6 +392,27 @@ def test_source_blackbox_keeps_multi_board_timing_and_arguments_shared(
         "test_public_execution_api.emit_other_raw_oasm": emit_other_raw_oasm,
         "test_public_execution_api.emit_raw_oasm": emit_raw_oasm,
     }
+
+
+def test_source_blackbox_preserves_nested_native_payloads(
+    tmp_path: Path,
+) -> None:
+    compiled = Compiler(
+        source_root=BlackBoxSystem.source_root,
+        channels=BlackBoxSystem.channels,
+        cache_dir=tmp_path / "cache",
+    ).compile(blackbox_with_nested_payload_sequence)
+
+    call = compiled.oasm_call_plan["epochs"][0]["boards"][0]["calls"][0]
+    assert call["args"][1:] == [
+        [
+            {
+                "shape": {"n": 2},
+                "segments": [{"duration_cycles": 4}],
+            }
+        ],
+        {"config": {"trigger": {"source": "ttl0"}}},
+    ]
 
 
 def test_source_blackbox_allows_adjacent_same_board_regions(

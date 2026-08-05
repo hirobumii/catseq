@@ -10,7 +10,7 @@ use super::ast_util::{
     callable_path, expression_path, push_expression_analysis_children,
     push_statement_analysis_children,
 };
-use super::compile_values::{ClassFields, class_fields};
+use super::compile_values::{ClassFields, class_fields, module_compile_values};
 use super::model::{TypedCheckError, TypedDefinition};
 use super::resolution::module_imports;
 use super::signatures::signature;
@@ -61,6 +61,7 @@ pub(super) fn find_definition(
     class_context: Option<&ClassFields>,
 ) -> Result<Option<DefinitionAnalysis>, TypedCheckError> {
     let imports = module_imports(file_name, statements);
+    let module_values = module_compile_values(statements, file_name, &imports);
     find_definition_with_imports(
         file_name,
         statements,
@@ -68,6 +69,7 @@ pub(super) fn find_definition(
         requested,
         class_context,
         &imports,
+        &module_values,
     )
 }
 
@@ -78,12 +80,13 @@ fn find_definition_with_imports(
     requested: &str,
     class_context: Option<&ClassFields>,
     imports: &HashMap<String, String>,
+    module_values: &HashMap<String, String>,
 ) -> Result<Option<DefinitionAnalysis>, TypedCheckError> {
     for statement in statements {
         match &statement.node {
             StmtKind::ClassDef { name, body, .. } => {
                 scope.push(name.to_string());
-                let fields = class_fields(body, file_name, imports);
+                let fields = class_fields(body, file_name, imports, module_values);
                 let found = find_definition_with_imports(
                     file_name,
                     body,
@@ -91,6 +94,7 @@ fn find_definition_with_imports(
                     requested,
                     Some(&fields),
                     imports,
+                    module_values,
                 )?;
                 scope.pop();
                 if found.is_some() {
@@ -123,10 +127,14 @@ fn find_definition_with_imports(
                 let erased_state_names = legacy_state_bindings(body);
                 let empty_field_types = HashMap::new();
                 let empty_field_values = HashMap::new();
+                let empty_field_aggregate_element_types = HashMap::new();
                 let hir_context = DefinitionHirContext::new(
                     file_name,
                     class_context.map_or(&empty_field_types, |fields| &fields.types),
                     class_context.map_or(&empty_field_values, |fields| &fields.values),
+                    class_context.map_or(&empty_field_aggregate_element_types, |fields| {
+                        &fields.aggregate_element_types
+                    }),
                     &erased_state_names,
                     imports,
                 );

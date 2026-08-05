@@ -4,15 +4,18 @@ use std::collections::{HashMap, HashSet};
 
 use nac3ast::{Expr, ExprKind, Stmt, StmtKind};
 
-use crate::source_hir::SourceHirKind;
+use crate::{intrinsics, source_hir::SourceHirKind};
 
 use super::ast_util::{expression_path, parse_module};
 use super::compile_values::{
-    class_annotation_type, class_fields, inferred_compile_value_type,
-    normalized_compile_expression, normalized_compile_expression_in,
+    checked_compile_annotation_type, class_annotation_type, class_fields,
+    inferred_compile_aggregate_element_types, inferred_compile_value_type_with_known,
+    normalized_compile_expression, normalized_compile_expression_in_with_known,
 };
 use super::model::{SourceType, TypedCheckError, TypedDefinition};
 use super::resolution::{locate_source_definition, module_imports, resolve_call_path};
+
+type CompileAttribute = (SourceType, String, Vec<SourceType>);
 
 pub(super) fn load_referenced_compile_modules<F>(
     definitions: &[TypedDefinition],
@@ -79,9 +82,14 @@ pub(super) fn resolve_bundle_compile_attributes(
         .collect::<HashSet<_>>();
     let mut singleton_classes = HashMap::<String, String>::new();
     let mut global_symbols = HashMap::<String, SourceType>::new();
-    let mut global_attributes = HashMap::<String, (SourceType, String)>::new();
+    let mut global_attributes = HashMap::<String, CompileAttribute>::new();
+    let mut module_compile_values = HashMap::<String, HashMap<String, String>>::new();
     for (module, statements) in parsed {
         let imports = module_imports(module, statements);
+        let function_return_types = same_module_function_return_types(statements, module, &imports);
+        let mut module_values = HashMap::<String, String>::new();
+        let mut module_types = HashMap::<String, SourceType>::new();
+        let mut module_aggregate_element_types = HashMap::<String, Vec<SourceType>>::new();
         for statement in statements {
             if let StmtKind::FunctionDef { name, .. } = &statement.node {
                 // Module-level functions may be referenced as opaque host
@@ -101,13 +109,46 @@ pub(super) fn resolve_bundle_compile_attributes(
                 ..
             } = &statement.node
             {
-                if let ExprKind::Name { id, .. } = &target.node
-                    && let (Some(source_type), Some(normalized)) = (
-                        class_annotation_type(annotation),
-                        normalized_compile_expression_in(value, module, &imports),
-                    )
-                {
-                    global_attributes.insert(format!("{module}.{id}"), (source_type, normalized));
+                if let ExprKind::Name { id, .. } = &target.node {
+                    let normalized = normalized_compile_expression_in_with_known(
+                        value,
+                        module,
+                        &imports,
+                        &module_values,
+                    );
+                    let element_types = inferred_compile_aggregate_element_types(
+                        value,
+                        module,
+                        &imports,
+                        &module_types,
+                        &module_aggregate_element_types,
+                    );
+                    if let (Some(source_type), Some(normalized)) = (
+                        checked_compile_annotation_type(
+                            annotation,
+                            Some(value),
+                            module,
+                            &imports,
+                            &module_values,
+                        ),
+                        normalized.clone(),
+                    ) {
+                        global_attributes.insert(
+                            format!("{module}.{id}"),
+                            (
+                                source_type.clone(),
+                                normalized,
+                                element_types.clone().unwrap_or_default(),
+                            ),
+                        );
+                        module_types.insert(id.to_string(), source_type);
+                    }
+                    if let Some(element_types) = element_types {
+                        module_aggregate_element_types.insert(id.to_string(), element_types);
+                    }
+                    if let Some(normalized) = normalized {
+                        module_values.insert(id.to_string(), normalized);
+                    }
                 }
                 continue;
             }
@@ -120,11 +161,48 @@ pub(super) fn resolve_bundle_compile_attributes(
             let ExprKind::Name { id, .. } = &target.node else {
                 continue;
             };
-            if let (Some(source_type), Some(normalized)) = (
-                inferred_compile_value_type(value, module, &imports),
-                normalized_compile_expression_in(value, module, &imports),
-            ) {
-                global_attributes.insert(format!("{module}.{id}"), (source_type, normalized));
+            let normalized = normalized_compile_expression_in_with_known(
+                value,
+                module,
+                &imports,
+                &module_values,
+            );
+            let source_type =
+                inferred_compile_value_type_with_known(value, module, &imports, &module_types)
+                    .or_else(|| {
+                        inferred_same_module_call_type(
+                            value,
+                            module,
+                            &imports,
+                            &function_return_types,
+                        )
+                    });
+            let element_types = inferred_compile_aggregate_element_types(
+                value,
+                module,
+                &imports,
+                &module_types,
+                &module_aggregate_element_types,
+            );
+            if let (Some(source_type), Some(normalized)) = (source_type.clone(), normalized.clone())
+            {
+                global_attributes.insert(
+                    format!("{module}.{id}"),
+                    (
+                        source_type,
+                        normalized,
+                        element_types.clone().unwrap_or_default(),
+                    ),
+                );
+            }
+            if let Some(source_type) = source_type {
+                module_types.insert(id.to_string(), source_type);
+            }
+            if let Some(element_types) = element_types {
+                module_aggregate_element_types.insert(id.to_string(), element_types);
+            }
+            if let Some(normalized) = normalized {
+                module_values.insert(id.to_string(), normalized);
             }
             let ExprKind::Call { func, .. } = &value.node else {
                 continue;
@@ -132,6 +210,7 @@ pub(super) fn resolve_bundle_compile_attributes(
             let Some(class) = expression_path(func) else {
                 continue;
             };
+            let resolved_class = resolve_call_path(module, &imports, &class);
             match class.rsplit('.').next() {
                 Some("Channel") => {
                     let canonical = format!("{module}.{id}");
@@ -139,22 +218,20 @@ pub(super) fn resolve_bundle_compile_attributes(
                     if let Some(local_id) = channel_local_id(value) {
                         global_attributes.insert(
                             format!("{canonical}.local_id"),
-                            (SourceType::Int64, local_id),
+                            (SourceType::Int64, local_id, Vec::new()),
                         );
                     }
                 }
-                Some("Board") => {
+                Some("Board") if intrinsics::is_board_constructor(&resolved_class) => {
                     global_symbols.insert(format!("{module}.{id}"), SourceType::Board);
                 }
                 _ => {}
             }
-            singleton_classes.insert(
-                format!("{module}.{id}"),
-                resolve_call_path(module, &imports, &class),
-            );
+            singleton_classes.insert(format!("{module}.{id}"), resolved_class);
         }
+        module_compile_values.insert(module.clone(), module_values);
     }
-    let mut class_values = HashMap::<String, HashMap<String, (SourceType, String)>>::new();
+    let mut class_values = HashMap::<String, HashMap<String, CompileAttribute>>::new();
     for (module, statements) in parsed {
         let imports = module_imports(module, statements);
         let module_attributes = visible_global_attributes(module, &imports, &global_attributes);
@@ -162,7 +239,14 @@ pub(super) fn resolve_bundle_compile_attributes(
             let StmtKind::ClassDef { name, body, .. } = &statement.node else {
                 continue;
             };
-            let fields = class_fields(body, module, &imports);
+            let fields = class_fields(
+                body,
+                module,
+                &imports,
+                module_compile_values
+                    .get(module)
+                    .expect("module values were collected above"),
+            );
             let mut normalized_fields = fields.values.clone();
             for _ in 0..=normalized_fields.len() {
                 let previous = normalized_fields.clone();
@@ -177,11 +261,14 @@ pub(super) fn resolve_bundle_compile_attributes(
             let values = normalized_fields
                 .into_iter()
                 .filter_map(|(field, value)| {
-                    fields
-                        .types
-                        .get(&field)
-                        .cloned()
-                        .map(|source_type| (field, (source_type, value)))
+                    fields.types.get(&field).cloned().map(|source_type| {
+                        let element_types = fields
+                            .aggregate_element_types
+                            .get(&field)
+                            .cloned()
+                            .unwrap_or_default();
+                        (field, (source_type, value, element_types))
+                    })
                 })
                 .collect();
             class_values.insert(format!("{module}.{name}"), values);
@@ -236,6 +323,43 @@ pub(super) fn resolve_bundle_compile_attributes(
     }
 }
 
+fn same_module_function_return_types(
+    statements: &[Stmt],
+    module: &str,
+    imports: &HashMap<String, String>,
+) -> HashMap<String, SourceType> {
+    statements
+        .iter()
+        .filter_map(|statement| {
+            let StmtKind::FunctionDef {
+                name,
+                returns: Some(returns),
+                ..
+            } = &statement.node
+            else {
+                return None;
+            };
+            class_annotation_type(returns, module, imports)
+                .map(|source_type| (format!("{module}.{name}"), source_type))
+        })
+        .collect()
+}
+
+fn inferred_same_module_call_type(
+    expression: &Expr,
+    module: &str,
+    imports: &HashMap<String, String>,
+    function_return_types: &HashMap<String, SourceType>,
+) -> Option<SourceType> {
+    let ExprKind::Call { func, .. } = &expression.node else {
+        return None;
+    };
+    let path = expression_path(func)?;
+    function_return_types
+        .get(&resolve_call_path(module, imports, &path))
+        .cloned()
+}
+
 fn channel_local_id(expression: &Expr) -> Option<String> {
     let ExprKind::Call { args, keywords, .. } = &expression.node else {
         return None;
@@ -256,8 +380,8 @@ fn channel_local_id(expression: &Expr) -> Option<String> {
 fn visible_global_attributes(
     module: &str,
     imports: &HashMap<String, String>,
-    attributes: &HashMap<String, (SourceType, String)>,
-) -> HashMap<String, (SourceType, String)> {
+    attributes: &HashMap<String, CompileAttribute>,
+) -> HashMap<String, CompileAttribute> {
     let mut visible = HashMap::new();
     let prefix = format!("{module}.");
     for (canonical, value) in attributes {
@@ -279,7 +403,7 @@ fn visible_global_attributes(
 fn substitute_normalized_compile_names(
     value: &str,
     fields: &HashMap<String, String>,
-    attributes: &HashMap<String, (SourceType, String)>,
+    attributes: &HashMap<String, CompileAttribute>,
 ) -> String {
     let mut resolved = value.to_owned();
     let mut names = fields.iter().collect::<Vec<_>>();
@@ -289,7 +413,7 @@ fn substitute_normalized_compile_names(
     }
     let mut paths = attributes.iter().collect::<Vec<_>>();
     paths.sort_by_key(|(path, _)| std::cmp::Reverse(path.len()));
-    for (path, (_, replacement)) in paths {
+    for (path, (_, replacement, _)) in paths {
         resolved = resolved.replace(&format!("path:{path}"), replacement);
     }
     resolved

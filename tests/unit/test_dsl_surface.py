@@ -3,6 +3,7 @@ from inspect import signature
 
 import pytest
 
+from catseq import replace
 from catseq.hardware.rwg import linear_ramp, load, play, set_state
 from catseq.hardware.rsp import pid_relink
 from catseq.hardware.ttl import pulse, set_high
@@ -17,6 +18,7 @@ from catseq.morphism import (
     morphism_template,
 )
 from catseq.time_utils import Duration
+from catseq.types import StaticWaveform
 
 
 def test_identity_is_a_compiler_only_source_intrinsic() -> None:
@@ -25,6 +27,13 @@ def test_identity_is_a_compiler_only_source_intrinsic() -> None:
         match="compile_entry",
     ):
         identity(1.0)
+
+
+def test_replace_is_a_compiler_only_native_record_intrinsic() -> None:
+    waveform = StaticWaveform(freq=1.0, amp=0.2)
+
+    with pytest.raises(CompilerOnlyError, match="compile_entry"):
+        replace(waveform, freq=2.0)
 
 
 def test_black_box_is_a_public_compiler_intrinsic() -> None:

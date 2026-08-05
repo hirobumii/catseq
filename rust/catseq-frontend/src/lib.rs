@@ -18,6 +18,7 @@ mod incremental;
 mod intrinsics;
 mod morphism_lowering;
 mod names;
+mod native_records;
 mod session;
 mod source_hir;
 mod typed;

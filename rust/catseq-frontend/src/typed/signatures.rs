@@ -4,11 +4,14 @@ use std::collections::HashMap;
 
 use nac3ast::{Arg, Arguments, Expr, ExprKind, Stmt};
 
+use crate::intrinsics;
+
 use super::ast_util::{
     expression_path, push_expression_analysis_children, push_statement_analysis_children,
 };
 use super::compile_values::normalized_compile_expression_in;
 use super::model::{SourceType, TypeSignature, TypedCheckError, TypedParameter};
+use super::resolution::resolve_call_path;
 
 pub(super) fn signature(
     file_name: &str,
@@ -50,7 +53,7 @@ pub(super) fn signature(
         }
     }
     let return_type = match returns {
-        Some(annotation) => annotation_type(file_name, definition, annotation)?,
+        Some(annotation) => annotation_type(file_name, definition, annotation, imports)?,
         None => SourceType::Unit,
     };
     Ok(TypeSignature {
@@ -71,7 +74,7 @@ fn parameter(
     let name = argument.node.arg.to_string();
     let source_type = match argument.node.annotation.as_deref() {
         Some(annotation) if is_legacy_state_annotation(annotation) => return Ok(None),
-        Some(annotation) => annotation_type(file_name, definition, annotation)?,
+        Some(annotation) => annotation_type(file_name, definition, annotation, imports)?,
         None if name == "self" => {
             SourceType::Instance(class_name.unwrap_or("<unknown>").to_owned())
         }
@@ -149,15 +152,16 @@ fn annotation_type(
     file_name: &str,
     definition: &str,
     annotation: &Expr,
+    imports: &HashMap<String, String>,
 ) -> Result<SourceType, TypedCheckError> {
     if let ExprKind::Subscript { value, slice, .. } = &annotation.node {
         let container = expression_path(value).unwrap_or_default();
         let leaf = container.rsplit('.').next().unwrap_or(&container);
         return match leaf {
-            "Optional" => annotation_type(file_name, definition, slice)
+            "Optional" => annotation_type(file_name, definition, slice, imports)
                 .map(|inner| SourceType::Optional(Box::new(inner))),
-            "ClassVar" => annotation_type(file_name, definition, slice),
-            "ExpParam" | "ScanParam" => annotation_type(file_name, definition, slice)
+            "ClassVar" => annotation_type(file_name, definition, slice, imports),
+            "ExpParam" | "ScanParam" => annotation_type(file_name, definition, slice, imports)
                 .map(|inner| SourceType::ScanParam(Box::new(inner))),
             "dict" | "Dict" => Ok(SourceType::ChannelBindings),
             "tuple" | "Tuple" | "list" | "List" => Ok(SourceType::FixedAggregate),
@@ -174,8 +178,8 @@ fn annotation_type(
         right,
     } = &annotation.node
     {
-        let left = annotation_type(file_name, definition, left)?;
-        let right = annotation_type(file_name, definition, right)?;
+        let left = annotation_type(file_name, definition, left, imports)?;
+        let right = annotation_type(file_name, definition, right, imports)?;
         return match (left, right) {
             (SourceType::Unit, value) | (value, SourceType::Unit) => {
                 Ok(SourceType::Optional(Box::new(value)))
@@ -202,7 +206,15 @@ fn annotation_type(
         "AtomicMorphism" | "AtomicOp" | "TimedRegion" | "BlackBoxAtomicMorphism" => {
             SourceType::AtomicOp
         }
-        "Board" => SourceType::Board,
+        "Board"
+            if intrinsics::is_board_constructor(&resolve_call_path(
+                file_name,
+                imports,
+                &annotation,
+            )) =>
+        {
+            SourceType::Board
+        }
         "Channel" => SourceType::Channel,
         "ExpParams" | "ScanBindings" => SourceType::ScanBindings,
         _ => {

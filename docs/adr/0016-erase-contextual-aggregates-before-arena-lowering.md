@@ -26,6 +26,6 @@ Specialization and typed lowering must eliminate every contextual aggregate:
 Failure to eliminate such a value is a lowering error. CatSeq 0.3 does not add
 general mutable containers, dynamic container indexing, or container nodes to
 the Morphism arena. The same boundary applies to every other Python-shaped
-operation: attribute lookup, dataclass replacement, and source expressions are
+operation: attribute lookup, Native Record replacement, and source expressions are
 resolved or lowered to native handles and Value Expression IDs before arena
 construction.

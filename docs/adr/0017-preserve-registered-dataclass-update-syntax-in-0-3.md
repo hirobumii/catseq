@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0051
 ---
 
 # Preserve registered dataclass update syntax in 0.3

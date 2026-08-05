@@ -15,6 +15,7 @@ use catseq_core::value_expr::{
 };
 
 use crate::intrinsics::{self, NativeMorphismTemplate};
+use crate::native_records::{self, NativeRecordFieldType};
 use crate::{
     MorphismComposition, SourceHirKind, SourceHirNode, SourceLiteral, SourceType, TypedCheckReport,
     TypedDefinition, TypedSourceHir, ValueAvailability,
@@ -367,6 +368,15 @@ impl<'a> SpecializationLowerer<'a> {
                         self.clock_hz,
                     )?
                 }
+                SourceHirKind::Name
+                    if matches!(source_type, Some(SourceType::NativeRecord(_)))
+                        && fact.compile_value().is_some() =>
+                {
+                    Some(LoweredValue::Json(normalized_to_json(
+                        fact.compile_value().expect("checked above"),
+                        &HashMap::new(),
+                    )?))
+                }
                 SourceHirKind::Attribute if fact.availability() == ValueAvailability::Link => {
                     let value_type = source_type_to_value_type(source_type).ok_or_else(|| {
                         lowering_error(node, "environment value has no native scalar type")
@@ -392,7 +402,7 @@ impl<'a> SpecializationLowerer<'a> {
                         self.clock_hz,
                     )?
                 }
-                SourceHirKind::Name | SourceHirKind::Attribute
+                SourceHirKind::Attribute
                     if matches!(source_type, Some(SourceType::NativeRecord(_)))
                         && fact.compile_value().is_some() =>
                 {
@@ -519,7 +529,7 @@ impl<'a> SpecializationLowerer<'a> {
                     )?
                 }
                 SourceHirKind::Call if matches!(source_type, Some(SourceType::NativeRecord(_))) => {
-                    lower_native_record_call(node, children, fact, &values)?
+                    lower_native_record_call(node, children, fact, &values, &self.value_builder)?
                 }
                 SourceHirKind::Call if source_type == Some(&SourceType::FixedAggregate) => {
                     lower_aggregate_intrinsic(node, children, fact, &values)?
@@ -768,7 +778,7 @@ impl<'a> SpecializationLowerer<'a> {
                 lower_cycles_intrinsic(node, children, &evaluated, &mut self.value_builder)?
             }
             SourceHirKind::Call if matches!(source_type, Some(SourceType::NativeRecord(_))) => {
-                lower_native_record_call(node, children, fact, &evaluated)?
+                lower_native_record_call(node, children, fact, &evaluated, &self.value_builder)?
             }
             SourceHirKind::Call if source_type == Some(&SourceType::FixedAggregate) => {
                 lower_aggregate_intrinsic(node, children, fact, &evaluated)?
@@ -941,7 +951,13 @@ fn lower_entry(
                 lower_cycles_intrinsic(node, children, &values, &mut value_builder)?
             }
             SourceHirKind::Call if matches!(source_type, Some(SourceType::NativeRecord(_))) => {
-                lower_native_record_call(node, children, &hir.facts()[node_id], &values)?
+                lower_native_record_call(
+                    node,
+                    children,
+                    &hir.facts()[node_id],
+                    &values,
+                    &value_builder,
+                )?
             }
             SourceHirKind::Call if source_type == Some(&SourceType::FixedAggregate) => {
                 lower_aggregate_intrinsic(node, children, &hir.facts()[node_id], &values)?
@@ -1501,10 +1517,14 @@ fn lower_native_record_call(
     children: &[u32],
     fact: &crate::SemanticFact,
     values: &[Option<LoweredValue>],
+    value_builder: &ValueExprArenaBuilder,
 ) -> Result<Option<LoweredValue>, MorphismLoweringError> {
     let resolved = fact.resolved_definition().unwrap_or_default();
     if resolved == "numpy.load" || resolved.ends_with(".np.load") {
         return Ok(Some(LoweredValue::Json(serde_json::Value::Null)));
+    }
+    if intrinsics::is_native_record_replace(resolved) {
+        return lower_native_record_replace(node, children, values, value_builder);
     }
     let arguments = children
         .iter()
@@ -1522,95 +1542,354 @@ fn lower_native_record_call(
     let Some(arguments) = arguments else {
         return Ok(None);
     };
-    if resolved == "dataclasses.replace" {
-        let Some((_, LoweredValue::Json(serde_json::Value::Object(mut record)))) =
-            arguments.first().cloned()
-        else {
-            return Ok(None);
-        };
-        for (name, value) in arguments.into_iter().skip(1) {
-            let Some(name) = name else {
-                return Err(lowering_error(node, "replace fields must be named"));
-            };
-            record.insert(name, lowered_to_json(&value)?);
-        }
-        return Ok(Some(LoweredValue::Json(serde_json::Value::Object(record))));
-    }
-    let schema = match fact.source_type() {
+    let schema_name = match fact.source_type() {
         Some(SourceType::NativeRecord(schema)) => schema.as_str(),
         _ => resolved.rsplit('.').next().unwrap_or("NativeRecord"),
     };
-    let field_names: &[&str] = match schema {
-        "StaticWaveform" => &["freq", "amp", "sbg_id", "phase", "fct"],
-        "WaveformParams" => &[
-            "sbg_id",
-            "freq_coeffs",
-            "amp_coeffs",
-            "initial_phase",
-            "phase_reset",
-            "fct",
-        ],
-        "RSPPIDConfig" => &[
-            "adc_in",
-            "rf_out",
-            "dgt_source",
-            "setpoint",
-            "kp",
-            "ki",
-            "kd",
-            "output_max",
-        ],
-        "RSPWaveformParams" => &["rf_out", "amp", "output_max"],
-        _ => return Ok(None),
+    let Some(schema) = native_records::schema(schema_name) else {
+        return Ok(None);
     };
     let mut record = serde_json::Map::new();
     record.insert(
         "$type".to_owned(),
-        serde_json::Value::String(schema.to_owned()),
+        serde_json::Value::String(schema.name().to_owned()),
     );
     for (position, (name, value)) in arguments.into_iter().enumerate() {
-        let name = name.unwrap_or_else(|| {
-            field_names
-                .get(position)
-                .copied()
-                .unwrap_or("value")
-                .to_owned()
-        });
-        record.insert(name, lowered_to_json(&value)?);
+        let field = match name {
+            Some(name) => schema.field(&name).ok_or_else(|| {
+                lowering_error(
+                    node,
+                    format!(
+                        "unknown Native Record field `{name}` for `{}`",
+                        schema.name()
+                    ),
+                )
+            })?,
+            None => schema.field_at(position).ok_or_else(|| {
+                lowering_error(
+                    node,
+                    format!(
+                        "too many positional fields for Native Record `{}`",
+                        schema.name()
+                    ),
+                )
+            })?,
+        };
+        if !native_record_value_matches(field.field_type(), &value, value_builder) {
+            return Err(native_record_field_type_error(
+                node,
+                "Native Record construction",
+                schema.name(),
+                field.name(),
+                field.field_type(),
+                &value,
+                value_builder,
+            ));
+        }
+        record.insert(field.name().to_owned(), lowered_to_json(&value)?);
     }
-    match schema {
-        "StaticWaveform" => {
-            record.entry("freq").or_insert(serde_json::Value::Null);
-            record.entry("amp").or_insert(serde_json::Value::Null);
-            record.entry("sbg_id").or_insert(serde_json::Value::Null);
-            record
-                .entry("phase")
-                .or_insert(serde_json::Value::from(0.0));
-            record.entry("fct").or_insert(serde_json::Value::Null);
+    schema.populate_defaults(&mut record);
+    Ok(Some(LoweredValue::Json(serde_json::Value::Object(record))))
+}
+
+fn lower_native_record_replace(
+    node: &SourceHirNode,
+    children: &[u32],
+    values: &[Option<LoweredValue>],
+    value_builder: &ValueExprArenaBuilder,
+) -> Result<Option<LoweredValue>, MorphismLoweringError> {
+    let mut arguments = Vec::with_capacity(children.len().saturating_sub(1));
+    for (index, child) in children.iter().skip(1).enumerate() {
+        let name = if index < node.call_positional_count() as usize {
+            None
+        } else {
+            Some(
+                node.call_keyword_names()
+                    .get(index - node.call_positional_count() as usize)
+                    .cloned()
+                    .ok_or_else(|| {
+                        lowering_error(node, "catseq.replace has an invalid keyword argument")
+                    })?,
+            )
+        };
+        let description = name
+            .as_deref()
+            .map(|name| format!("field `{name}`"))
+            .unwrap_or_else(|| format!("positional argument {}", index + 1));
+        let value = values[*child as usize].clone().ok_or_else(|| {
+            lowering_error(
+                node,
+                format!("catseq.replace {description} cannot be lowered to a native value"),
+            )
+        })?;
+        arguments.push((name, value));
+    }
+
+    let Some((base_name, base)) = arguments.first().cloned() else {
+        return Err(lowering_error(
+            node,
+            "catseq.replace requires a Native Record as its first argument",
+        ));
+    };
+    if base_name.is_some() {
+        return Err(lowering_error(
+            node,
+            "catseq.replace first argument must be positional",
+        ));
+    }
+    let LoweredValue::Json(serde_json::Value::Object(mut record)) = base else {
+        return Err(lowering_error(
+            node,
+            "catseq.replace requires a Native Record as its first argument",
+        ));
+    };
+    let schema_name = record
+        .get("$type")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            lowering_error(
+                node,
+                "catseq.replace requires a registered Native Record schema",
+            )
+        })?;
+    let schema = native_records::schema(&schema_name).ok_or_else(|| {
+        lowering_error(
+            node,
+            format!("catseq.replace does not support Native Record `{schema_name}`"),
+        )
+    })?;
+
+    schema.populate_defaults(&mut record);
+
+    for name in record.keys() {
+        if name == "$type" {
+            continue;
         }
-        "WaveformParams" => {
-            record
-                .entry("freq_coeffs")
-                .or_insert(serde_json::json!([0.0, null, null, null]));
-            record
-                .entry("amp_coeffs")
-                .or_insert(serde_json::json!([0.0, null, null, null]));
-            record
-                .entry("initial_phase")
-                .or_insert(serde_json::Value::Null);
-            record
-                .entry("phase_reset")
-                .or_insert(serde_json::Value::Bool(false));
-            record.entry("fct").or_insert(serde_json::Value::Null);
+        if schema.field(name).is_none() {
+            return Err(lowering_error(
+                node,
+                format!(
+                    "unknown Native Record field `{name}` for `{}`",
+                    schema.name()
+                ),
+            ));
         }
-        "RSPWaveformParams" => {
-            record
-                .entry("output_max")
-                .or_insert(serde_json::Value::from(0.01));
+    }
+    for field in schema.fields() {
+        let value = record.get(field.name()).ok_or_else(|| {
+            lowering_error(
+                node,
+                format!(
+                    "catseq.replace base `{}` is missing required field `{}`",
+                    schema.name(),
+                    field.name()
+                ),
+            )
+        })?;
+        let value = LoweredValue::Json(value.clone());
+        if !native_record_value_matches(field.field_type(), &value, value_builder) {
+            return Err(native_record_field_type_error(
+                node,
+                "catseq.replace",
+                schema.name(),
+                field.name(),
+                field.field_type(),
+                &value,
+                value_builder,
+            ));
         }
-        _ => {}
+    }
+
+    for (name, value) in arguments.into_iter().skip(1) {
+        let Some(name) = name else {
+            return Err(lowering_error(node, "catseq.replace fields must be named"));
+        };
+        let field = schema.field(&name).ok_or_else(|| {
+            lowering_error(
+                node,
+                format!(
+                    "unknown Native Record field `{name}` for `{}`",
+                    schema.name()
+                ),
+            )
+        })?;
+        if !native_record_value_matches(field.field_type(), &value, value_builder) {
+            return Err(native_record_field_type_error(
+                node,
+                "catseq.replace",
+                schema.name(),
+                field.name(),
+                field.field_type(),
+                &value,
+                value_builder,
+            ));
+        }
+        record.insert(field.name().to_owned(), lowered_to_json(&value)?);
     }
     Ok(Some(LoweredValue::Json(serde_json::Value::Object(record))))
+}
+
+fn native_record_field_type_error(
+    node: &SourceHirNode,
+    operation: &str,
+    schema: &str,
+    field: &str,
+    expected: NativeRecordFieldType,
+    found: &LoweredValue,
+    value_builder: &ValueExprArenaBuilder,
+) -> MorphismLoweringError {
+    lowering_error(
+        node,
+        format!(
+            "{operation} field `{field}` for `{schema}` expects {expected}, found {}",
+            native_record_value_description(found, value_builder)
+        ),
+    )
+}
+
+fn native_record_value_matches(
+    expected: NativeRecordFieldType,
+    value: &LoweredValue,
+    value_builder: &ValueExprArenaBuilder,
+) -> bool {
+    match expected {
+        NativeRecordFieldType::Bool => native_record_value_is_bool(value, value_builder),
+        NativeRecordFieldType::Int64 => native_record_value_is_int(value, value_builder),
+        NativeRecordFieldType::Float64 => native_record_value_is_float(value, value_builder),
+        NativeRecordFieldType::OptionalInt64 => {
+            native_record_value_is_null(value) || native_record_value_is_int(value, value_builder)
+        }
+        NativeRecordFieldType::OptionalFloat64 => {
+            native_record_value_is_null(value) || native_record_value_is_float(value, value_builder)
+        }
+        NativeRecordFieldType::AggregateOfOptionalFloat64 => match value {
+            LoweredValue::Aggregate(values) => values.iter().all(|value| {
+                native_record_value_is_null(value)
+                    || native_record_value_is_float(value, value_builder)
+            }),
+            LoweredValue::Json(serde_json::Value::Array(values)) => values
+                .iter()
+                .all(|value| native_record_json_is_optional_float(value, value_builder)),
+            _ => false,
+        },
+    }
+}
+
+fn native_record_value_is_null(value: &LoweredValue) -> bool {
+    matches!(
+        value,
+        LoweredValue::Null | LoweredValue::Json(serde_json::Value::Null)
+    )
+}
+
+fn native_record_value_is_bool(
+    value: &LoweredValue,
+    value_builder: &ValueExprArenaBuilder,
+) -> bool {
+    match value {
+        LoweredValue::Scalar(ScalarValue::Bool(_))
+        | LoweredValue::Json(serde_json::Value::Bool(_)) => true,
+        LoweredValue::Scalar(ScalarValue::Expr(id)) => {
+            value_builder.value_type(*id) == Some(ValueExprType::Bool)
+        }
+        LoweredValue::Json(value) => {
+            native_record_json_expr_type(value, value_builder) == Some(ValueExprType::Bool)
+        }
+        _ => false,
+    }
+}
+
+fn native_record_value_is_int(value: &LoweredValue, value_builder: &ValueExprArenaBuilder) -> bool {
+    match value {
+        LoweredValue::Scalar(ScalarValue::Int(_)) => true,
+        LoweredValue::Json(serde_json::Value::Number(number)) => {
+            number.as_i64().is_some()
+                || number
+                    .as_u64()
+                    .is_some_and(|value| i64::try_from(value).is_ok())
+        }
+        LoweredValue::Scalar(ScalarValue::Expr(id)) => {
+            value_builder.value_type(*id) == Some(ValueExprType::Int64)
+        }
+        LoweredValue::Json(value) => {
+            native_record_json_expr_type(value, value_builder) == Some(ValueExprType::Int64)
+        }
+        _ => false,
+    }
+}
+
+fn native_record_value_is_float(
+    value: &LoweredValue,
+    value_builder: &ValueExprArenaBuilder,
+) -> bool {
+    match value {
+        LoweredValue::Scalar(ScalarValue::Int(_) | ScalarValue::Float(_))
+        | LoweredValue::Json(serde_json::Value::Number(_)) => true,
+        LoweredValue::Scalar(ScalarValue::Expr(id)) => matches!(
+            value_builder.value_type(*id),
+            Some(ValueExprType::Int64 | ValueExprType::Float64)
+        ),
+        LoweredValue::Json(value) => matches!(
+            native_record_json_expr_type(value, value_builder),
+            Some(ValueExprType::Int64 | ValueExprType::Float64)
+        ),
+        _ => false,
+    }
+}
+
+fn native_record_json_is_optional_float(
+    value: &serde_json::Value,
+    value_builder: &ValueExprArenaBuilder,
+) -> bool {
+    value.is_null()
+        || value.is_number()
+        || matches!(
+            native_record_json_expr_type(value, value_builder),
+            Some(ValueExprType::Int64 | ValueExprType::Float64)
+        )
+}
+
+fn native_record_json_expr_type(
+    value: &serde_json::Value,
+    value_builder: &ValueExprArenaBuilder,
+) -> Option<ValueExprType> {
+    let index = value
+        .as_object()?
+        .get("$value_expr")?
+        .as_u64()
+        .and_then(|index| u32::try_from(index).ok())?;
+    value_builder.value_type(ValueExprId::from_index(index))
+}
+
+fn native_record_value_description(
+    value: &LoweredValue,
+    value_builder: &ValueExprArenaBuilder,
+) -> String {
+    match value {
+        LoweredValue::Null | LoweredValue::Json(serde_json::Value::Null) => "Unit".to_owned(),
+        LoweredValue::Scalar(ScalarValue::Bool(_))
+        | LoweredValue::Json(serde_json::Value::Bool(_)) => "Bool".to_owned(),
+        LoweredValue::Scalar(ScalarValue::Int(_)) => "Int64".to_owned(),
+        LoweredValue::Scalar(ScalarValue::Float(_))
+        | LoweredValue::Json(serde_json::Value::Number(_)) => "Float64".to_owned(),
+        LoweredValue::Scalar(ScalarValue::DurationCycles(_)) => "Duration".to_owned(),
+        LoweredValue::Scalar(ScalarValue::String(_))
+        | LoweredValue::Json(serde_json::Value::String(_)) => "String".to_owned(),
+        LoweredValue::Scalar(ScalarValue::Expr(id)) => value_builder
+            .value_type(*id)
+            .map(|value_type| format!("Link<{value_type:?}>"))
+            .unwrap_or_else(|| "unknown Link value".to_owned()),
+        LoweredValue::Aggregate(_) | LoweredValue::Json(serde_json::Value::Array(_)) => {
+            "Aggregate with incompatible element types".to_owned()
+        }
+        LoweredValue::Json(value) => native_record_json_expr_type(value, value_builder)
+            .map(|value_type| format!("Link<{value_type:?}>"))
+            .unwrap_or_else(|| "JSON value".to_owned()),
+        LoweredValue::Morphism(_) => "Morphism".to_owned(),
+        LoweredValue::Template(_) => "MorphismTemplate".to_owned(),
+        LoweredValue::ChannelBindings(_) => "ChannelBindings".to_owned(),
+    }
 }
 
 fn lower_composition(

@@ -4,25 +4,65 @@ use std::collections::{HashMap, HashSet};
 
 use nac3ast::{Expr, ExprKind, Operator, Stmt, StmtKind};
 
+use crate::{intrinsics, native_records};
+
 use super::ast_util::expression_path;
 use super::model::SourceType;
-use super::resolution::resolve_call_path;
+use super::resolution::{resolve_call_path, update_visible_imports};
 
 #[derive(Default)]
 pub(super) struct ClassFields {
     pub(super) types: HashMap<String, SourceType>,
     pub(super) values: HashMap<String, String>,
+    pub(super) aggregate_element_types: HashMap<String, Vec<SourceType>>,
     pub(super) properties: HashSet<String>,
     pub(super) property_elements: HashMap<String, Vec<String>>,
+}
+
+pub(super) fn module_compile_values(
+    statements: &[Stmt],
+    module: &str,
+    imports: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut values = HashMap::new();
+    for statement in statements {
+        let (target, value) = match &statement.node {
+            StmtKind::Assign { targets, value, .. } => {
+                let [target] = targets.as_slice() else {
+                    continue;
+                };
+                (target, value.as_ref())
+            }
+            StmtKind::AnnAssign {
+                target,
+                value: Some(value),
+                ..
+            } => (target.as_ref(), value.as_ref()),
+            _ => continue,
+        };
+        let ExprKind::Name { id, .. } = &target.node else {
+            continue;
+        };
+        if let Some(normalized) =
+            normalized_compile_expression_in_with_known(value, module, imports, &values)
+        {
+            values.insert(id.to_string(), normalized);
+        }
+    }
+    values
 }
 
 pub(super) fn class_fields(
     statements: &[Stmt],
     module: &str,
     imports: &HashMap<String, String>,
+    module_values: &HashMap<String, String>,
 ) -> ClassFields {
     let mut fields = ClassFields::default();
+    let mut visible_imports = imports.clone();
     for statement in statements {
+        let statement_imports = visible_imports.clone();
+        update_visible_imports(module, &mut visible_imports, statement);
         match &statement.node {
             StmtKind::AnnAssign {
                 target,
@@ -33,13 +73,35 @@ pub(super) fn class_fields(
                 let ExprKind::Name { id, .. } = &target.node else {
                     continue;
                 };
-                if let Some(source_type) = class_annotation_type(annotation) {
+                let mut known_values = module_values.clone();
+                known_values.extend(fields.values.clone());
+                if let Some(source_type) = checked_compile_annotation_type(
+                    annotation,
+                    value.as_deref(),
+                    module,
+                    &statement_imports,
+                    &known_values,
+                ) {
                     fields.types.insert(id.to_string(), source_type);
                 }
                 if let Some(value) = value {
-                    if let Some(normalized) =
-                        normalized_compile_expression_in(value, module, imports)
-                    {
+                    if let Some(element_types) = inferred_compile_aggregate_element_types(
+                        value,
+                        module,
+                        &statement_imports,
+                        &fields.types,
+                        &fields.aggregate_element_types,
+                    ) {
+                        fields
+                            .aggregate_element_types
+                            .insert(id.to_string(), element_types);
+                    }
+                    if let Some(normalized) = normalized_compile_expression_in_with_known(
+                        value,
+                        module,
+                        &statement_imports,
+                        &known_values,
+                    ) {
                         fields.values.insert(id.to_string(), normalized);
                     }
                 }
@@ -51,10 +113,33 @@ pub(super) fn class_fields(
                 let ExprKind::Name { id, .. } = &target.node else {
                     continue;
                 };
-                if let Some(source_type) = inferred_compile_value_type(value, module, imports) {
+                let mut known_values = module_values.clone();
+                known_values.extend(fields.values.clone());
+                if let Some(source_type) = inferred_compile_value_type_with_known(
+                    value,
+                    module,
+                    &statement_imports,
+                    &fields.types,
+                ) {
                     fields.types.insert(id.to_string(), source_type);
                 }
-                if let Some(normalized) = normalized_compile_expression_in(value, module, imports) {
+                if let Some(element_types) = inferred_compile_aggregate_element_types(
+                    value,
+                    module,
+                    &statement_imports,
+                    &fields.types,
+                    &fields.aggregate_element_types,
+                ) {
+                    fields
+                        .aggregate_element_types
+                        .insert(id.to_string(), element_types);
+                }
+                if let Some(normalized) = normalized_compile_expression_in_with_known(
+                    value,
+                    module,
+                    &statement_imports,
+                    &known_values,
+                ) {
                     fields.values.insert(id.to_string(), normalized);
                 }
             }
@@ -106,13 +191,15 @@ pub(super) fn inferred_compile_value_type(
             nac3ast::Constant::Str(_) => Some(SourceType::String),
             _ => None,
         },
-        ExprKind::Call { func, .. } => expression_path(func).map(|path| {
+        ExprKind::Call { func, .. } => expression_path(func).and_then(|path| {
             let resolved = resolve_call_path(module, imports, &path);
-            let leaf = path.rsplit('.').next().unwrap_or(&path);
             if resolved == "catseq.time_utils.cycles" {
-                SourceType::Duration
+                Some(SourceType::Duration)
+            } else if intrinsics::is_board_constructor(&resolved) {
+                Some(SourceType::Board)
             } else {
-                SourceType::NativeRecord(leaf.to_owned())
+                native_records::schema_for_constructor(&resolved)
+                    .map(|schema| SourceType::NativeRecord(schema.name().to_owned()))
             }
         }),
         ExprKind::Name { id, .. }
@@ -166,8 +253,55 @@ pub(super) fn inferred_compile_value_type(
     }
 }
 
+pub(super) fn inferred_compile_value_type_with_known(
+    expression: &Expr,
+    module: &str,
+    imports: &HashMap<String, String>,
+    known_types: &HashMap<String, SourceType>,
+) -> Option<SourceType> {
+    if let ExprKind::Name { id, .. } = &expression.node
+        && let Some(source_type) = known_types.get(&id.to_string())
+    {
+        return Some(source_type.clone());
+    }
+    inferred_compile_value_type(expression, module, imports)
+}
+
+pub(super) fn inferred_compile_aggregate_element_types(
+    expression: &Expr,
+    module: &str,
+    imports: &HashMap<String, String>,
+    known_types: &HashMap<String, SourceType>,
+    known_aggregate_element_types: &HashMap<String, Vec<SourceType>>,
+) -> Option<Vec<SourceType>> {
+    let elements = match &expression.node {
+        ExprKind::Tuple { elts, .. } | ExprKind::List { elts, .. } => elts,
+        ExprKind::Name { id, .. } => {
+            return known_aggregate_element_types.get(&id.to_string()).cloned();
+        }
+        _ => return None,
+    };
+    elements
+        .iter()
+        .map(|element| {
+            inferred_compile_value_type_with_known(element, module, imports, known_types).or_else(
+                || {
+                    matches!(
+                        element.node,
+                        ExprKind::Constant {
+                            value: nac3ast::Constant::None,
+                            ..
+                        }
+                    )
+                    .then_some(SourceType::Unit)
+                },
+            )
+        })
+        .collect()
+}
+
 pub(super) fn normalized_compile_expression(expression: &Expr) -> Option<String> {
-    normalized_compile_expression_with_context(expression, None)
+    normalized_compile_expression_with_context(expression, None, None)
 }
 
 pub(super) fn normalized_compile_expression_in(
@@ -175,17 +309,34 @@ pub(super) fn normalized_compile_expression_in(
     module: &str,
     imports: &HashMap<String, String>,
 ) -> Option<String> {
-    normalized_compile_expression_with_context(expression, Some((module, imports)))
+    normalized_compile_expression_with_context(expression, Some((module, imports)), None)
+}
+
+pub(super) fn normalized_compile_expression_in_with_known(
+    expression: &Expr,
+    module: &str,
+    imports: &HashMap<String, String>,
+    known_values: &HashMap<String, String>,
+) -> Option<String> {
+    normalized_compile_expression_with_context(
+        expression,
+        Some((module, imports)),
+        Some(known_values),
+    )
 }
 
 fn normalized_compile_expression_with_context(
     expression: &Expr,
     context: Option<(&str, &HashMap<String, String>)>,
+    known_values: Option<&HashMap<String, String>>,
 ) -> Option<String> {
     match &expression.node {
         ExprKind::Constant { value, .. } => Some(format!("constant:{value:?}")),
         ExprKind::Name { id, .. } => {
             let name = id.to_string();
+            if let Some(value) = known_values.and_then(|values| values.get(&name)) {
+                return Some(value.clone());
+            }
             let name = context.map_or(name.clone(), |(module, imports)| {
                 let resolved = resolve_call_path(module, imports, &name);
                 if matches!(
@@ -221,12 +372,12 @@ fn normalized_compile_expression_with_context(
         }),
         ExprKind::BinOp { left, op, right } => Some(format!(
             "bin:{op:?}({},{})",
-            normalized_compile_expression_with_context(left, context)?,
-            normalized_compile_expression_with_context(right, context)?
+            normalized_compile_expression_with_context(left, context, known_values)?,
+            normalized_compile_expression_with_context(right, context, known_values)?
         )),
         ExprKind::UnaryOp { op, operand } => Some(format!(
             "unary:{op:?}({})",
-            normalized_compile_expression_with_context(operand, context)?
+            normalized_compile_expression_with_context(operand, context, known_values)?
         )),
         ExprKind::Call {
             func,
@@ -239,7 +390,9 @@ fn normalized_compile_expression_with_context(
             });
             let args = args
                 .iter()
-                .map(|argument| normalized_compile_expression_with_context(argument, context))
+                .map(|argument| {
+                    normalized_compile_expression_with_context(argument, context, known_values)
+                })
                 .collect::<Option<Vec<_>>>()?;
             let keywords = keywords
                 .iter()
@@ -250,7 +403,11 @@ fn normalized_compile_expression_with_context(
                             .node
                             .arg
                             .map_or("**".to_owned(), |arg| arg.to_string()),
-                        normalized_compile_expression_with_context(&keyword.node.value, context)?
+                        normalized_compile_expression_with_context(
+                            &keyword.node.value,
+                            context,
+                            known_values,
+                        )?
                     ))
                 })
                 .collect::<Option<Vec<_>>>()?;
@@ -263,7 +420,9 @@ fn normalized_compile_expression_with_context(
         ExprKind::Tuple { elts, .. } | ExprKind::List { elts, .. } => {
             let values = elts
                 .iter()
-                .map(|element| normalized_compile_expression_with_context(element, context))
+                .map(|element| {
+                    normalized_compile_expression_with_context(element, context, known_values)
+                })
                 .collect::<Option<Vec<_>>>()?;
             Some(format!("aggregate:[{}]", values.join(",")))
         }
@@ -271,15 +430,18 @@ fn normalized_compile_expression_with_context(
     }
 }
 
-pub(super) fn class_annotation_type(annotation: &Expr) -> Option<SourceType> {
+pub(super) fn class_annotation_type(
+    annotation: &Expr,
+    module: &str,
+    imports: &HashMap<String, String>,
+) -> Option<SourceType> {
     if let ExprKind::Subscript { value, slice, .. } = &annotation.node {
         let container = expression_path(value)?;
         let leaf = container.rsplit('.').next().unwrap_or(&container);
         return match leaf {
-            "ClassVar" => class_annotation_type(slice),
-            "ExpParam" | "ScanParam" => {
-                class_annotation_type(slice).map(|inner| SourceType::ScanParam(Box::new(inner)))
-            }
+            "ClassVar" => class_annotation_type(slice, module, imports),
+            "ExpParam" | "ScanParam" => class_annotation_type(slice, module, imports)
+                .map(|inner| SourceType::ScanParam(Box::new(inner))),
             "tuple" | "Tuple" | "list" | "List" => Some(SourceType::FixedAggregate),
             _ => None,
         };
@@ -294,7 +456,77 @@ pub(super) fn class_annotation_type(annotation: &Expr) -> Option<SourceType> {
         "Morphism" => Some(SourceType::Morphism),
         "MorphismDef" | "MorphismTemplate" => Some(SourceType::MorphismTemplate),
         "Channel" => Some(SourceType::Channel),
-        "Board" => Some(SourceType::Board),
-        schema => Some(SourceType::NativeRecord(schema.to_owned())),
+        "Board" => intrinsics::is_board_constructor(&resolve_call_path(module, imports, &path))
+            .then_some(SourceType::Board),
+        _ => {
+            let resolved = resolve_call_path(module, imports, &path);
+            native_records::schema_for_constructor(&resolved)
+                .map(|schema| SourceType::NativeRecord(schema.name().to_owned()))
+        }
     }
+}
+
+pub(super) fn checked_compile_annotation_type(
+    annotation: &Expr,
+    initializer: Option<&Expr>,
+    module: &str,
+    imports: &HashMap<String, String>,
+    known_values: &HashMap<String, String>,
+) -> Option<SourceType> {
+    let annotated = class_annotation_type(annotation, module, imports)?;
+    if matches!(annotated, SourceType::NativeRecord(_)) {
+        match initializer.map_or(CompileConstructor::NotConstructor, |initializer| {
+            compile_constructor(initializer, module, imports, known_values)
+        }) {
+            CompileConstructor::Registered(found) if found != annotated => return None,
+            CompileConstructor::Unregistered => return None,
+            _ => {}
+        }
+    }
+    Some(annotated)
+}
+
+enum CompileConstructor {
+    NotConstructor,
+    Registered(SourceType),
+    Unregistered,
+}
+
+fn compile_constructor(
+    initializer: &Expr,
+    module: &str,
+    imports: &HashMap<String, String>,
+    known_values: &HashMap<String, String>,
+) -> CompileConstructor {
+    let Some(normalized) = normalized_compile_expression_in(initializer, module, imports) else {
+        return CompileConstructor::NotConstructor;
+    };
+    normalized_compile_constructor(&normalized, known_values, &mut HashSet::new())
+}
+
+fn normalized_compile_constructor(
+    normalized: &str,
+    known_values: &HashMap<String, String>,
+    visited: &mut HashSet<String>,
+) -> CompileConstructor {
+    if let Some(name) = normalized.strip_prefix("name:") {
+        if !visited.insert(name.to_owned()) {
+            return CompileConstructor::NotConstructor;
+        }
+        return known_values
+            .get(name)
+            .map_or(CompileConstructor::NotConstructor, |value| {
+                normalized_compile_constructor(value, known_values, visited)
+            });
+    }
+    let Some(call) = normalized.strip_prefix("call:") else {
+        return CompileConstructor::NotConstructor;
+    };
+    let Some(open) = call.find('(') else {
+        return CompileConstructor::Unregistered;
+    };
+    native_records::schema_for_constructor(&call[..open])
+        .map_or(CompileConstructor::Unregistered, |schema| {
+            CompileConstructor::Registered(SourceType::NativeRecord(schema.name().to_owned()))
+        })
 }

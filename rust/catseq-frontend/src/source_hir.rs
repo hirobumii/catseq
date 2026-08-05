@@ -6,6 +6,7 @@ use nac3ast::{Cmpop, Constant, Expr, ExprKind, Operator, Stmt, StmtKind};
 use serde::{Deserialize, Serialize};
 
 use crate::intrinsics;
+use crate::native_records::{self, NativeRecordFieldType};
 use crate::typed::resolution::resolve_call_path;
 use crate::typed::{SourceType, TypeSignature};
 
@@ -317,6 +318,8 @@ pub struct SemanticFact {
     module_binding_shadowed: bool,
     phase_frame: Option<String>,
     compile_value: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    compile_aggregate_element_types: Vec<SourceType>,
 }
 
 impl SemanticFact {
@@ -354,6 +357,10 @@ impl SemanticFact {
 
     pub fn compile_value(&self) -> Option<&str> {
         self.compile_value.as_deref()
+    }
+
+    pub fn compile_aggregate_element_types(&self) -> &[SourceType] {
+        &self.compile_aggregate_element_types
     }
 
     pub(crate) const fn module_binding_shadowed(&self) -> bool {
@@ -400,7 +407,7 @@ impl TypedSourceHir {
 
     pub(crate) fn resolve_compile_attributes(
         &mut self,
-        attributes: &HashMap<String, (SourceType, String)>,
+        attributes: &HashMap<String, (SourceType, String, Vec<SourceType>)>,
     ) {
         for (node, fact) in self.nodes.iter().zip(&mut self.facts) {
             if fact.module_binding_shadowed {
@@ -409,11 +416,12 @@ impl TypedSourceHir {
             let Some(symbol) = node.symbol.as_deref() else {
                 continue;
             };
-            let Some((source_type, value)) = attributes.get(symbol) else {
+            let Some((source_type, value, aggregate_element_types)) = attributes.get(symbol) else {
                 continue;
             };
             fact.source_type = Some(source_type.clone());
             fact.compile_value = Some(value.clone());
+            fact.compile_aggregate_element_types = aggregate_element_types.clone();
         }
     }
 
@@ -482,14 +490,22 @@ impl TypedSourceHir {
         resolved: &str,
         instance_identity: Option<&str>,
     ) {
-        for (node, fact) in self.nodes.iter().zip(&mut self.facts) {
-            if call_matches(node, source_path, line, column) {
-                record_call_resolution(fact, resolved, instance_identity);
-                if let Some(source_type) =
-                    intrinsics::return_type(resolved, fact.source_type.as_ref())
-                {
-                    fact.source_type = Some(source_type);
-                }
+        for node_id in 0..self.nodes.len() {
+            let node = &self.nodes[node_id];
+            if !call_matches(node, source_path, line, column) {
+                continue;
+            }
+            let first_argument_type = node_edges(node, &self.edges)
+                .get(1)
+                .and_then(|child| self.facts.get(*child as usize))
+                .and_then(SemanticFact::source_type)
+                .cloned();
+            let fact = &mut self.facts[node_id];
+            record_call_resolution(fact, resolved, instance_identity);
+            if let Some(source_type) =
+                intrinsics::return_type(resolved, first_argument_type.as_ref())
+            {
+                fact.source_type = Some(source_type);
             }
         }
     }
@@ -527,6 +543,20 @@ impl TypedSourceHir {
             .iter()
             .find(|node| call_matches(node, source_path, line, column))
             .map(|node| &node.anchor)
+    }
+
+    pub(crate) fn call_callee_shadows_module_binding(
+        &self,
+        source_path: &str,
+        line: usize,
+        column: usize,
+    ) -> bool {
+        self.nodes
+            .iter()
+            .find(|node| call_matches(node, source_path, line, column))
+            .and_then(|node| node_edges(node, &self.edges).first())
+            .and_then(|callee| self.facts.get(*callee as usize))
+            .is_some_and(|fact| fact.module_binding_shadowed)
     }
 
     pub(crate) fn apply_definition_signatures(
@@ -579,6 +609,16 @@ impl TypedSourceHir {
                 }
                 SourceHirKind::ConditionalExpression => Some(child_type(1)),
                 SourceHirKind::Unary => Some(child_type(0)),
+                SourceHirKind::Call
+                    if self.facts[node_id]
+                        .resolved_definition()
+                        .is_some_and(intrinsics::is_native_record_replace) =>
+                {
+                    let resolved = self.facts[node_id]
+                        .resolved_definition()
+                        .expect("guarded replace call has a resolved definition");
+                    Some(intrinsics::return_type(resolved, child_type(1).as_ref()))
+                }
                 SourceHirKind::Call if child_type(0) == Some(SourceType::MorphismTemplate) => {
                     Some(Some(SourceType::Morphism))
                 }
@@ -703,6 +743,123 @@ impl TypedSourceHir {
         }
         None
     }
+
+    pub(crate) fn first_native_record_replace_error(&self) -> Option<(&SourceAnchor, String)> {
+        for (node_id, node) in self.nodes.iter().enumerate() {
+            if node.kind != SourceHirKind::Call
+                || !self.facts[node_id]
+                    .resolved_definition()
+                    .is_some_and(intrinsics::is_native_record_replace)
+            {
+                continue;
+            }
+            if node.call_positional_count == 0 {
+                return Some((
+                    &node.anchor,
+                    "catseq.replace first argument must be positional".to_owned(),
+                ));
+            }
+            let children = node_edges(node, &self.edges);
+            let base_type = children
+                .get(1)
+                .and_then(|base| self.facts.get(*base as usize))
+                .and_then(SemanticFact::source_type);
+            let Some(SourceType::NativeRecord(schema_name)) = base_type else {
+                return Some((
+                    &node.anchor,
+                    "catseq.replace requires a Native Record as its first argument".to_owned(),
+                ));
+            };
+            let Some(schema) = native_records::schema(schema_name) else {
+                return Some((
+                    &node.anchor,
+                    format!(
+                        "catseq.replace requires a registered Native Record, found `{schema_name}`"
+                    ),
+                ));
+            };
+            for argument_index in 1..children.len().saturating_sub(1) {
+                let Some(name) = argument_index
+                    .checked_sub(node.call_positional_count as usize)
+                    .and_then(|keyword| node.call_keyword_names.get(keyword))
+                else {
+                    return Some((
+                        &node.anchor,
+                        "catseq.replace fields must be named".to_owned(),
+                    ));
+                };
+                let Some(field) = schema.field(name) else {
+                    return Some((
+                        &node.anchor,
+                        format!(
+                            "unknown Native Record field `{name}` for `{}`",
+                            schema.name()
+                        ),
+                    ));
+                };
+                let field_type = children
+                    .get(argument_index + 1)
+                    .and_then(|argument| self.facts.get(*argument as usize))
+                    .and_then(SemanticFact::source_type);
+                if let Some(field_type) = field_type
+                    && !field.field_type().accepts(field_type)
+                {
+                    return Some((
+                        &node.anchor,
+                        format!(
+                            "catseq.replace field `{name}` for `{}` expects {}, found {field_type}",
+                            schema.name(),
+                            field.field_type()
+                        ),
+                    ));
+                }
+                if let Some(element_type) = field.field_type().aggregate_element_type()
+                    && let Some(argument) = children.get(argument_index + 1)
+                    && let Some(found) =
+                        self.first_aggregate_element_type_mismatch(*argument, element_type)
+                {
+                    return Some((
+                        &node.anchor,
+                        format!(
+                            "catseq.replace field `{name}` for `{}` expects {}, found Aggregate<{found}>",
+                            schema.name(),
+                            field.field_type()
+                        ),
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    fn first_aggregate_element_type_mismatch(
+        &self,
+        mut node_id: u32,
+        expected: NativeRecordFieldType,
+    ) -> Option<SourceType> {
+        for _ in 0..self.nodes.len() {
+            let fact = self.facts.get(node_id as usize)?;
+            let Some(resolved) = fact.resolved_node() else {
+                break;
+            };
+            node_id = resolved;
+        }
+        let node = self.nodes.get(node_id as usize)?;
+        if node.kind == SourceHirKind::Aggregate {
+            return node_edges(node, &self.edges)
+                .iter()
+                .filter_map(|element| self.facts.get(*element as usize))
+                .filter_map(SemanticFact::source_type)
+                .find(|source_type| !expected.accepts(source_type))
+                .cloned();
+        }
+        self.facts
+            .get(node_id as usize)?
+            .compile_aggregate_element_types()
+            .iter()
+            .find(|source_type| !expected.accepts(source_type))
+            .cloned()
+    }
 }
 
 fn call_matches(node: &SourceHirNode, source_path: &str, line: usize, column: usize) -> bool {
@@ -767,6 +924,7 @@ pub(crate) struct DefinitionHirContext<'a> {
     module: &'a str,
     fields: &'a HashMap<String, SourceType>,
     field_values: &'a HashMap<String, String>,
+    field_aggregate_element_types: &'a HashMap<String, Vec<SourceType>>,
     erased_state_names: &'a HashSet<String>,
     imports: &'a HashMap<String, String>,
 }
@@ -776,6 +934,7 @@ impl<'a> DefinitionHirContext<'a> {
         module: &'a str,
         fields: &'a HashMap<String, SourceType>,
         field_values: &'a HashMap<String, String>,
+        field_aggregate_element_types: &'a HashMap<String, Vec<SourceType>>,
         erased_state_names: &'a HashSet<String>,
         imports: &'a HashMap<String, String>,
     ) -> Self {
@@ -783,6 +942,7 @@ impl<'a> DefinitionHirContext<'a> {
             module,
             fields,
             field_values,
+            field_aggregate_element_types,
             erased_state_names,
             imports,
         }
@@ -1280,6 +1440,13 @@ fn expression_fact(
         path.strip_prefix("self.")
             .and_then(|field| context.field_values.get(field).cloned())
     });
+    let compile_aggregate_element_types = expression_path(expression)
+        .and_then(|path| {
+            path.strip_prefix("self.")
+                .and_then(|field| context.field_aggregate_element_types.get(field))
+                .cloned()
+        })
+        .unwrap_or_default();
     let (source_type, availability) = match &expression.node {
         ExprKind::Name { id, .. } => {
             let name = id.to_string();
@@ -1423,6 +1590,7 @@ fn expression_fact(
         module_binding_shadowed,
         phase_frame,
         compile_value,
+        compile_aggregate_element_types,
     }
 }
 
@@ -1548,6 +1716,7 @@ fn statement_fact(
         module_binding_shadowed: false,
         phase_frame: None,
         compile_value: None,
+        compile_aggregate_element_types: Vec::new(),
     }
 }
 

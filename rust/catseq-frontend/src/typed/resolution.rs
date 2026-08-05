@@ -10,46 +10,53 @@ use super::model::TypedCheckError;
 pub(super) fn module_imports(module_name: &str, statements: &[Stmt]) -> HashMap<String, String> {
     let mut imports = HashMap::new();
     for statement in statements {
-        match &statement.node {
-            StmtKind::Import { names, .. } => {
-                for alias in names {
-                    let imported = alias.name.to_string();
-                    let (local, resolved) = alias.asname.map_or_else(
-                        || {
-                            let root = imported.split('.').next().unwrap_or(&imported).to_owned();
-                            (root.clone(), root)
-                        },
-                        |name| (name.to_string(), imported.clone()),
-                    );
-                    imports.insert(local, resolved);
-                }
-            }
-            StmtKind::ImportFrom {
-                module,
-                names,
-                level,
-                ..
-            } => {
-                let module = module.map(|name| name.to_string());
-                let imported_module =
-                    absolute_import_module(module_name, *level, module.as_deref());
-                for alias in names {
-                    let imported_name = alias.name.to_string();
-                    let local = alias
-                        .asname
-                        .map_or_else(|| imported_name.clone(), |name| name.to_string());
-                    let resolved = if imported_module.is_empty() {
-                        imported_name
-                    } else {
-                        format!("{imported_module}.{imported_name}")
-                    };
-                    imports.insert(local, resolved);
-                }
-            }
-            _ => remove_statement_import_bindings(&mut imports, statement),
-        }
+        update_visible_imports(module_name, &mut imports, statement);
     }
     imports
+}
+
+pub(super) fn update_visible_imports(
+    module_name: &str,
+    imports: &mut HashMap<String, String>,
+    statement: &Stmt,
+) {
+    match &statement.node {
+        StmtKind::Import { names, .. } => {
+            for alias in names {
+                let imported = alias.name.to_string();
+                let (local, resolved) = alias.asname.map_or_else(
+                    || {
+                        let root = imported.split('.').next().unwrap_or(&imported).to_owned();
+                        (root.clone(), root)
+                    },
+                    |name| (name.to_string(), imported.clone()),
+                );
+                imports.insert(local, resolved);
+            }
+        }
+        StmtKind::ImportFrom {
+            module,
+            names,
+            level,
+            ..
+        } => {
+            let module = module.map(|name| name.to_string());
+            let imported_module = absolute_import_module(module_name, *level, module.as_deref());
+            for alias in names {
+                let imported_name = alias.name.to_string();
+                let local = alias
+                    .asname
+                    .map_or_else(|| imported_name.clone(), |name| name.to_string());
+                let resolved = if imported_module.is_empty() {
+                    imported_name
+                } else {
+                    format!("{imported_module}.{imported_name}")
+                };
+                imports.insert(local, resolved);
+            }
+        }
+        _ => remove_statement_import_bindings(imports, statement),
+    }
 }
 
 fn remove_statement_import_bindings(imports: &mut HashMap<String, String>, statement: &Stmt) {

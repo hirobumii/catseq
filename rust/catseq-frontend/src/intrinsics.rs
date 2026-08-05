@@ -1,8 +1,10 @@
 //! Closed registry for source-level CatSeq intrinsics and special forms.
 
+use crate::native_records;
 use crate::typed::SourceType;
 
-pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 8;
+pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 9;
+const NATIVE_RECORD_REPLACE: &str = "catseq.replace";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NativeMorphismTemplate {
@@ -22,8 +24,6 @@ enum ResultRule {
     Bool,
     Duration,
     FixedAggregate,
-    NativeRecord(&'static str),
-    ReplaceFirstArgument,
 }
 
 #[derive(Clone, Copy)]
@@ -114,10 +114,6 @@ const INTRINSICS: &[Intrinsic] = &[
         result: ResultRule::MorphismTemplate,
     },
     Intrinsic {
-        leaf: "replace",
-        result: ResultRule::ReplaceFirstArgument,
-    },
-    Intrinsic {
         leaf: "arccos",
         result: ResultRule::Float64,
     },
@@ -181,19 +177,20 @@ const INTRINSICS: &[Intrinsic] = &[
         leaf: "sum",
         result: ResultRule::Float64,
     },
-    Intrinsic {
-        leaf: "StaticWaveform",
-        result: ResultRule::NativeRecord("StaticWaveform"),
-    },
-    Intrinsic {
-        leaf: "WaveformParams",
-        result: ResultRule::NativeRecord("WaveformParams"),
-    },
 ];
 
 pub(crate) fn return_type(path: &str, first_argument: Option<&SourceType>) -> Option<SourceType> {
     if path == "numpy.load" || path == "np.load" {
         return Some(SourceType::NativeRecord("CalibrationSnapshot".to_owned()));
+    }
+    if is_native_record_replace(path) {
+        return first_argument.and_then(|source_type| match source_type {
+            SourceType::NativeRecord(schema) => Some(SourceType::NativeRecord(schema.clone())),
+            _ => None,
+        });
+    }
+    if let Some(schema) = native_records::schema_for_constructor(path) {
+        return Some(SourceType::NativeRecord(schema.name().to_owned()));
     }
     if path == "catseq.oasm.black_box" {
         return Some(SourceType::Morphism);
@@ -215,10 +212,6 @@ pub(crate) fn return_type(path: &str, first_argument: Option<&SourceType>) -> Op
         ResultRule::Bool => SourceType::Bool,
         ResultRule::Duration => SourceType::Duration,
         ResultRule::FixedAggregate => SourceType::FixedAggregate,
-        ResultRule::NativeRecord(schema) => SourceType::NativeRecord(schema.to_owned()),
-        ResultRule::ReplaceFirstArgument => first_argument
-            .cloned()
-            .unwrap_or_else(|| SourceType::NativeRecord("dataclass".to_owned())),
     })
 }
 
@@ -252,6 +245,13 @@ pub(crate) fn is_duration_unit(path: &str) -> bool {
     )
 }
 
+pub(crate) fn is_board_constructor(path: &str) -> bool {
+    matches!(
+        path,
+        "catseq.Board" | "catseq.types.Board" | "catseq.types.common.Board"
+    )
+}
+
 pub(crate) fn is_identity(path: &str) -> bool {
     matches!(
         path,
@@ -263,11 +263,18 @@ pub(crate) fn is_registered(path: &str) -> bool {
     return_type(path, None).is_some()
 }
 
+pub(crate) fn is_native_record_replace(path: &str) -> bool {
+    path == NATIVE_RECORD_REPLACE
+}
+
 pub(crate) fn is_compiler_special_form(resolved: &str) -> bool {
-    matches!(
-        resolved,
-        "rb1system.utils.dict_to_morphism" | "catseq.time_utils.cycles" | "catseq.oasm.black_box"
-    )
+    is_native_record_replace(resolved)
+        || matches!(
+            resolved,
+            "rb1system.utils.dict_to_morphism"
+                | "catseq.time_utils.cycles"
+                | "catseq.oasm.black_box"
+        )
 }
 
 pub(crate) fn is_oasm_black_box(path: &str) -> bool {

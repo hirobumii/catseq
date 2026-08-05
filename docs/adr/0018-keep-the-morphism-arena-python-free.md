@@ -15,7 +15,7 @@ Before Morphism arena lowering, the frontend:
 - resolves service and template calls to stable `DefinitionId`s;
 - resolves channel, service, and module references to typed native handles;
 - evaluates Compile attribute accesses and structural control flow;
-- eagerly normalizes supported dataclass construction and replacement;
+- eagerly normalizes supported Native Record construction and replacement;
 - lowers scan inputs and supported arithmetic to native typed value
   expressions;
 - desugars contextual channel bindings into CatSeq composition semantics.

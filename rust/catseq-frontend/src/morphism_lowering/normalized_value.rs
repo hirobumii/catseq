@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 use catseq_core::exact_decimal::ExactDecimal;
 
+use crate::{intrinsics, native_records};
+
 use super::{LoweredValue, MorphismLoweringError, ScalarValue};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -224,6 +226,13 @@ pub(super) fn normalized_to_json(
     if value == "constant:Bool(false)" {
         return Ok(false.into());
     }
+    if let Some(integer) = value
+        .strip_prefix("constant:Int(")
+        .and_then(|value| value.strip_suffix(')'))
+        .and_then(|value| value.parse::<i64>().ok())
+    {
+        return Ok(integer.into());
+    }
     if let Some(string) = value
         .strip_prefix("constant:Str(\"")
         .and_then(|value| value.strip_suffix("\")"))
@@ -258,55 +267,55 @@ pub(super) fn normalized_to_json(
         && let Some(open) = call.find('(')
         && let Some(arguments) = call.strip_suffix(')')
     {
-        let schema = &call[..open];
+        let schema_path = &call[..open];
         let arguments = &arguments[open + 1..];
         let (positional, keywords) =
             split_normalized_once(arguments, ';').unwrap_or((arguments, ""));
-        let record_name = schema.rsplit('.').next().unwrap_or(schema);
-        let field_names: &[&str] = match record_name {
-            "StaticWaveform" => &["freq", "amp", "sbg_id", "phase", "fct"],
-            "WaveformParams" => &[
-                "sbg_id",
-                "freq_coeffs",
-                "amp_coeffs",
-                "initial_phase",
-                "phase_reset",
-                "fct",
-            ],
-            "RSPPIDConfig" => &[
-                "adc_in",
-                "rf_out",
-                "dgt_source",
-                "setpoint",
-                "kp",
-                "ki",
-                "kd",
-                "output_max",
-            ],
-            "RSPWaveformParams" => &["rf_out", "amp", "output_max"],
-            "Board" => &["id"],
-            other => {
-                let _ = other;
-                return Ok(serde_json::Value::String(value.to_owned()));
+        if intrinsics::is_board_constructor(schema_path) {
+            let positional = split_normalized_list(positional, ',')
+                .into_iter()
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>();
+            if positional.len() > 1 {
+                return Err(MorphismLoweringError::new(format!(
+                    "native record Board accepts at most 1 positional field, got {}",
+                    positional.len(),
+                )));
             }
+            let mut record = serde_json::Map::new();
+            record.insert("$type".to_owned(), "Board".into());
+            if let Some(argument) = positional.first() {
+                record.insert("id".to_owned(), normalized_to_json(argument, fields)?);
+            }
+            for keyword in split_normalized_list(keywords, ',') {
+                if keyword.is_empty() {
+                    continue;
+                }
+                let Some((name, value)) = split_normalized_once(keyword, '=') else {
+                    continue;
+                };
+                record.insert(name.to_owned(), normalized_to_json(value, fields)?);
+            }
+            return Ok(serde_json::Value::Object(record));
+        }
+        let Some(schema) = native_records::schema_for_constructor(schema_path) else {
+            return Ok(serde_json::Value::String(value.to_owned()));
         };
         let mut record = serde_json::Map::new();
-        record.insert("$type".to_owned(), record_name.to_owned().into());
-        let positional = split_normalized_list(positional, ',')
+        record.insert("$type".to_owned(), schema.name().to_owned().into());
+        for (index, argument) in split_normalized_list(positional, ',')
             .into_iter()
             .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>();
-        if positional.len() > field_names.len() {
-            return Err(MorphismLoweringError::new(format!(
-                "native record {record_name} accepts at most {} positional field{}, got {}",
-                field_names.len(),
-                if field_names.len() == 1 { "" } else { "s" },
-                positional.len(),
-            )));
-        }
-        for (field_name, argument) in field_names.iter().zip(positional) {
+            .enumerate()
+        {
+            let field = schema.field_at(index).ok_or_else(|| {
+                MorphismLoweringError::new(format!(
+                    "too many positional fields for Native Record `{}`",
+                    schema.name()
+                ))
+            })?;
             record.insert(
-                (*field_name).to_owned(),
+                field.name().to_owned(),
                 normalized_to_json(argument, fields)?,
             );
         }
@@ -317,17 +326,30 @@ pub(super) fn normalized_to_json(
             let Some((name, value)) = split_normalized_once(keyword, '=') else {
                 continue;
             };
-            record.insert(name.to_owned(), normalized_to_json(value, fields)?);
+            let field = schema.field(name).ok_or_else(|| {
+                MorphismLoweringError::new(format!(
+                    "unknown Native Record field `{name}` for `{}`",
+                    schema.name()
+                ))
+            })?;
+            record.insert(field.name().to_owned(), normalized_to_json(value, fields)?);
         }
+        schema.populate_defaults(&mut record);
         return Ok(serde_json::Value::Object(record));
     }
     Ok(serde_json::Value::String(value.to_owned()))
 }
 
 pub(super) fn normalized_board_id(value: &str) -> Result<Option<String>, MorphismLoweringError> {
-    Ok(normalized_to_json(value, &HashMap::new())?
-        .as_object()
-        .and_then(|record| record.get("id"))
+    let normalized = normalized_to_json(value, &HashMap::new())?;
+    let Some(record) = normalized.as_object() else {
+        return Ok(None);
+    };
+    if record.get("$type").and_then(serde_json::Value::as_str) != Some("Board") {
+        return Ok(None);
+    }
+    Ok(record
+        .get("id")
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned))
 }

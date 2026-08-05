@@ -123,6 +123,99 @@ fn compile_ttl_source_with(
         .and_then(|response| serde_json::from_slice(&response).map_err(|error| error.to_string()))
 }
 
+fn compile_rwg_source(
+    source_path: &std::path::Path,
+    source: &str,
+) -> Result<serde_json::Value, String> {
+    compile_rwg_source_with_bindings(
+        source_path,
+        source,
+        serde_json::json!({
+            "schema_version": 1,
+            "runtime_values": {},
+            "environment_values": {}
+        }),
+    )
+}
+
+fn emit_rwg_arena(
+    source_path: &std::path::Path,
+    source: &str,
+) -> Result<serde_json::Value, String> {
+    fs::write(source_path, source).unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            source_path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())
+}
+
+fn compile_rwg_source_with_bindings(
+    source_path: &std::path::Path,
+    source: &str,
+    link_bindings: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    fs::write(source_path, source).unwrap();
+    let environment_path = source_path.with_extension("environment.json");
+    let channel_key = format!("{}::rwg0", source_path.display());
+    fs::write(
+        &environment_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "channels": {
+                channel_key: {"board": "rwg0", "local_id": 0, "kind": "rwg"}
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let link_bindings_path = source_path.with_extension("bindings.json");
+    fs::write(
+        &link_bindings_path,
+        serde_json::to_vec(&link_bindings).unwrap(),
+    )
+    .unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "compile",
+            source_path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--compile-environment",
+            environment_path.to_str().unwrap(),
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--link-bindings",
+            link_bindings_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(environment_path).unwrap();
+    fs::remove_file(link_bindings_path).unwrap();
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())
+}
+
 #[test]
 fn shared_compile_request_api_returns_an_oasm_call_plan() {
     let path = source_file();
@@ -401,6 +494,105 @@ fn black_box_keeps_board_calls_without_state_schema_in_the_native_arena() {
             .ends_with(".callback")
     );
     assert!(arena.get("opaque_state_effects").is_none());
+}
+
+#[test]
+fn black_box_rejects_a_same_named_foreign_board_constructor() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.oasm import black_box\nfrom catseq.morphism import Morphism\n\nclass Board:\n    def __init__(self, board_id: str) -> None:\n        self.id = board_id\n\nboard: Board = Board('rwg0')\n\ndef callback() -> None:\n    pass\n\ndef sequence() -> Morphism:\n    return black_box(\n        duration_cycles=12,\n        board_funcs={board: callback},\n    )\n",
+    )
+    .unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("blackbox board key must resolve to a static Board"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn black_box_rejects_a_class_binding_shadowing_the_board_import() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.oasm import black_box\nfrom catseq.morphism import Morphism\nfrom catseq.types import Board\n\ndef host_board(board_id: str):\n    return board_id\n\ndef callback() -> None:\n    pass\n\nclass Experiment:\n    Board = host_board\n    board = Board('rwg0')\n\n    def sequence(self) -> Morphism:\n        return black_box(\n            duration_cycles=12,\n            board_funcs={self.board: callback},\n        )\n",
+    )
+    .unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "Experiment.sequence",
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("blackbox board key must resolve to a static Board"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn black_box_rejects_a_class_method_shadowing_the_board_import() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.oasm import black_box\nfrom catseq.morphism import Morphism\nfrom catseq.types import Board\n\ndef callback() -> None:\n    pass\n\nclass Experiment:\n    def Board(board_id: str):\n        return board_id\n\n    board = Board('rwg0')\n\n    def sequence(self) -> Morphism:\n        return black_box(\n            duration_cycles=12,\n            board_funcs={self.board: callback},\n        )\n",
+    )
+    .unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "Experiment.sequence",
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("blackbox board key must resolve to a static Board"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -2775,6 +2967,780 @@ fn linear_ramp_is_a_structured_native_template_and_compiles_to_oasm() {
 }
 
 #[test]
+fn catseq_replace_desugars_to_an_equivalent_native_record() {
+    let path = source_file();
+    let explicit = compile_rwg_source(
+        &path,
+        "from catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\ndef sequence() -> Morphism:\n    target = StaticWaveform(freq=2.0, amp=0.2, sbg_id=0, phase=0.0)\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([target])}\n",
+    )
+    .unwrap();
+    let replaced = compile_rwg_source(
+        &path,
+        "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\ndef sequence() -> Morphism:\n    target = StaticWaveform(freq=1.0, amp=0.2, sbg_id=0, phase=0.5)\n    updated = replace(target, freq=2.0, phase=0.0)\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n",
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(replaced["oasm_call_plan"], explicit["oasm_call_plan"]);
+}
+
+#[test]
+fn compile_known_global_native_record_lowers_for_emit_arena_and_compile() {
+    let path = source_file();
+    let source = "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\ntarget = StaticWaveform(freq=1.0, sbg_id=0)\n\ndef sequence() -> Morphism:\n    updated = replace(target, freq=2.0)\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n";
+
+    let arena = emit_rwg_arena(&path, source).unwrap();
+    assert_eq!(arena["stage"], "morphism_arena");
+
+    let compiled = compile_rwg_source(&path, source).unwrap();
+    fs::remove_file(path).unwrap();
+    let calls = compiled["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"]
+        .as_array()
+        .unwrap();
+    assert!(calls.iter().any(|call| {
+        call["function"] == "rwg_load_waveform"
+            && call["args"][0]["sbg_id"] == 0
+            && call["args"][0]["freq_coeffs"] == serde_json::json!([2.0, null, null, null])
+            && call["args"][0]["amp_coeffs"] == serde_json::json!([null, null, null, null])
+            && call["args"][0]["initial_phase"] == 0.0
+            && call["args"][0]["phase_reset"] == true
+            && call["args"][0]["fct"].is_null()
+    }));
+}
+
+#[test]
+fn annotated_global_native_record_alias_lowers_for_emit_arena_and_compile() {
+    let path = source_file();
+    let source = "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\noriginal = StaticWaveform(freq=1.0, sbg_id=0)\ntarget: StaticWaveform = original\n\ndef sequence() -> Morphism:\n    updated = replace(target, freq=2.0)\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n";
+
+    let arena = emit_rwg_arena(&path, source).unwrap();
+    assert_eq!(arena["stage"], "morphism_arena");
+
+    let compiled = compile_rwg_source(&path, source).unwrap();
+    fs::remove_file(path).unwrap();
+    let calls = compiled["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"]
+        .as_array()
+        .unwrap();
+    assert!(calls.iter().any(|call| {
+        call["function"] == "rwg_load_waveform"
+            && call["args"][0]["sbg_id"] == 0
+            && call["args"][0]["freq_coeffs"] == serde_json::json!([2.0, null, null, null])
+    }));
+}
+
+#[test]
+fn global_native_record_references_use_exact_compile_known_names() {
+    let path = source_file();
+    let source = "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\nfrequency = 1.0\nfrequency_extra = 3.0\ntarget = StaticWaveform(freq=frequency, sbg_id=0)\ntarget_extra = StaticWaveform(freq=frequency_extra, sbg_id=1)\nselected: StaticWaveform = target_extra\n\ndef sequence() -> Morphism:\n    updated = replace(selected, amp=0.25)\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n";
+
+    let arena = emit_rwg_arena(&path, source).unwrap();
+    assert_eq!(arena["stage"], "morphism_arena");
+
+    let compiled = compile_rwg_source(&path, source).unwrap();
+    fs::remove_file(path).unwrap();
+    let calls = compiled["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"]
+        .as_array()
+        .unwrap();
+    assert!(calls.iter().any(|call| {
+        call["function"] == "rwg_load_waveform"
+            && call["args"][0]["sbg_id"] == 1
+            && call["args"][0]["freq_coeffs"] == serde_json::json!([3.0, null, null, null])
+            && call["args"][0]["amp_coeffs"] == serde_json::json!([0.25, null, null, null])
+    }));
+}
+
+#[test]
+fn compile_known_native_record_attribute_lowers_for_emit_arena() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform as Waveform\n\nclass Experiment:\n    Waveform = Waveform(freq=1.0, sbg_id=0)\n\n    def sequence(self) -> Morphism:\n        updated = replace(self.Waveform, freq=2.0)\n        return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n",
+    )
+    .unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "Experiment.sequence",
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let arena: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(arena["stage"], "morphism_arena");
+}
+
+#[test]
+fn class_native_record_closes_over_exact_compile_known_globals() {
+    let path = source_file();
+    let source = "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\nbase_frequency = 1.0\nbase_frequency_extra = 1.5\nselected_frequency = base_frequency_extra\nbase_sbg_id = 1\n\nclass Experiment:\n    target = StaticWaveform(freq=selected_frequency, sbg_id=base_sbg_id)\n\n    def build(self) -> Morphism:\n        updated = replace(self.target, amp=0.25)\n        return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n\nexperiment = Experiment()\n\ndef sequence() -> Morphism:\n    return experiment.build()\n";
+    fs::write(&path, source).unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "Experiment.build",
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let arena: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(arena["stage"], "morphism_arena");
+
+    let compiled = compile_rwg_source(&path, source).unwrap();
+    fs::remove_file(path).unwrap();
+    let calls = compiled["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"]
+        .as_array()
+        .unwrap();
+    assert!(calls.iter().any(|call| {
+        call["function"] == "rwg_load_waveform"
+            && call["args"][0]["sbg_id"] == 1
+            && call["args"][0]["freq_coeffs"] == serde_json::json!([1.5, null, null, null])
+            && call["args"][0]["amp_coeffs"] == serde_json::json!([0.25, null, null, null])
+            && call["args"][0]["initial_phase"] == 0.0
+            && call["args"][0]["phase_reset"] == true
+            && call["args"][0]["fct"].is_null()
+    }));
+}
+
+#[test]
+fn catseq_replace_keeps_link_time_field_values_symbolic_until_linking() {
+    let path = source_file();
+    let source = "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\ndef sequence(params: ExpParams) -> Morphism:\n    target = StaticWaveform(freq=1.0, amp=0.2, sbg_id=0)\n    updated = replace(target, freq=params[frequency])\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n";
+    let artifact = emit_rwg_arena(&path, source).unwrap();
+    let value_payloads = artifact["value_expr_arena"]["payloads"].as_array().unwrap();
+    assert!(
+        value_payloads.contains(&serde_json::json!({"kind": "runtime_slot", "value": "frequency"})),
+        "{value_payloads:#?}"
+    );
+    assert!(
+        value_payloads.iter().any(|payload| {
+            payload["kind"] == "json" && payload["value"].to_string().contains("\"$value_expr\"")
+        }),
+        "{value_payloads:#?}"
+    );
+
+    let response = compile_rwg_source_with_bindings(
+        &path,
+        source,
+        serde_json::json!({
+            "schema_version": 1,
+            "runtime_values": {"frequency": 2.5},
+            "environment_values": {}
+        }),
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    let calls = response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"]
+        .as_array()
+        .unwrap();
+    assert!(calls.iter().any(|call| {
+        call["function"] == "rwg_load_waveform" && call["args"][0]["freq_coeffs"][0] == 2.5
+    }));
+}
+
+#[test]
+fn catseq_replace_requires_a_positional_native_record_base() {
+    let path = source_file();
+    let error = compile_rwg_source(
+        &path,
+        "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\ndef sequence() -> Morphism:\n    target = StaticWaveform(freq=1.0, amp=0.2, sbg_id=0)\n    updated = replace(record=target, freq=2.0)\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n",
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        error.contains("first argument must be positional"),
+        "{error}"
+    );
+}
+
+#[test]
+fn catseq_replace_rejects_unknown_native_record_fields() {
+    let path = source_file();
+    let error = compile_rwg_source(
+        &path,
+        "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\ndef sequence() -> Morphism:\n    target = StaticWaveform(freq=1.0, amp=0.2, sbg_id=0)\n    updated = replace(target, frequency=2.0)\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n",
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        error.contains("unknown Native Record field `frequency`"),
+        "{error}"
+    );
+    assert!(error.contains("StaticWaveform"), "{error}");
+}
+
+#[test]
+fn catseq_replace_rejects_a_field_value_with_the_wrong_type() {
+    let path = source_file();
+    let error = compile_rwg_source(
+        &path,
+        "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\ndef sequence() -> Morphism:\n    target = StaticWaveform(freq=1.0, amp=0.2, sbg_id=0)\n    updated = replace(target, freq='not-a-frequency')\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n",
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(error.contains("freq"), "{error}");
+    assert!(error.contains("Float64"), "{error}");
+}
+
+#[test]
+fn catseq_replace_rejects_the_wrong_native_record_aggregate_element_type() {
+    let path = source_file();
+    let error = compile_rwg_source(
+        &path,
+        "from catseq import replace\nfrom catseq.hardware.rwg import initialize, load, play\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import WaveformParams\n\ndef sequence() -> Morphism:\n    target = WaveformParams(sbg_id=0)\n    updated = replace(target, freq_coeffs=('bad',))\n    return identity(0) >> {rwg0: initialize(80.0) >> load([updated]) >> play()}\n",
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(error.contains("freq_coeffs"), "{error}");
+    assert!(error.contains("Optional<Float64>"), "{error}");
+}
+
+#[test]
+fn catseq_replace_rejects_a_non_native_record_base() {
+    let path = source_file();
+    let error = compile_rwg_source(
+        &path,
+        "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\n\ndef sequence() -> Morphism:\n    updated = replace(1, freq=2.0)\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n",
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        error.contains("catseq.replace requires a Native Record"),
+        "{error}"
+    );
+}
+
+#[test]
+fn catseq_replace_rejects_a_compile_known_base_missing_a_required_field() {
+    let path = source_file();
+    let error = compile_rwg_source(
+        &path,
+        "from catseq import replace\nfrom catseq.hardware.rwg import initialize, load, play\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import WaveformParams\n\nclass Experiment:\n    target = WaveformParams()\n\n    def build(self) -> Morphism:\n        updated = replace(self.target, phase_reset=True)\n        return identity(0) >> {rwg0: initialize(80.0) >> load([updated]) >> play()}\n\nexperiment = Experiment()\n\ndef sequence() -> Morphism:\n    return experiment.build()\n",
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        error.contains("catseq.replace base `WaveformParams` is missing required field `sbg_id`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn typed_check_rejects_a_non_native_record_replace_base() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\n\ndef sequence():\n    return replace(1, freq=2.0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("catseq.replace requires a Native Record"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":4:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_requires_a_positional_native_record_replace_base() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.types import StaticWaveform\n\ndef sequence():\n    target = StaticWaveform(freq=1.0, sbg_id=0)\n    return replace(record=target, freq=2.0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("catseq.replace first argument must be positional"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":6:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_rejects_an_unknown_native_record_replace_field() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.types import StaticWaveform\n\ndef sequence():\n    target = StaticWaveform(freq=1.0, sbg_id=0)\n    return replace(target, frequency=2.0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown Native Record field `frequency` for `StaticWaveform`"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":6:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_rejects_a_native_record_replace_field_type_mismatch() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.types import StaticWaveform\n\ndef sequence():\n    target = StaticWaveform(freq=1.0, sbg_id=0)\n    return replace(target, freq='not-a-frequency')\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "catseq.replace field `freq` for `StaticWaveform` expects Optional<Float64>, found String"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":6:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_rejects_a_native_record_replace_aggregate_element_type_mismatch() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.types import WaveformParams\n\ndef sequence():\n    target = WaveformParams(sbg_id=0)\n    return replace(target, freq_coeffs=('bad',))\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "catseq.replace field `freq_coeffs` for `WaveformParams` expects Aggregate<Optional<Float64>>, found Aggregate<String>"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":6:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_rejects_a_compile_known_aggregate_attribute_element_type_mismatch() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.types import WaveformParams\n\nclass Experiment:\n    bad_coeffs = ('bad',)\n    coeffs = bad_coeffs\n    target = WaveformParams(sbg_id=0)\n\n    def sequence(self):\n        return replace(self.target, freq_coeffs=self.coeffs)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "check",
+            path.to_str().unwrap(),
+            "--entry",
+            "Experiment.sequence",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "catseq.replace field `freq_coeffs` for `WaveformParams` expects Aggregate<Optional<Float64>>, found Aggregate<String>"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":10:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_rejects_a_compile_known_global_aggregate_element_type_mismatch() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.types import WaveformParams\n\nbad_coeffs = ('bad',)\ncoeffs = bad_coeffs\ntarget = WaveformParams(sbg_id=0)\n\ndef sequence():\n    return replace(target, freq_coeffs=coeffs)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "catseq.replace field `freq_coeffs` for `WaveformParams` expects Aggregate<Optional<Float64>>, found Aggregate<String>"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":9:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_accepts_compile_known_aggregate_aliases_with_valid_elements() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.types import WaveformParams\n\nbase_coeffs = (1.0, None)\ncoeffs = base_coeffs\ntarget = WaveformParams(sbg_id=0)\n\ndef sequence():\n    return replace(target, freq_coeffs=coeffs)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn typed_check_rejects_a_local_aggregate_alias_element_type_mismatch() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.types import WaveformParams\n\ndef sequence():\n    target = WaveformParams(sbg_id=0)\n    coeffs = ('bad',)\n    return replace(target, freq_coeffs=coeffs)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "catseq.replace field `freq_coeffs` for `WaveformParams` expects Aggregate<Optional<Float64>>, found Aggregate<String>"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":7:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_does_not_accept_a_same_named_host_constructor_as_a_native_record() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "import vendor\nfrom catseq import replace\n\ndef sequence():\n    target = vendor.StaticWaveform(freq=1.0, sbg_id=0)\n    return replace(target, freq=2.0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("reachable Host call vendor.StaticWaveform"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":5:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_does_not_accept_a_same_named_compile_field_constructor() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "import vendor\nfrom catseq import replace\n\nclass Experiment:\n    target = vendor.StaticWaveform(freq=1.0, sbg_id=0)\n\n    def sequence(self):\n        return replace(self.target, freq=2.0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "check",
+            path.to_str().unwrap(),
+            "--entry",
+            "Experiment.sequence",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("catseq.replace requires a Native Record"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":8:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_rejects_a_class_binding_shadowing_a_native_record_import() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.types import StaticWaveform\n\ndef host_waveform(freq, sbg_id):\n    return freq\n\nclass Experiment:\n    StaticWaveform = host_waveform\n    target = StaticWaveform(freq=1.0, sbg_id=0)\n\n    def sequence(self):\n        return replace(self.target, freq=2.0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "check",
+            path.to_str().unwrap(),
+            "--entry",
+            "Experiment.sequence",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("catseq.replace requires a Native Record"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":12:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_does_not_accept_a_same_named_native_record_annotation() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "import vendor\nfrom catseq import replace\n\nclass Experiment:\n    target: vendor.StaticWaveform = vendor.StaticWaveform(freq=1.0, sbg_id=0)\n\n    def sequence(self):\n        return replace(self.target, freq=2.0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "check",
+            path.to_str().unwrap(),
+            "--entry",
+            "Experiment.sequence",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("catseq.replace requires a Native Record"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":8:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_rejects_a_registered_record_annotation_with_a_host_initializer() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "import vendor\nfrom catseq import replace\nfrom catseq.types import StaticWaveform\n\nclass Experiment:\n    target: StaticWaveform = vendor.StaticWaveform(freq=1.0, sbg_id=0)\n\n    def sequence(self):\n        return replace(self.target, freq=2.0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "check",
+            path.to_str().unwrap(),
+            "--entry",
+            "Experiment.sequence",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("catseq.replace requires a Native Record"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":9:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_rejects_a_registered_global_record_with_a_host_initializer() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "import vendor\nfrom catseq import replace\nfrom catseq.types import StaticWaveform\n\ntarget: StaticWaveform = vendor.StaticWaveform(freq=1.0, sbg_id=0)\n\ndef sequence():\n    return replace(target, freq=2.0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("catseq.replace requires a Native Record"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":8:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_rejects_a_registered_record_annotation_with_a_host_alias() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "import vendor\nfrom catseq import replace\nfrom catseq.types import StaticWaveform\n\nforeign = vendor.StaticWaveform(freq=1.0, sbg_id=0)\ntarget: StaticWaveform = foreign\n\ndef sequence():\n    return replace(target, freq=2.0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("catseq.replace requires a Native Record"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":9:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_accepts_a_registered_record_annotation_through_a_registered_alias() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.types import StaticWaveform\n\noriginal = StaticWaveform(freq=1.0, sbg_id=0)\ntarget: StaticWaveform = original\n\ndef sequence():\n    return replace(target, freq=2.0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn typed_check_preserves_the_nominal_schema_through_chained_replace_calls() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.types import StaticWaveform\n\ndef sequence():\n    target = StaticWaveform(freq=1.0, sbg_id=0)\n    return replace(replace(replace(target, freq=2.0), amp=0.4), phase=0.5)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-hir",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let replace_facts = report["definitions"][0]["hir"]["facts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|fact| fact["resolved_definition"] == "catseq.replace")
+        .collect::<Vec<_>>();
+    assert_eq!(replace_facts.len(), 3);
+    assert!(replace_facts.iter().all(|fact| {
+        fact["type"] == serde_json::Value::String("NativeRecord<StaticWaveform>".to_owned())
+    }));
+}
+
+#[test]
+fn dataclasses_replace_is_not_a_catseq_compiler_intrinsic() {
+    let path = source_file();
+    let error = compile_rwg_source(
+        &path,
+        "from dataclasses import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\ndef sequence() -> Morphism:\n    target = StaticWaveform(freq=1.0, amp=0.2, sbg_id=0)\n    updated = replace(target, freq=2.0)\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n",
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(error.contains("dataclasses.replace"), "{error}");
+}
+
+#[test]
 fn user_template_can_compose_the_unified_rwg_load_and_play_atomics() {
     let path = source_file();
     fs::write(
@@ -2948,6 +3914,139 @@ fn compile_binds_a_scan_duration_when_linking_the_oasm_call_plan() {
             {"offset_cycles": 1, "function": "ttl_set", "args": [1, 0, "rwg"]},
             {"offset_cycles": 2, "function": "ttl_set", "args": [1, 1, "rwg"]}
         ])
+    );
+}
+
+#[test]
+fn typed_check_rejects_a_locally_shadowed_catseq_replace_call() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.types import StaticWaveform\n\ndef helper(value):\n    return value\n\ndef sequence():\n    target = StaticWaveform(freq=1.0, sbg_id=0)\n    replace = helper\n    return replace(target)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("reachable Host call replace"), "{stderr}");
+    assert!(stderr.contains(":10:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_rejects_a_nested_definition_shadowing_catseq_replace() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.types import StaticWaveform\n\ndef sequence():\n    def replace(value):\n        return value\n    target = StaticWaveform(freq=1.0, sbg_id=0)\n    return replace(target)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unsupported reachable nested function statement"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":5:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_rejects_a_locally_shadowed_native_record_constructor() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.types import StaticWaveform\n\ndef helper(freq, sbg_id):\n    return freq\n\ndef sequence():\n    StaticWaveform = helper\n    return StaticWaveform(freq=1.0, sbg_id=0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("reachable Host call StaticWaveform"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":8:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_rejects_a_locally_shadowed_registered_intrinsic() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.morphism import identity\n\ndef helper(value):\n    return value\n\ndef sequence():\n    identity = helper\n    return identity(0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("reachable Host call identity"), "{stderr}");
+    assert!(stderr.contains(":8:"), "{stderr}");
+}
+
+#[test]
+fn typed_check_keeps_self_method_resolution_for_an_intrinsic_leaf_name() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.morphism import Morphism, identity\n\nclass Experiment:\n    def identity(self) -> Morphism:\n        return identity(0)\n\n    def sequence(self) -> Morphism:\n        return self.identity()\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "check",
+            path.to_str().unwrap(),
+            "--entry",
+            "Experiment.sequence",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn typed_check_keeps_a_module_source_function_with_a_special_form_name() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq import replace\nfrom catseq.morphism import Morphism, identity\n\ndef replace() -> Morphism:\n    return identity(0)\n\ndef sequence() -> Morphism:\n    return replace()\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

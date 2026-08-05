@@ -17,19 +17,22 @@ from catseq import (
     Compiler,
     CompiledSequence,
     EthernetRuntime,
+    replace,
 )
+from catseq.hardware.rwg import initialize, set_state
 from catseq.hardware.ttl import pulse, set_high, set_low
 from catseq.morphism import Morphism, identity, repeat_morphism
 from catseq.oasm import black_box
 from catseq.targets import rtmq_v2_profile
 from catseq.time_utils import Duration, cycles, ms
-from catseq.types import Board, Channel, ChannelType
+from catseq.types import Board, Channel, ChannelType, StaticWaveform
 from oasm.rtmq2 import nop
 
 
 rwg0 = Board("rwg0")
 rwg1 = Board("rwg1")
 ttl0 = Channel(rwg0, local_id=0, channel_type=ChannelType.TTL)
+rwg_channel = Channel(rwg0, local_id=0, channel_type=ChannelType.RWG)
 ttl1 = Channel(rwg1, local_id=1, channel_type=ChannelType.TTL)
 SYNTHETIC_DESTINATION = "02:ca:75:ee:00:01"
 SYNTHETIC_REPLY = (60_001, 31)
@@ -269,6 +272,44 @@ class EnvironmentRewindExperiment:
             >> identity(self.rewind)
             >> {ttl0: set_low()}
         )
+
+
+class CompileKnownWaveformExperiment:
+    target = StaticWaveform(freq=1.0, amp=0.2, sbg_id=0)
+
+    def sequence(self) -> Morphism:
+        updated = replace(self.target, freq=2.0)
+        return identity(0) >> {
+            rwg_channel: initialize(80.0) >> set_state([updated])
+        }
+
+
+class MalformedCompileKnownWaveformExperiment:
+    target = StaticWaveform(freq="not-a-frequency", amp=0.2, sbg_id=0)  # type: ignore[arg-type]
+
+    def sequence(self) -> Morphism:
+        updated = replace(self.target, amp=0.3)
+        return identity(0) >> {
+            rwg_channel: initialize(80.0) >> set_state([updated])
+        }
+
+
+class ForeignTypes:
+    class StaticWaveform:
+        def __init__(self, *, freq: float, amp: float, sbg_id: int) -> None:
+            self.freq = freq
+            self.amp = amp
+            self.sbg_id = sbg_id
+
+
+class ForeignCompileKnownWaveformExperiment:
+    target = ForeignTypes.StaticWaveform(freq=1.0, amp=0.2, sbg_id=0)
+
+    def sequence(self) -> Morphism:
+        updated = replace(self.target, freq=2.0)
+        return identity(0) >> {
+            rwg_channel: initialize(80.0) >> set_state([updated])
+        }
 
 
 def test_oasm_and_raw_transport_helpers_are_not_public_exports() -> None:
@@ -734,6 +775,57 @@ def test_public_environment_duration_can_rewind_the_timeline(tmp_path: Path) -> 
         {"offset_cycles": 1, "function": "ttl_set", "args": [1, 0, "rwg"]},
         {"offset_cycles": 2, "function": "ttl_set", "args": [1, 1, "rwg"]},
     ]
+
+
+def test_replace_accepts_a_compile_known_native_record_attribute(
+    tmp_path: Path,
+) -> None:
+    compiled = Compiler(
+        source_root=Path(__file__).parent,
+        channels={"test_public_execution_api.rwg_channel": rwg_channel},
+        cache_dir=tmp_path / "cache",
+    ).compile(CompileKnownWaveformExperiment().sequence)
+
+    calls = compiled.oasm_call_plan["epochs"][0]["boards"][0]["calls"]
+    loaded = next(call for call in calls if call["function"] == "rwg_load_waveform")
+    assert loaded["args"][0] == {
+        "$type": "WaveformParams",
+        "sbg_id": 0,
+        "freq_coeffs": [2.0, None, None, None],
+        "amp_coeffs": [0.2, None, None, None],
+        "initial_phase": 0.0,
+        "phase_reset": True,
+        "fct": None,
+    }
+
+
+def test_replace_rejects_malformed_fields_from_a_compile_known_base(
+    tmp_path: Path,
+) -> None:
+    compiler = Compiler(
+        source_root=Path(__file__).parent,
+        channels={"test_public_execution_api.rwg_channel": rwg_channel},
+        cache_dir=tmp_path / "cache",
+    )
+
+    with pytest.raises(
+        CatSeqCompileError,
+        match=r"catseq\.replace field `freq`.*expects Optional<Float64>",
+    ):
+        compiler.compile(MalformedCompileKnownWaveformExperiment().sequence)
+
+
+def test_replace_rejects_a_same_named_foreign_compile_known_record(
+    tmp_path: Path,
+) -> None:
+    compiler = Compiler(
+        source_root=Path(__file__).parent,
+        channels={"test_public_execution_api.rwg_channel": rwg_channel},
+        cache_dir=tmp_path / "cache",
+    )
+
+    with pytest.raises(CatSeqCompileError, match="requires a Native Record"):
+        compiler.compile(ForeignCompileKnownWaveformExperiment().sequence)
 
 
 def test_compiler_rejects_a_zero_target_clock_before_compilation(

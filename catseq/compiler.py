@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import inspect
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 from . import _native
@@ -108,6 +110,11 @@ class Compiler:
             return self._native.compile(
                 source_path,
                 function.__qualname__,
+                _source_opaque_callables(
+                    function,
+                    self.source_root,
+                    source_path,
+                ),
                 _encode_json(link_bindings),
             )
         except (OSError, RuntimeError, TypeError, ValueError) as error:
@@ -147,3 +154,64 @@ def _encode_opaque_calls(
 
 def _encode_json(value: object) -> bytes:
     return json.dumps(value, separators=(",", ":")).encode()
+
+
+def _source_opaque_callables(
+    entry: Callable[..., object],
+    source_root: Path,
+    entry_source_path: Path,
+) -> dict[str, Callable[..., object]]:
+    callables: dict[str, Callable[..., object]] = {}
+    entry_module = _module_name_for_source(source_root, entry_source_path)
+
+    def register(value: object) -> None:
+        if not inspect.isfunction(value):
+            return
+        module = getattr(value, "__module__", None)
+        qualified_name = getattr(value, "__qualname__", None)
+        if (
+            not isinstance(module, str)
+            or not isinstance(qualified_name, str)
+            or "<locals>" in qualified_name
+        ):
+            return
+        callables[f"{module}.{qualified_name}"] = value
+        try:
+            same_source = _source_path(value) == entry_source_path
+        except (OSError, TypeError, ValueError):
+            same_source = False
+        if same_source:
+            callables[f"{entry_module}.{qualified_name}"] = value
+
+    for value in entry.__globals__.values():
+        register(value)
+
+    for module in list(sys.modules.values()):
+        module_file = getattr(module, "__file__", None)
+        module_name = getattr(module, "__name__", None)
+        if not isinstance(module_file, str) or not isinstance(module_name, str):
+            continue
+        try:
+            inside_source_root = Path(module_file).resolve().is_relative_to(
+                source_root
+            )
+        except OSError:
+            continue
+        if not inside_source_root:
+            continue
+        for value in vars(module).values():
+            if getattr(value, "__module__", None) == module_name:
+                register(value)
+    return callables
+
+
+def _module_name_for_source(source_root: Path, source_path: Path) -> str:
+    relative = source_path.relative_to(source_root)
+    components = list(relative.parts)
+    file_name = components.pop()
+    if not file_name.endswith(".py"):
+        raise ValueError(f"{source_path} is not a Python module")
+    stem = file_name.removesuffix(".py")
+    if stem != "__init__":
+        components.append(stem)
+    return ".".join(components)

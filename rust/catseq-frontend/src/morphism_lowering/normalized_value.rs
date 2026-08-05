@@ -262,7 +262,8 @@ pub(super) fn normalized_to_json(
         let arguments = &arguments[open + 1..];
         let (positional, keywords) =
             split_normalized_once(arguments, ';').unwrap_or((arguments, ""));
-        let field_names: &[&str] = match schema.rsplit('.').next().unwrap_or(schema) {
+        let record_name = schema.rsplit('.').next().unwrap_or(schema);
+        let field_names: &[&str] = match record_name {
             "StaticWaveform" => &["freq", "amp", "sbg_id", "phase", "fct"],
             "WaveformParams" => &[
                 "sbg_id",
@@ -283,28 +284,29 @@ pub(super) fn normalized_to_json(
                 "output_max",
             ],
             "RSPWaveformParams" => &["rf_out", "amp", "output_max"],
+            "Board" => &["id"],
             other => {
                 let _ = other;
                 return Ok(serde_json::Value::String(value.to_owned()));
             }
         };
         let mut record = serde_json::Map::new();
-        record.insert(
-            "$type".to_owned(),
-            schema
-                .rsplit('.')
-                .next()
-                .unwrap_or(schema)
-                .to_owned()
-                .into(),
-        );
-        for (index, argument) in split_normalized_list(positional, ',')
+        record.insert("$type".to_owned(), record_name.to_owned().into());
+        let positional = split_normalized_list(positional, ',')
             .into_iter()
             .filter(|value| !value.is_empty())
-            .enumerate()
-        {
+            .collect::<Vec<_>>();
+        if positional.len() > field_names.len() {
+            return Err(MorphismLoweringError::new(format!(
+                "native record {record_name} accepts at most {} positional field{}, got {}",
+                field_names.len(),
+                if field_names.len() == 1 { "" } else { "s" },
+                positional.len(),
+            )));
+        }
+        for (field_name, argument) in field_names.iter().zip(positional) {
             record.insert(
-                field_names[index].to_owned(),
+                (*field_name).to_owned(),
                 normalized_to_json(argument, fields)?,
             );
         }
@@ -320,6 +322,14 @@ pub(super) fn normalized_to_json(
         return Ok(serde_json::Value::Object(record));
     }
     Ok(serde_json::Value::String(value.to_owned()))
+}
+
+pub(super) fn normalized_board_id(value: &str) -> Result<Option<String>, MorphismLoweringError> {
+    Ok(normalized_to_json(value, &HashMap::new())?
+        .as_object()
+        .and_then(|record| record.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned))
 }
 
 fn parse_normalized_numeric_with_fields(

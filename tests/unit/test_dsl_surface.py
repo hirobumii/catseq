@@ -1,3 +1,6 @@
+from importlib import import_module
+from inspect import signature
+
 import pytest
 
 from catseq.hardware.rwg import linear_ramp, load, play, set_state
@@ -22,6 +25,25 @@ def test_identity_is_a_compiler_only_source_intrinsic() -> None:
         match="compile_entry",
     ):
         identity(1.0)
+
+
+def test_black_box_is_a_public_compiler_intrinsic() -> None:
+    from catseq.oasm import black_box
+
+    assert tuple(signature(black_box).parameters) == (
+        "duration_cycles",
+        "board_funcs",
+        "user_args",
+        "user_kwargs",
+        "metadata",
+    )
+    with pytest.raises(CompilerOnlyError, match="catseq.oasm.black_box"):
+        black_box(1, {})
+
+
+def test_atomic_compatibility_module_is_not_available() -> None:
+    with pytest.raises(ModuleNotFoundError, match="catseq.atomic"):
+        import_module("catseq.atomic")
 
 
 def test_hardware_operations_are_compiler_only_source_intrinsics() -> None:

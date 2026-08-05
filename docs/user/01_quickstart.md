@@ -108,8 +108,10 @@ Callbacks must be module-level functions. Nested functions and lambdas capture
 Python objects that the source compiler deliberately does not execute or
 serialize. Pass captured scalar or native-record data through `user_args` or
 `user_kwargs`. The `board_funcs` keys define the participating boards, with one
-callback per board. A same-board operation may occur at the blackbox start
-or end boundary but not strictly inside its half-open occupancy interval.
+callback per board. Each board is exclusively occupied for `[start, end)`: any
+ordinary same-board morphism whose occupancy intersects the interval is invalid,
+including one that begins earlier and spans the blackbox. A morphism may begin
+exactly at the end boundary.
 Adjacent same-board blackboxes may share an end/start boundary; genuine
 overlaps remain invalid.
 `duration_cycles` declares the callback's own exact board occupancy: the

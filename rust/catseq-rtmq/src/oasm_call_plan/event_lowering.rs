@@ -33,6 +33,14 @@ struct OpaqueInterval {
     group_id: u64,
 }
 
+struct OrdinaryBoardInterval {
+    epoch: u32,
+    start: u64,
+    end: u64,
+    board: String,
+    loop_group: Option<u64>,
+}
+
 pub(super) fn lower_events(
     program: &NativeArenas,
     environment: &CompileEnvironment,
@@ -43,6 +51,7 @@ pub(super) fn lower_events(
     let arena = program.morphisms();
     let evaluated_values = &timing.evaluated_values;
     let durations = &timing.durations;
+    let frontiers = &timing.frontiers;
     let contains_rewind = &timing.contains_rewind;
     let sync_counts = &epochs.sync_counts;
     let mut ttl_events = Vec::<TtlEvent>::new();
@@ -51,6 +60,7 @@ pub(super) fn lower_events(
     let mut rsp_pid_configs = HashMap::<String, serde_json::Value>::new();
     let mut loop_regions = Vec::<LoopRegion>::new();
     let mut opaque_intervals = Vec::<OpaqueInterval>::new();
+    let mut ordinary_board_intervals = Vec::<OrdinaryBoardInterval>::new();
     let mut expanded_rewind_node_visits = 0_u64;
     enum TraversalTask {
         Visit {
@@ -67,6 +77,8 @@ pub(super) fn lower_events(
             count: u64,
             ttl_start: usize,
             direct_start: usize,
+            opaque_start: usize,
+            ordinary_start: usize,
         },
     }
     let mut pending = vec![TraversalTask::Visit {
@@ -93,10 +105,37 @@ pub(super) fn lower_events(
                 count,
                 ttl_start,
                 direct_start,
+                opaque_start,
+                ordinary_start,
             } = task
             else {
                 unreachable!()
             };
+            validate_opaque_exclusivity(
+                &opaque_intervals[opaque_start..],
+                &ordinary_board_intervals[ordinary_start..],
+                &ttl_events[ttl_start..],
+                &direct_events[direct_start..],
+            )?;
+            let opaque_boards = opaque_intervals[opaque_start..]
+                .iter()
+                .filter(|interval| interval.start < interval.end)
+                .map(|interval| interval.board.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            let ordinary_boards = ordinary_board_intervals[ordinary_start..]
+                .iter()
+                .map(|interval| interval.board.clone())
+                .chain(
+                    ttl_events[ttl_start..]
+                        .iter()
+                        .map(|event| event.board.clone()),
+                )
+                .chain(
+                    direct_events[direct_start..]
+                        .iter()
+                        .map(|event| event.board.clone()),
+                )
+                .collect::<std::collections::BTreeSet<_>>();
             let boards = ttl_events[ttl_start..]
                 .iter()
                 .map(|event| event.board.clone())
@@ -106,9 +145,12 @@ pub(super) fn lower_events(
                         .map(|event| event.board.clone()),
                 )
                 .collect::<std::collections::BTreeSet<_>>();
-            let end = start
+            let body_end = start
                 .checked_add(body_duration)
                 .ok_or_else(|| OasmCompileError::new("loop timestamp overflows u64"))?;
+            let loop_end = start
+                .checked_add(total_duration)
+                .ok_or_else(|| OasmCompileError::new("loop envelope overflows u64"))?;
             let cursor_advance = total_duration.checked_sub(body_duration).ok_or_else(|| {
                 OasmCompileError::new("hardware loop duration is shorter than its body")
             })?;
@@ -116,6 +158,24 @@ pub(super) fn lower_events(
             next_event_id = next_event_id
                 .checked_add(1)
                 .ok_or_else(|| OasmCompileError::new("OASM event id overflows u64"))?;
+            opaque_intervals.truncate(opaque_start);
+            opaque_intervals.extend(opaque_boards.into_iter().map(|board| OpaqueInterval {
+                epoch,
+                start,
+                end: loop_end,
+                board,
+                group_id: marker_group_id,
+            }));
+            ordinary_board_intervals.truncate(ordinary_start);
+            ordinary_board_intervals.extend(ordinary_boards.into_iter().map(|board| {
+                OrdinaryBoardInterval {
+                    epoch,
+                    start,
+                    end: loop_end,
+                    board,
+                    loop_group: Some(marker_group_id),
+                }
+            }));
             loop_regions.push(LoopRegion {
                 epoch,
                 start,
@@ -144,7 +204,7 @@ pub(super) fn lower_events(
                 });
                 direct_events.push(DirectEvent {
                     epoch,
-                    offset_cycles: end,
+                    offset_cycles: body_end,
                     board,
                     function: OasmFunction::LoopEnd,
                     args: Vec::new(),
@@ -421,6 +481,42 @@ pub(super) fn lower_events(
                 let Some(MorphismPayload::Instantiate { template, channel }) = payload else {
                     unreachable!("validated arena has an Instantiate payload")
                 };
+                let frontier = frontiers[node_id];
+                if frontier > 0 {
+                    let end = start.checked_add(frontier).ok_or_else(|| {
+                        OasmCompileError::new("channel morphism frontier overflows i64 cycles")
+                    })?;
+                    let origin = i64::try_from(*epoch_origins.get(&epoch).ok_or_else(|| {
+                        OasmCompileError::new(format!("epoch {epoch} has no origin"))
+                    })?)
+                    .map_err(|_| {
+                        OasmCompileError::new("Epoch origin exceeds signed timeline range")
+                    })?;
+                    let occupancy_start = start.max(origin);
+                    if end > occupancy_start {
+                        let channel_key = &arena.channels()[channel.index()];
+                        let binding = environment.channels.get(channel_key).ok_or_else(|| {
+                            OasmCompileError::new(format!(
+                                "compile environment has no binding for channel {channel_key}"
+                            ))
+                        })?;
+                        ordinary_board_intervals.push(OrdinaryBoardInterval {
+                            epoch,
+                            start: u64::try_from(occupancy_start).map_err(|_| {
+                                OasmCompileError::new(
+                                    "channel morphism starts before its Epoch origin",
+                                )
+                            })?,
+                            end: u64::try_from(end).map_err(|_| {
+                                OasmCompileError::new(
+                                    "channel morphism frontier exceeds unsigned timeline range",
+                                )
+                            })?,
+                            board: binding.board.clone(),
+                            loop_group: None,
+                        });
+                    }
+                }
                 pending.push(TraversalTask::Visit {
                     node_id: arena.templates()[template.index()].root().index(),
                     start,
@@ -519,6 +615,8 @@ pub(super) fn lower_events(
                     count,
                     ttl_start: ttl_events.len(),
                     direct_start: direct_events.len(),
+                    opaque_start: opaque_intervals.len(),
+                    ordinary_start: ordinary_board_intervals.len(),
                 });
                 pending.push(TraversalTask::Visit {
                     node_id: body.index(),
@@ -535,7 +633,12 @@ pub(super) fn lower_events(
         }
     }
 
-    validate_opaque_exclusivity(&opaque_intervals, &ttl_events, &direct_events)?;
+    validate_opaque_exclusivity(
+        &opaque_intervals,
+        &ordinary_board_intervals,
+        &ttl_events,
+        &direct_events,
+    )?;
 
     Ok(LoweredEvents {
         ttl_events,
@@ -547,10 +650,26 @@ pub(super) fn lower_events(
 
 fn validate_opaque_exclusivity(
     intervals: &[OpaqueInterval],
+    ordinary_intervals: &[OrdinaryBoardInterval],
     ttl_events: &[TtlEvent],
     direct_events: &[DirectEvent],
 ) -> Result<(), OasmCompileError> {
     for (index, interval) in intervals.iter().enumerate() {
+        for ordinary in ordinary_intervals {
+            if interval.epoch == ordinary.epoch
+                && interval.board == ordinary.board
+                && ordinary.loop_group != Some(interval.group_id)
+                && interval.start < interval.end
+                && ordinary.start < ordinary.end
+                && interval.start < ordinary.end
+                && ordinary.start < interval.end
+            {
+                return Err(OasmCompileError::new(format!(
+                    "ordinary morphism interval conflicts with a blackbox operation on board {}",
+                    interval.board
+                )));
+            }
+        }
         for other in &intervals[index + 1..] {
             if interval.epoch == other.epoch
                 && interval.board == other.board
@@ -571,6 +690,9 @@ fn validate_opaque_exclusivity(
                 && event.board == interval.board
                 && event.group_id != interval.group_id
         }) {
+            if event.loop_scope == Some(interval.group_id) {
+                continue;
+            }
             if event.function == OasmFunction::UserDefinedFunc && event.instruction_cost_cycles == 0
             {
                 continue;
@@ -586,6 +708,9 @@ fn validate_opaque_exclusivity(
             .iter()
             .filter(|event| event.epoch == interval.epoch && event.board == interval.board)
         {
+            if event.loop_scope == Some(interval.group_id) {
+                continue;
+            }
             if event_conflicts(interval, event.offset_cycles, event.instruction_cost_cycles) {
                 return Err(OasmCompileError::new(format!(
                     "TTL operation at cycle {} conflicts with a blackbox operation on board {}",
@@ -598,10 +723,10 @@ fn validate_opaque_exclusivity(
 }
 
 fn event_conflicts(interval: &OpaqueInterval, start: u64, duration: u64) -> bool {
-    if interval.start == interval.end || start == interval.start || start >= interval.end {
+    if interval.start == interval.end || start >= interval.end {
         return false;
     }
-    if start > interval.start {
+    if start >= interval.start {
         return true;
     }
     start < interval.start && start.saturating_add(duration) > interval.start

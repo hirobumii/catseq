@@ -111,6 +111,74 @@ def zero_duration_blackbox_inside_another_sequence() -> Morphism:
     )
 
 
+def blackbox_inside_same_board_ttl_pulse() -> Morphism:
+    return {ttl0: pulse(cycles(24))} | (
+        identity(cycles(6))
+        >> black_box(
+            duration_cycles=12,
+            board_funcs={rwg0: emit_raw_oasm},
+        )
+    )
+
+
+def blackbox_inside_other_board_ttl_pulse() -> Morphism:
+    return {ttl1: pulse(cycles(24))} | (
+        identity(cycles(6))
+        >> black_box(
+            duration_cycles=12,
+            board_funcs={rwg0: emit_raw_oasm},
+        )
+    )
+
+
+def blackbox_with_parallel_unbound_identity() -> Morphism:
+    return blackbox_sequence() | identity(cycles(24))
+
+
+def short_same_board_ttl_pulse() -> Morphism:
+    return identity(0) >> {ttl0: pulse(cycles(4))}
+
+
+def blackbox_overlaps_later_same_board_loop_iteration() -> Morphism:
+    return repeat_morphism(short_same_board_ttl_pulse(), 3) | (
+        identity(cycles(6))
+        >> black_box(
+            duration_cycles=1,
+            board_funcs={rwg0: emit_raw_oasm},
+        )
+    )
+
+
+def short_blackbox_sequence() -> Morphism:
+    return black_box(
+        duration_cycles=4,
+        board_funcs={rwg0: emit_raw_oasm},
+    )
+
+
+def same_board_event_overlaps_later_repeated_blackbox() -> Morphism:
+    return repeat_morphism(short_blackbox_sequence(), 3) | (
+        identity(cycles(6)) >> {ttl0: set_high()}
+    )
+
+
+def delayed_zero_duration_blackbox() -> Morphism:
+    return identity(cycles(4)) >> black_box(
+        duration_cycles=0,
+        board_funcs={rwg0: emit_raw_oasm},
+    )
+
+
+def blackbox_overlaps_zero_duration_blackbox_loop_control() -> Morphism:
+    return repeat_morphism(delayed_zero_duration_blackbox(), 3) | (
+        identity(cycles(1))
+        >> black_box(
+            duration_cycles=1,
+            board_funcs={rwg0: emit_other_raw_oasm},
+        )
+    )
+
+
 def repeated_blackbox_sequence() -> Morphism:
     return repeat_morphism(blackbox_sequence(), 3)
 
@@ -366,6 +434,100 @@ def test_source_blackbox_treats_zero_duration_regions_as_empty(
     ]
 
 
+def test_source_blackbox_rejects_an_enclosing_same_board_morphism(
+    tmp_path: Path,
+) -> None:
+    compiler = Compiler(
+        source_root=BlackBoxSystem.source_root,
+        channels=BlackBoxSystem.channels,
+        cache_dir=tmp_path / "cache",
+    )
+
+    with pytest.raises(
+        CatSeqCompileError,
+        match="conflicts with a blackbox operation on board rwg0",
+    ):
+        compiler.compile(blackbox_inside_same_board_ttl_pulse)
+
+
+def test_source_blackbox_allows_an_overlapping_other_board_morphism(
+    tmp_path: Path,
+) -> None:
+    compiled = Compiler(
+        source_root=BlackBoxSystem.source_root,
+        channels=BlackBoxSystem.channels,
+        cache_dir=tmp_path / "cache",
+    ).compile(blackbox_inside_other_board_ttl_pulse)
+
+    assert compiled.logical_duration_cycles == 24
+    assert [
+        board["address"]
+        for board in compiled.oasm_call_plan["epochs"][0]["boards"]
+    ] == ["rwg0", "rwg1"]
+
+
+def test_source_blackbox_does_not_claim_unbound_logical_time(
+    tmp_path: Path,
+) -> None:
+    compiled = Compiler(
+        source_root=BlackBoxSystem.source_root,
+        channels=BlackBoxSystem.channels,
+        cache_dir=tmp_path / "cache",
+    ).compile(blackbox_with_parallel_unbound_identity)
+
+    assert compiled.logical_duration_cycles == 24
+    boards = compiled.oasm_call_plan["epochs"][0]["boards"]
+    assert [board["address"] for board in boards] == ["rwg0"]
+
+
+def test_source_blackbox_rejects_a_later_same_board_loop_iteration(
+    tmp_path: Path,
+) -> None:
+    compiler = Compiler(
+        source_root=BlackBoxSystem.source_root,
+        channels=BlackBoxSystem.channels,
+        cache_dir=tmp_path / "cache",
+    )
+
+    with pytest.raises(
+        CatSeqCompileError,
+        match="conflicts with a blackbox operation on board rwg0",
+    ):
+        compiler.compile(blackbox_overlaps_later_same_board_loop_iteration)
+
+
+def test_source_blackbox_rejects_an_event_during_a_later_repetition(
+    tmp_path: Path,
+) -> None:
+    compiler = Compiler(
+        source_root=BlackBoxSystem.source_root,
+        channels=BlackBoxSystem.channels,
+        cache_dir=tmp_path / "cache",
+    )
+
+    with pytest.raises(
+        CatSeqCompileError,
+        match="conflicts with a blackbox operation on board rwg0",
+    ):
+        compiler.compile(same_board_event_overlaps_later_repeated_blackbox)
+
+
+def test_source_blackbox_rejects_zero_duration_loop_control_overlap(
+    tmp_path: Path,
+) -> None:
+    compiler = Compiler(
+        source_root=BlackBoxSystem.source_root,
+        channels=BlackBoxSystem.channels,
+        cache_dir=tmp_path / "cache",
+    )
+
+    with pytest.raises(
+        CatSeqCompileError,
+        match="conflicts with a blackbox operation on board rwg0",
+    ):
+        compiler.compile(blackbox_overlaps_zero_duration_blackbox_loop_control)
+
+
 def test_source_blackbox_composes_as_the_final_hardware_loop_operation(
     tmp_path: Path,
 ) -> None:
@@ -474,7 +636,7 @@ def test_source_blackbox_normalizes_main_module_callback_identity(
     assert call["args"][0] == "main_blackbox.emit_raw_oasm"
 
 
-def test_source_blackbox_rejects_same_board_events_inside(
+def test_source_blackbox_rejects_same_board_events_at_start_or_inside(
     tmp_path: Path,
 ) -> None:
     compiler = Compiler(
@@ -483,28 +645,28 @@ def test_source_blackbox_rejects_same_board_events_inside(
         cache_dir=tmp_path / "cache",
     )
 
-    with pytest.raises(
-        CatSeqCompileError,
-        match="conflicts with a blackbox operation on board rwg0",
+    for entry in (
+        blackbox_with_start_board_event,
+        blackbox_with_inner_board_event,
     ):
-        compiler.compile(blackbox_with_inner_board_event)
+        with pytest.raises(
+            CatSeqCompileError,
+            match="conflicts with a blackbox operation on board rwg0",
+        ):
+            compiler.compile(entry)
 
 
-def test_source_blackbox_allows_same_board_events_at_both_boundaries(
+def test_source_blackbox_allows_same_board_event_at_end(
     tmp_path: Path,
 ) -> None:
-    compiler = Compiler(
+    compiled = Compiler(
         source_root=BlackBoxSystem.source_root,
         channels=BlackBoxSystem.channels,
         cache_dir=tmp_path / "cache",
-    )
+    ).compile(blackbox_with_end_board_event)
 
-    start_compiled = compiler.compile(blackbox_with_start_board_event)
-    end_compiled = compiler.compile(blackbox_with_end_board_event)
-
-    assert start_compiled.logical_duration_cycles == 12
-    assert end_compiled.logical_duration_cycles == 12
-    end_calls = end_compiled.oasm_call_plan["epochs"][0]["boards"][0]["calls"]
+    assert compiled.logical_duration_cycles == 12
+    end_calls = compiled.oasm_call_plan["epochs"][0]["boards"][0]["calls"]
     assert end_calls[-1]["offset_cycles"] == 12
     assert end_calls[-1]["function"] == "ttl_set"
 

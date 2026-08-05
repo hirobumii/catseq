@@ -27,7 +27,9 @@ def black_box(
     The arguments are consumed by the native compiler. Calling this function
     directly under CPython is an error, like other CatSeq source intrinsics.
     The callback map defines the participating boards; black boxes deliberately
-    make no channel-state declaration or state guarantee to CatSeq.
+    make no channel-state declaration or state guarantee to CatSeq. Each
+    participating board is exclusively occupied for ``[start, end)``; no
+    ordinary same-board morphism may overlap that interval.
     """
 
     del duration_cycles, board_funcs, user_args, user_kwargs, metadata

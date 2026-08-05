@@ -23,9 +23,10 @@ changes made by its raw OASM callback. This keeps the opaque interface independe
 of target state schemas while allowing target lowering to reserve exact board
 occupancy and reject overlapping calls.
 
-Exact opaque occupancy uses a half-open interval. A same-board operation or
-opaque region may begin exactly at its end boundary, while any positive overlap
-remains a compile error.
+Exact opaque occupancy exclusively reserves each participating board over a
+half-open interval. Any intersecting ordinary same-board Morphism is a compile
+error, including one that begins earlier and spans the opaque region. A
+same-board Morphism or opaque region may begin exactly at the end boundary.
 
 The sole public spelling `catseq.oasm.black_box` is a compiler special form for
 the opaque variant; `catseq.atomic` is not retained as a compatibility module.

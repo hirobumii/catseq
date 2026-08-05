@@ -20,8 +20,9 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   compiler-only operation stubs, per-blackbox Atomic Schema declarations, and
   channel state boilerplate. `board_funcs` now directly defines participation;
   raw OASM state correctness remains the user's responsibility.
-- Made exact blackbox occupancy half-open so adjacent same-board regions and
-  operations at the end boundary compose without permitting genuine overlaps.
+- Made exact blackbox occupancy exclusive and half-open: intersecting ordinary
+  same-board Morphisms are rejected even when they enclose the blackbox or run
+  in later hardware-loop iterations, while end-boundary successors compose.
 - Resolved module-qualified blackbox callbacks and normalized callbacks from
   directly executed `__main__` source files to their stable source identities.
 

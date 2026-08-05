@@ -131,8 +131,10 @@ callbacks and callbacks in a directly executed source file retain stable source
 identities for host-side resolution.
 `duration_cycles` is each callback's declared board occupancy; the callback
 must emit exactly that duration, and CatSeq does not append a second wait for
-the same interval. Board occupancy is half-open: an operation or another black
-box may start exactly at the region's end, while genuine overlaps are rejected.
+the same interval. Board occupancy is exclusive and half-open: any ordinary
+same-board morphism whose occupancy intersects the region is rejected, including
+one that begins earlier and spans it. A morphism or another black box may start
+exactly at the region's end.
 CatSeq deliberately does not inspect or track state changes made by raw OASM.
 The user must preserve state or explicitly re-establish it before composing a
 later state-dependent native operation.

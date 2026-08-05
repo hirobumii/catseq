@@ -55,6 +55,7 @@ pub enum WaitSemantics {
 #[serde(rename_all = "snake_case")]
 pub enum MorphismNodeKind {
     Atomic,
+    Opaque,
     Wait,
     Instantiate,
     DefinitionRef,
@@ -77,6 +78,12 @@ pub enum MorphismPayload {
         argument_start: u32,
         argument_count: u32,
     },
+    Opaque {
+        duration: ValueExprId,
+        call_start: u32,
+        call_count: u32,
+        metadata: ValueExprId,
+    },
     Instantiate {
         template: MorphismTemplateId,
         channel: ChannelId,
@@ -89,6 +96,32 @@ pub enum MorphismPayload {
     Loop {
         count: ValueExprId,
     },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OpaqueBoardCall {
+    board: String,
+    callable: String,
+    arguments: ValueExprId,
+    keyword_arguments: ValueExprId,
+}
+
+impl OpaqueBoardCall {
+    pub fn board(&self) -> &str {
+        &self.board
+    }
+
+    pub fn callable(&self) -> &str {
+        &self.callable
+    }
+
+    pub const fn arguments(&self) -> ValueExprId {
+        self.arguments
+    }
+
+    pub const fn keyword_arguments(&self) -> ValueExprId {
+        self.keyword_arguments
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -175,6 +208,7 @@ pub struct MorphismArena {
     boundaries: Vec<BoundaryPolicy>,
     payloads: Vec<MorphismPayload>,
     value_arguments: Vec<ValueExprId>,
+    opaque_calls: Vec<OpaqueBoardCall>,
     templates: Vec<MorphismTemplate>,
     definitions: Vec<String>,
     operations: Vec<String>,
@@ -229,6 +263,24 @@ impl MorphismArena {
             .ok_or_else(|| {
                 MorphismArenaError::new("payload references an invalid value argument range")
             })
+    }
+
+    pub fn opaque_calls(
+        &self,
+        payload: &MorphismPayload,
+    ) -> Result<&[OpaqueBoardCall], MorphismArenaError> {
+        let MorphismPayload::Opaque {
+            call_start,
+            call_count,
+            ..
+        } = payload
+        else {
+            return Ok(&[]);
+        };
+        let start = *call_start as usize;
+        self.opaque_calls
+            .get(start..start + *call_count as usize)
+            .ok_or_else(|| MorphismArenaError::new("invalid opaque board-call range"))
     }
 
     pub fn templates(&self) -> &[MorphismTemplate] {
@@ -337,6 +389,9 @@ impl MorphismArena {
                 (
                     MorphismNodeKind::Atomic,
                     Some(MorphismPayload::Atomic { .. })
+                ) | (
+                    MorphismNodeKind::Opaque,
+                    Some(MorphismPayload::Opaque { .. })
                 ) | (MorphismNodeKind::Wait, Some(MorphismPayload::Wait { .. }))
                     | (
                         MorphismNodeKind::Instantiate,
@@ -382,6 +437,26 @@ impl MorphismArena {
                         "node {index} references an unknown definition"
                     )));
                 }
+                Some(payload @ MorphismPayload::Opaque { .. }) => {
+                    let calls = self.opaque_calls(payload).map_err(|_| {
+                        MorphismArenaError::new(format!(
+                            "node {index} references invalid opaque board calls"
+                        ))
+                    })?;
+                    if calls.is_empty() {
+                        return Err(MorphismArenaError::new(format!(
+                            "Opaque node {index} has no board calls"
+                        )));
+                    }
+                    if calls
+                        .iter()
+                        .any(|call| call.board.is_empty() || call.callable.is_empty())
+                    {
+                        return Err(MorphismArenaError::new(format!(
+                            "Opaque node {index} has an empty board or callable identity"
+                        )));
+                    }
+                }
                 _ => {}
             }
             if let Some(payload) = payload {
@@ -420,6 +495,7 @@ pub struct MorphismArenaBuilder {
     boundaries: Vec<BoundaryPolicy>,
     payloads: Vec<MorphismPayload>,
     value_arguments: Vec<ValueExprId>,
+    opaque_calls: Vec<OpaqueBoardCall>,
     templates: Vec<MorphismTemplate>,
     definitions: Vec<String>,
     definition_ids: HashMap<String, DefinitionId>,
@@ -471,6 +547,31 @@ impl MorphismArenaBuilder {
             argument_count,
         });
         self.push_leaf(MorphismNodeKind::Atomic, Some(payload), provenance)
+    }
+
+    pub fn opaque(
+        &mut self,
+        duration: ValueExprId,
+        calls: &[(String, String, ValueExprId, ValueExprId)],
+        metadata: ValueExprId,
+        provenance: ProvenanceId,
+    ) -> MorphismNodeId {
+        let call_start = self.opaque_calls.len() as u32;
+        self.opaque_calls.extend(calls.iter().map(
+            |(board, callable, arguments, keyword_arguments)| OpaqueBoardCall {
+                board: board.clone(),
+                callable: callable.clone(),
+                arguments: *arguments,
+                keyword_arguments: *keyword_arguments,
+            },
+        ));
+        let payload = self.push_payload(MorphismPayload::Opaque {
+            duration,
+            call_start,
+            call_count: calls.len() as u32,
+            metadata,
+        });
+        self.push_leaf(MorphismNodeKind::Opaque, Some(payload), provenance)
     }
 
     pub fn logical_shift(
@@ -670,6 +771,7 @@ impl MorphismArenaBuilder {
             boundaries,
             payloads: self.payloads,
             value_arguments: self.value_arguments,
+            opaque_calls: self.opaque_calls,
             templates,
             definitions: self.definitions,
             operations: self.operations,

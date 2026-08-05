@@ -76,6 +76,48 @@ key (for example, `quickstart_ttl.Experiment.rewind`); this keeps fields on two
 instances of the same class distinct. A `Duration` binding is a signed target
 Cycle Delta.
 
+## Use a source-level OASM blackbox
+
+`catseq.oasm.black_box` keeps raw, downstream OASM encoders composable
+until the OASM backend is replaced:
+
+```python
+from catseq.morphism import Morphism
+from catseq.oasm import black_box
+
+
+def emit_raw_oasm() -> None:
+    ...  # Site-owned OASM instructions.
+
+
+def sequence() -> Morphism:
+    return black_box(
+        duration_cycles=12,
+        board_funcs={board: emit_raw_oasm},
+        user_args=(),
+        user_kwargs={},
+    )
+```
+
+The native arena records the exact duration and one callback identity per
+participating board. The OASM Call Plan contains only stable callback identities
+and native data; the Python assembly adapter resolves the live functions from
+the returned `CompiledSequence`.
+
+Callbacks must be module-level functions. Nested functions and lambdas capture
+Python objects that the source compiler deliberately does not execute or
+serialize. Pass captured scalar or native-record data through `user_args` or
+`user_kwargs`. The `board_funcs` keys define the participating boards, with one
+callback per board. A same-board operation may occur at the blackbox start
+or end boundary but not strictly inside its half-open occupancy interval.
+Adjacent same-board blackboxes may share an end/start boundary; genuine
+overlaps remain invalid.
+`duration_cycles` declares the callback's own exact board occupancy: the
+callback must emit that duration, and CatSeq does not add another wait after it.
+The blackbox declares no channel state, and CatSeq does not inspect state changes
+made by raw OASM. Preserve state or explicitly re-establish it before a later
+state-dependent native operation.
+
 ## Run a compiled sequence
 
 Runtime routing is deployment configuration and stays separate from the

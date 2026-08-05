@@ -7,6 +7,24 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added `catseq.oasm.black_box` as a native compiler special form.
+  Exact opaque regions retain board callback identities in the Python-free
+  arena, lower to one `USER_DEFINED_FUNC` call per participating board, and
+  resolve module-level host callbacks only during OASM assembly.
+
+### Fixed
+
+- Preserved same-board blackbox exclusivity and removed the need for downstream
+  compiler-only operation stubs, per-blackbox Atomic Schema declarations, and
+  channel state boilerplate. `board_funcs` now directly defines participation;
+  raw OASM state correctness remains the user's responsibility.
+- Made exact blackbox occupancy half-open so adjacent same-board regions and
+  operations at the end boundary compose without permitting genuine overlaps.
+- Resolved module-qualified blackbox callbacks and normalized callbacks from
+  directly executed `__main__` source files to their stable source identities.
+
 ## [0.4.1] - 2026-08-04
 
 ### Added

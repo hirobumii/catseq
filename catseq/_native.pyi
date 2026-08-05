@@ -47,6 +47,7 @@ class Compiler:
         self,
         source_path: str | Path,
         entry: str,
+        entry_opaque_callables: dict[str, Callable[..., object]],
         link_bindings: bytes,
     ) -> CompiledSequence: ...
 

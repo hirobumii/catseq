@@ -125,11 +125,12 @@ impl PyCompiler {
         py: Python<'_>,
         source_path: PathBuf,
         entry: String,
+        mut entry_opaque_callables: BTreeMap<String, Py<PyAny>>,
         link_bindings: &[u8],
     ) -> PyResult<PyCompiledSequence> {
         let compiler = self.inner.clone();
         let link_bindings = link_bindings.to_vec();
-        let opaque_callables = self
+        let mut opaque_callables: BTreeMap<String, Py<PyAny>> = self
             .opaque_callables
             .iter()
             .map(|(key, callable)| (key.clone(), callable.clone_ref(py)))
@@ -142,6 +143,17 @@ impl PyCompiler {
             })
             .map_err(|error| PyRuntimeError::new_err(error.to_string()))?
             .map_err(PyRuntimeError::new_err)?;
+        for key in inner.opaque_callable_keys() {
+            if opaque_callables.contains_key(&key) {
+                continue;
+            }
+            let callable = entry_opaque_callables.remove(&key).ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "blackbox callback {key:?} is unavailable on the host; callbacks must be module-level functions"
+                ))
+            })?;
+            opaque_callables.insert(key, callable);
+        }
         Ok(PyCompiledSequence {
             inner,
             opaque_callables,

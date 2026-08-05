@@ -283,6 +283,7 @@ pub(super) fn normalized_to_json(
                 "output_max",
             ],
             "RSPWaveformParams" => &["rf_out", "amp", "output_max"],
+            "Board" => &["id"],
             other => {
                 let _ = other;
                 return Ok(serde_json::Value::String(value.to_owned()));
@@ -320,6 +321,15 @@ pub(super) fn normalized_to_json(
         return Ok(serde_json::Value::Object(record));
     }
     Ok(serde_json::Value::String(value.to_owned()))
+}
+
+pub(super) fn normalized_board_id(value: &str) -> Option<String> {
+    normalized_to_json(value, &HashMap::new())
+        .ok()?
+        .as_object()?
+        .get("id")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 fn parse_normalized_numeric_with_fields(

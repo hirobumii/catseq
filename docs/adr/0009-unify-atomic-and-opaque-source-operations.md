@@ -16,10 +16,24 @@ unknown; no ordinary statically positioned successor may cross that boundary,
 and all participating boards must reconverge through a Sync Phi before static
 scheduling resumes.
 
-Both variants carry explicit channel state effects, board-call definitions, and
-provenance appropriate to their semantics. CatSeq 0.3 does not implement
-hardware conditionals; a future implementation would represent them as control
-nodes rather than new AtomicOp source types. This keeps the source type family
-closed while allowing target lowering and effect analysis to distinguish
-instantaneous hardware events, exact opaque occupancy, and runtime-variable
-occupancy.
+Hardware-event variants carry typed channel effects. Opaque variants instead
+carry only board-call definitions, timing, metadata, and provenance. A blackbox
+is an explicit escape hatch: CatSeq does not inspect or validate channel state
+changes made by its raw OASM callback. This keeps the opaque interface independent
+of target state schemas while allowing target lowering to reserve exact board
+occupancy and reject overlapping calls.
+
+Exact opaque occupancy uses a half-open interval. A same-board operation or
+opaque region may begin exactly at its end boundary, while any positive overlap
+remains a compile error.
+
+The sole public spelling `catseq.oasm.black_box` is a compiler special form for
+the opaque variant; `catseq.atomic` is not retained as a compatibility module.
+Its board calls use stable module-level function identities in native data; live
+Python callables remain in the host-side `CompiledSequence` registry and are
+resolved by the existing OASM adapter.
+Nested closures are not native values, so source passes captured data explicitly
+through `user_args` and `user_kwargs`.
+The `board_funcs` keys directly define participating boards; there is no
+`channel_states` argument. If raw OASM changes hardware state, the user must
+preserve it or explicitly re-establish it before later typed operations.

@@ -449,6 +449,16 @@ region. Existing `AtomicMorphism`, `TimedRegion`, and `BlackBoxAtomicMorphism`
 source values lower to this one Typed Source HIR family.
 _Avoid_: Arbitrary atomic object, Python callable wrapper
 
+**Opaque Region**:
+An exact-duration Morphism produced by `catseq.oasm.black_box`, carrying one
+stable host-callback identity per participating board and no channel-state
+contract. Its board occupancy is half-open, so the end boundary may be the
+start of the next operation. The native arena and OASM Call Plan contain no
+Python callable; the host assembly adapter resolves the identity from the
+`CompiledSequence` registry. Raw OASM state correctness is the user's
+responsibility.
+_Avoid_: Downstream Atomic Schema shim, serialized Python closure
+
 **Timing Contract**:
 The temporal guarantee of an opaque region. An Exact contract provides a
 symbolic duration within the current Epoch; a Dynamic contract requires a Sync

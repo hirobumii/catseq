@@ -304,11 +304,11 @@ fn unsupported_expression_is_not_silently_dropped_from_hir() {
 }
 
 #[test]
-fn oasm_black_box_definition_is_an_opaque_atomic_boundary() {
+fn black_box_definition_remains_a_source_composition_boundary() {
     let path = source_file();
     fs::write(
         &path,
-        "from catseq.morphism import Morphism\n\ndef sequence() -> Morphism:\n    return legacy_atomic()\n\ndef legacy_atomic() -> Morphism:\n    while True:\n        break\n    return oasm_black_box({})\n",
+        "from catseq.oasm import black_box\nfrom catseq.morphism import Morphism\n\ndef sequence() -> Morphism:\n    return legacy_atomic()\n\ndef legacy_atomic() -> Morphism:\n    return black_box(duration_cycles=1, board_funcs={})\n",
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
@@ -330,8 +330,17 @@ fn oasm_black_box_definition_is_an_opaque_atomic_boundary() {
         String::from_utf8_lossy(&output.stderr)
     );
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["definitions"].as_array().unwrap().len(), 1);
-    let definition = &report["definitions"][0];
+    assert_eq!(report["definitions"].as_array().unwrap().len(), 2);
+    let definition = report["definitions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|definition| {
+            definition["qualified_name"]
+                .as_str()
+                .is_some_and(|name| name.ends_with(".sequence") || name == "sequence")
+        })
+        .unwrap();
     let nodes = definition["hir"]["nodes"].as_array().unwrap();
     let facts = definition["hir"]["facts"].as_array().unwrap();
     let call = nodes
@@ -347,6 +356,73 @@ fn oasm_black_box_definition_is_an_opaque_atomic_boundary() {
             .ends_with(".legacy_atomic")
     );
     assert_eq!(call.1["resolved_call_targets"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn black_box_keeps_board_calls_without_state_schema_in_the_native_arena() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.oasm import black_box\nfrom catseq.morphism import Morphism\nfrom catseq.types import Board\n\nboard = Board('rwg0')\n\ndef callback() -> None:\n    pass\n\ndef sequence() -> Morphism:\n    return black_box(\n        duration_cycles=12,\n        board_funcs={board: callback},\n    )\n",
+    )
+    .unwrap();
+    let target_profile =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catseq/targets/rtmq_v2.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args([
+            "emit-arena",
+            path.to_str().unwrap(),
+            "--entry",
+            "sequence",
+            "--target-profile",
+            target_profile.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let artifact: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let arena = &artifact["morphism_arena"];
+    let root = arena["root"].as_u64().unwrap() as usize;
+    assert_eq!(arena["nodes"][root]["kind"], "opaque");
+    assert_eq!(arena["opaque_calls"].as_array().unwrap().len(), 1);
+    assert_eq!(arena["opaque_calls"][0]["board"], "rwg0");
+    assert!(
+        arena["opaque_calls"][0]["callable"]
+            .as_str()
+            .unwrap()
+            .ends_with(".callback")
+    );
+    assert!(arena.get("opaque_state_effects").is_none());
+}
+
+#[test]
+fn unrelated_black_box_is_rejected_as_a_reachable_host_call() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "import time\nfrom catseq.morphism import Morphism\n\ndef sequence() -> Morphism:\n    return time.black_box()\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("reachable Host call time.black_box"),
+        "{stderr}"
+    );
 }
 
 #[test]

@@ -367,6 +367,15 @@ impl<'a> SpecializationLowerer<'a> {
                         self.clock_hz,
                     )?
                 }
+                SourceHirKind::Name
+                    if matches!(source_type, Some(SourceType::NativeRecord(_)))
+                        && fact.compile_value().is_some() =>
+                {
+                    Some(LoweredValue::Json(normalized_to_json(
+                        fact.compile_value().expect("checked above"),
+                        &HashMap::new(),
+                    )?))
+                }
                 SourceHirKind::Attribute if fact.availability() == ValueAvailability::Link => {
                     let value_type = source_type_to_value_type(source_type).ok_or_else(|| {
                         lowering_error(node, "environment value has no native scalar type")
@@ -875,6 +884,15 @@ fn lower_entry(
                     clock_hz,
                 )
             }
+            SourceHirKind::Name | SourceHirKind::Attribute
+                if matches!(source_type, Some(SourceType::NativeRecord(_)))
+                    && hir.facts()[node_id].compile_value().is_some() =>
+            {
+                Some(LoweredValue::Json(normalized_to_json(
+                    hir.facts()[node_id].compile_value().expect("checked above"),
+                    &HashMap::new(),
+                )?))
+            }
             SourceHirKind::Attribute
                 if hir.facts()[node_id].availability() == ValueAvailability::Link =>
             {
@@ -1247,38 +1265,7 @@ fn lower_native_record_call(
         }
         record.insert(field.name().to_owned(), lowered_to_json(&value)?);
     }
-    match schema.name() {
-        "StaticWaveform" => {
-            record.entry("freq").or_insert(serde_json::Value::Null);
-            record.entry("amp").or_insert(serde_json::Value::Null);
-            record.entry("sbg_id").or_insert(serde_json::Value::Null);
-            record
-                .entry("phase")
-                .or_insert(serde_json::Value::from(0.0));
-            record.entry("fct").or_insert(serde_json::Value::Null);
-        }
-        "WaveformParams" => {
-            record
-                .entry("freq_coeffs")
-                .or_insert(serde_json::json!([0.0, null, null, null]));
-            record
-                .entry("amp_coeffs")
-                .or_insert(serde_json::json!([0.0, null, null, null]));
-            record
-                .entry("initial_phase")
-                .or_insert(serde_json::Value::Null);
-            record
-                .entry("phase_reset")
-                .or_insert(serde_json::Value::Bool(false));
-            record.entry("fct").or_insert(serde_json::Value::Null);
-        }
-        "RSPWaveformParams" => {
-            record
-                .entry("output_max")
-                .or_insert(serde_json::Value::from(0.01));
-        }
-        _ => {}
-    }
+    schema.populate_defaults(&mut record);
     Ok(Some(LoweredValue::Json(serde_json::Value::Object(record))))
 }
 
@@ -1349,6 +1336,47 @@ fn lower_native_record_replace(
             format!("catseq.replace does not support Native Record `{schema_name}`"),
         )
     })?;
+
+    schema.populate_defaults(&mut record);
+
+    for name in record.keys() {
+        if name == "$type" {
+            continue;
+        }
+        if schema.field(name).is_none() {
+            return Err(lowering_error(
+                node,
+                format!(
+                    "unknown Native Record field `{name}` for `{}`",
+                    schema.name()
+                ),
+            ));
+        }
+    }
+    for field in schema.fields() {
+        let value = record.get(field.name()).ok_or_else(|| {
+            lowering_error(
+                node,
+                format!(
+                    "catseq.replace base `{}` is missing required field `{}`",
+                    schema.name(),
+                    field.name()
+                ),
+            )
+        })?;
+        let value = LoweredValue::Json(value.clone());
+        if !native_record_value_matches(field.field_type(), &value, value_builder) {
+            return Err(native_record_field_type_error(
+                node,
+                "catseq.replace",
+                schema.name(),
+                field.name(),
+                field.field_type(),
+                &value,
+                value_builder,
+            ));
+        }
+    }
 
     for (name, value) in arguments.into_iter().skip(1) {
         let Some(name) = name else {

@@ -6,8 +6,9 @@ use catseq_core::value_expr::{ValueExprArenaBuilder, ValueExprPayload, ValueExpr
 
 use super::abi_cost::oasm_call_cost;
 use super::model::{
-    BoardEpochInput, DirectEvent, DurationQuantization, EventOrder, LinkValue, LoopTiming,
-    TargetBoardKind, TtlEvent,
+    AtomicLowering, AtomicTargetSchema, BoardEpochInput, ChannelBinding, ChannelKind, DirectEvent,
+    DurationQuantization, EventOrder, LinkValue, LoopTiming, TargetBoard, TargetBoardKind,
+    TtlEvent,
 };
 use super::scheduler::compile_board;
 use super::{
@@ -63,6 +64,27 @@ fn loop_program() -> NativeArenas {
     let provenance = morphisms.intern_provenance(NativeProvenance::new("test.sequence", 1, 1));
     let body = morphisms.logical_shift(duration, provenance);
     let root = morphisms.loop_region(body, count, provenance);
+    NativeArenas::new(morphisms.finish(root).unwrap(), values).unwrap()
+}
+
+fn linked_native_record_program() -> NativeArenas {
+    let mut values = ValueExprArenaBuilder::new();
+    let enabled = values.runtime_slot("enabled", ValueExprType::Bool);
+    let gain = values.runtime_slot("gain", ValueExprType::Int64);
+    let fractional_gain = values.runtime_slot("fractional_gain", ValueExprType::Float64);
+    let config = values.constant(ValueExprPayload::Json(serde_json::json!({
+        "$type": "TestConfig",
+        "enabled": {"$value_expr": enabled.index()},
+        "gain": {"$value_expr": gain.index()},
+        "fractional_gain": {"$value_expr": fractional_gain.index()},
+    })));
+    let values = values.finish().unwrap();
+
+    let mut morphisms = MorphismArenaBuilder::new();
+    let provenance = morphisms.intern_provenance(NativeProvenance::new("test.sequence", 1, 1));
+    let operation = morphisms.atomic("test.rsp.rf_config", &[config], provenance);
+    let template = morphisms.publish_template(operation);
+    let root = morphisms.instantiate(template, "pid", provenance);
     NativeArenas::new(morphisms.finish(root).unwrap(), values).unwrap()
 }
 
@@ -235,6 +257,65 @@ fn link_values_cover_the_closed_scalar_type_set() {
     assert!(LinkValue::Bool(true).matches_type(ValueExprType::Bool));
     assert!(LinkValue::String("state".to_owned()).matches_type(ValueExprType::String));
     assert!(!LinkValue::Float(5.0).matches_type(ValueExprType::Duration));
+}
+
+#[test]
+fn runtime_links_preserve_native_record_json_scalar_types() {
+    let environment = CompileEnvironment {
+        schema_version: 1,
+        channels: BTreeMap::from([(
+            "pid".to_owned(),
+            ChannelBinding {
+                board: "rsp0".to_owned(),
+                local_id: 0,
+                kind: ChannelKind::Rsp,
+            },
+        )]),
+        opaque_calls: BTreeMap::new(),
+    };
+    let mut target = target();
+    target.boards.insert(
+        "rsp0".to_owned(),
+        TargetBoard {
+            kind: TargetBoardKind::Rsp,
+            ttl_width: 0,
+        },
+    );
+    target.operations.insert(
+        "test.rsp.rf_config".to_owned(),
+        AtomicTargetSchema {
+            lowering: AtomicLowering::RspRfConfig,
+            duration_argument: None,
+            fixed_duration_cycles: None,
+            board: None,
+            instruction_cost_cycles: 0,
+        },
+    );
+    let program = linked_native_record_program();
+
+    for enabled in [true, false] {
+        let bindings = LinkBindings {
+            schema_version: 1,
+            runtime_values: BTreeMap::from([
+                ("enabled".to_owned(), LinkValue::Bool(enabled)),
+                ("gain".to_owned(), LinkValue::Signed(7)),
+                ("fractional_gain".to_owned(), LinkValue::Float(7.0)),
+            ]),
+            environment_values: BTreeMap::new(),
+        };
+
+        let plan = compile_oasm_call_plan(&program, &environment, &target, &bindings).unwrap();
+
+        assert_eq!(
+            plan.epochs()[0].boards()[0].calls()[0].args,
+            vec![OasmArgument::Json(serde_json::json!({
+                "$type": "TestConfig",
+                "enabled": enabled,
+                "gain": 7,
+                "fractional_gain": 7.0,
+            }))]
+        );
+    }
 }
 
 #[test]

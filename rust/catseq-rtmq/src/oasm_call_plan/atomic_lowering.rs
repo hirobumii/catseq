@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use catseq_core::exact_decimal::ExactDecimal;
 use catseq_core::native_arenas::NativeArenas;
 use catseq_core::value_expr::{RwgWaveformDerivation, ValueExprId, ValueExprPayload};
 
@@ -12,7 +11,8 @@ use super::model::{
     RwgChannelState, RwgPlayTransition, TargetBoard, TtlEvent,
 };
 use super::value_eval::{
-    bool_argument, eval_duration_cycles, json_argument, json_value, value_to_oasm_argument,
+    EvaluatedValue, bool_argument, eval_duration_cycles, json_argument, json_value,
+    value_to_oasm_argument,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -26,7 +26,7 @@ pub(super) fn lower_atomic_events(
     duration: u64,
     arguments: &[ValueExprId],
     program: &NativeArenas,
-    evaluated_values: &[Result<ExactDecimal, OasmCompileError>],
+    evaluated_values: &[Result<EvaluatedValue, OasmCompileError>],
     clock_hz: u64,
     duration_quantization: DurationQuantization,
     group_id: u64,

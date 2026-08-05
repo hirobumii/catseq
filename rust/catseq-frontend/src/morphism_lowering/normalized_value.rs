@@ -226,6 +226,13 @@ pub(super) fn normalized_to_json(
     if value == "constant:Bool(false)" {
         return Ok(false.into());
     }
+    if let Some(integer) = value
+        .strip_prefix("constant:Int(")
+        .and_then(|value| value.strip_suffix(')'))
+        .and_then(|value| value.parse::<i64>().ok())
+    {
+        return Ok(integer.into());
+    }
     if let Some(string) = value
         .strip_prefix("constant:Str(\"")
         .and_then(|value| value.strip_suffix("\")"))
@@ -264,8 +271,7 @@ pub(super) fn normalized_to_json(
         let arguments = &arguments[open + 1..];
         let (positional, keywords) =
             split_normalized_once(arguments, ';').unwrap_or((arguments, ""));
-        let schema_name = schema_path.rsplit('.').next().unwrap_or(schema_path);
-        let Some(schema) = native_records::schema(schema_name) else {
+        let Some(schema) = native_records::schema_for_constructor(schema_path) else {
             return Ok(serde_json::Value::String(value.to_owned()));
         };
         let mut record = serde_json::Map::new();
@@ -301,6 +307,7 @@ pub(super) fn normalized_to_json(
             })?;
             record.insert(field.name().to_owned(), normalized_to_json(value, fields)?);
         }
+        schema.populate_defaults(&mut record);
         return Ok(serde_json::Value::Object(record));
     }
     Ok(serde_json::Value::String(value.to_owned()))

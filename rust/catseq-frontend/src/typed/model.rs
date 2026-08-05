@@ -388,6 +388,13 @@ pub enum TypedCheckError {
         line: usize,
         column: usize,
     },
+    InvalidNativeRecordOperation {
+        file_name: String,
+        definition: String,
+        message: String,
+        line: usize,
+        column: usize,
+    },
     MigrationRequired {
         file_name: String,
         definition: String,
@@ -478,6 +485,16 @@ impl Display for TypedCheckError {
                 }
                 write!(formatter, ", found {found}")
             }
+            Self::InvalidNativeRecordOperation {
+                file_name,
+                definition,
+                message,
+                line,
+                column,
+            } => write!(
+                formatter,
+                "invalid Native Record operation in {definition} at {file_name}:{line}:{column}: {message}"
+            ),
             Self::MigrationRequired {
                 file_name,
                 definition,

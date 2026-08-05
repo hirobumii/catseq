@@ -1,8 +1,9 @@
 //! Closed registry for source-level CatSeq intrinsics and special forms.
 
+use crate::native_records;
 use crate::typed::SourceType;
 
-pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 7;
+pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 8;
 const NATIVE_RECORD_REPLACE: &str = "catseq.replace";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,7 +24,6 @@ enum ResultRule {
     Bool,
     Duration,
     FixedAggregate,
-    NativeRecord(&'static str),
 }
 
 #[derive(Clone, Copy)]
@@ -177,14 +177,6 @@ const INTRINSICS: &[Intrinsic] = &[
         leaf: "sum",
         result: ResultRule::Float64,
     },
-    Intrinsic {
-        leaf: "StaticWaveform",
-        result: ResultRule::NativeRecord("StaticWaveform"),
-    },
-    Intrinsic {
-        leaf: "WaveformParams",
-        result: ResultRule::NativeRecord("WaveformParams"),
-    },
 ];
 
 pub(crate) fn return_type(path: &str, first_argument: Option<&SourceType>) -> Option<SourceType> {
@@ -192,10 +184,13 @@ pub(crate) fn return_type(path: &str, first_argument: Option<&SourceType>) -> Op
         return Some(SourceType::NativeRecord("CalibrationSnapshot".to_owned()));
     }
     if is_native_record_replace(path) {
-        return Some(match first_argument {
-            Some(SourceType::NativeRecord(schema)) => SourceType::NativeRecord(schema.clone()),
-            _ => SourceType::NativeRecord("NativeRecord".to_owned()),
+        return first_argument.and_then(|source_type| match source_type {
+            SourceType::NativeRecord(schema) => Some(SourceType::NativeRecord(schema.clone())),
+            _ => None,
         });
+    }
+    if let Some(schema) = native_records::schema_for_constructor(path) {
+        return Some(SourceType::NativeRecord(schema.name().to_owned()));
     }
     let leaf = path.rsplit('.').next().unwrap_or(path);
     if leaf == "cycles" && path != "cycles" && path != "catseq.time_utils.cycles" {
@@ -214,7 +209,6 @@ pub(crate) fn return_type(path: &str, first_argument: Option<&SourceType>) -> Op
         ResultRule::Bool => SourceType::Bool,
         ResultRule::Duration => SourceType::Duration,
         ResultRule::FixedAggregate => SourceType::FixedAggregate,
-        ResultRule::NativeRecord(schema) => SourceType::NativeRecord(schema.to_owned()),
     })
 }
 

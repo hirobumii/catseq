@@ -1,18 +1,17 @@
 //! Algebraic and scheduled duration analysis for the Morphism DAG.
 
-use catseq_core::exact_decimal::ExactDecimal;
 use catseq_core::morphism_arena::{MorphismNodeKind, MorphismPayload, WaitSemantics};
 use catseq_core::native_arenas::NativeArenas;
 
 use super::arena_util::children_by_node;
 use super::model::{AtomicLowering, LinkBindings, OasmCompileError, TargetProfile};
 use super::value_eval::{
-    atomic_bool_argument, eval_cycles, eval_duration_cycles, eval_duration_delta,
-    evaluate_numeric_values,
+    EvaluatedValue, atomic_bool_argument, eval_cycles, eval_duration_cycles, eval_duration_delta,
+    evaluate_link_values,
 };
 
 pub(super) struct TimingAnalysis {
-    pub(super) evaluated_values: Vec<Result<ExactDecimal, OasmCompileError>>,
+    pub(super) evaluated_values: Vec<Result<EvaluatedValue, OasmCompileError>>,
     /// Signed physical cursor displacement for each Morphism node.
     pub(super) durations: Vec<i64>,
     /// Furthest physical timestamp reached relative to each node's start.
@@ -28,7 +27,7 @@ pub(super) fn analyze_timing(
     link_bindings: &LinkBindings,
 ) -> Result<TimingAnalysis, OasmCompileError> {
     let arena = program.morphisms();
-    let evaluated_values = evaluate_numeric_values(program, link_bindings);
+    let evaluated_values = evaluate_link_values(program, link_bindings);
     let mut durations = vec![0_i64; arena.nodes().len()];
     let mut logical_durations = vec![0_i64; arena.nodes().len()];
     let mut frontiers = vec![0_i64; arena.nodes().len()];

@@ -130,6 +130,34 @@ where
             let resolved = resolve_call_path(&module_name, &imports, &call);
             let (resolved, instance_identity) =
                 resolve_compile_instance_call(&mut sources, &mut parsed, loader, &resolved)?;
+            let locally_shadowed_registered_call = source_call.source_path
+                == source_call.target_path
+                && !source_call.source_path.starts_with("self.")
+                && analysis.definition.hir.call_callee_shadows_module_binding(
+                    &source_call.source_path,
+                    source_call.line,
+                    source_call.column,
+                )
+                && (intrinsics::is_compiler_special_form(&resolved)
+                    || intrinsics::is_registered(&resolved));
+            if locally_shadowed_registered_call {
+                let anchor = analysis
+                    .definition
+                    .hir
+                    .call_anchor(
+                        &source_call.source_path,
+                        source_call.line,
+                        source_call.column,
+                    )
+                    .expect("a collected call must have a Source HIR node");
+                return Err(TypedCheckError::ReachableHostCall {
+                    file_name: module_name,
+                    definition: lexical_name,
+                    target: source_call.source_path,
+                    line: anchor.line(),
+                    column: anchor.column(),
+                });
+            }
             analysis.definition.hir.resolve_call(
                 &source_call.source_path,
                 source_call.line,
@@ -240,6 +268,15 @@ where
         })
         .collect();
     for definition in &definitions {
+        if let Some((anchor, message)) = definition.hir.first_native_record_replace_error() {
+            return Err(TypedCheckError::InvalidNativeRecordOperation {
+                file_name: definition.module.clone(),
+                definition: definition.qualified_name.clone(),
+                message,
+                line: anchor.line(),
+                column: anchor.column(),
+            });
+        }
         if let Some((anchor, expected, found)) = definition
             .hir
             .first_call_argument_type_mismatch(&signatures)

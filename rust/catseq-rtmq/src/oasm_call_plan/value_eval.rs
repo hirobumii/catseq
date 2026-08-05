@@ -3,9 +3,24 @@
 use catseq_core::exact_decimal::ExactDecimal;
 use catseq_core::morphism_arena::{MorphismArena, MorphismPayload};
 use catseq_core::native_arenas::NativeArenas;
-use catseq_core::value_expr::{ValueExprId, ValueExprKind, ValueExprPayload};
+use catseq_core::value_expr::{ValueExprId, ValueExprKind, ValueExprPayload, ValueExprType};
 
-use super::model::{DurationQuantization, LinkBindings, OasmArgument, OasmCompileError};
+use super::model::{DurationQuantization, LinkBindings, LinkValue, OasmArgument, OasmCompileError};
+
+#[derive(Clone)]
+pub(super) enum EvaluatedValue {
+    Numeric {
+        value: ExactDecimal,
+        value_type: ValueExprType,
+    },
+    Bool(bool),
+}
+
+impl EvaluatedValue {
+    const fn numeric(value: ExactDecimal, value_type: ValueExprType) -> Self {
+        Self::Numeric { value, value_type }
+    }
+}
 
 pub(super) fn bool_argument(program: &NativeArenas, id: ValueExprId) -> Option<bool> {
     match program.values().payload(id).ok().flatten() {
@@ -32,7 +47,7 @@ pub(super) fn json_argument(
     program: &NativeArenas,
     arguments: &[ValueExprId],
     index: usize,
-    values: &[Result<ExactDecimal, OasmCompileError>],
+    values: &[Result<EvaluatedValue, OasmCompileError>],
 ) -> Result<serde_json::Value, OasmCompileError> {
     let id = arguments
         .get(index)
@@ -44,7 +59,7 @@ pub(super) fn json_argument(
 pub(super) fn json_value(
     program: &NativeArenas,
     id: ValueExprId,
-    values: &[Result<ExactDecimal, OasmCompileError>],
+    values: &[Result<EvaluatedValue, OasmCompileError>],
 ) -> Result<serde_json::Value, OasmCompileError> {
     let Some(ValueExprPayload::Json(value)) = program
         .values()
@@ -61,7 +76,7 @@ pub(super) fn json_value(
 
 fn resolve_json_expressions(
     value: &serde_json::Value,
-    values: &[Result<ExactDecimal, OasmCompileError>],
+    values: &[Result<EvaluatedValue, OasmCompileError>],
 ) -> Result<serde_json::Value, OasmCompileError> {
     match value {
         serde_json::Value::Object(object)
@@ -75,9 +90,25 @@ fn resolve_json_expressions(
                 .get(index)
                 .cloned()
                 .ok_or_else(|| OasmCompileError::new("unknown native value expression"))??;
-            serde_json::Number::from_f64(value.to_f64())
-                .map(serde_json::Value::Number)
-                .ok_or_else(|| OasmCompileError::new("native value expression is non-finite"))
+            match value {
+                EvaluatedValue::Numeric {
+                    value,
+                    value_type: ValueExprType::Int64,
+                } => value
+                    .to_signed_cycle_delta()
+                    .map(serde_json::Value::from)
+                    .ok_or_else(|| {
+                        OasmCompileError::new("native Int64 value expression is not an integer")
+                    }),
+                EvaluatedValue::Numeric { value, .. } => {
+                    serde_json::Number::from_f64(value.to_f64())
+                        .map(serde_json::Value::Number)
+                        .ok_or_else(|| {
+                            OasmCompileError::new("native value expression is non-finite")
+                        })
+                }
+                EvaluatedValue::Bool(value) => Ok(serde_json::Value::Bool(value)),
+            }
         }
         serde_json::Value::Object(object) => object
             .iter()
@@ -95,7 +126,7 @@ fn resolve_json_expressions(
 
 pub(super) fn value_to_oasm_argument(
     program: &NativeArenas,
-    values: &[Result<ExactDecimal, OasmCompileError>],
+    values: &[Result<EvaluatedValue, OasmCompileError>],
     id: ValueExprId,
 ) -> Result<OasmArgument, OasmCompileError> {
     match program
@@ -122,32 +153,42 @@ pub(super) fn value_to_oasm_argument(
             let value = values.get(id.index()).cloned().ok_or_else(|| {
                 OasmCompileError::new(format!("unknown OASM argument expression {}", id.index()))
             })??;
-            Ok(OasmArgument::Float(value.to_f64()))
+            match value {
+                EvaluatedValue::Numeric { value, .. } => Ok(OasmArgument::Float(value.to_f64())),
+                EvaluatedValue::Bool(value) => Ok(OasmArgument::Bool(value)),
+            }
         }
     }
 }
 
-pub(super) fn evaluate_numeric_values(
+pub(super) fn evaluate_link_values(
     program: &NativeArenas,
     link_bindings: &LinkBindings,
-) -> Vec<Result<ExactDecimal, OasmCompileError>> {
+) -> Vec<Result<EvaluatedValue, OasmCompileError>> {
     let arena = program.values();
     let mut values =
-        Vec::<Result<ExactDecimal, OasmCompileError>>::with_capacity(arena.nodes().len());
+        Vec::<Result<EvaluatedValue, OasmCompileError>>::with_capacity(arena.nodes().len());
     for (index, node) in arena.nodes().iter().enumerate() {
         let children = &arena.edges()
             [node.edge_start() as usize..node.edge_start() as usize + node.edge_count() as usize];
         let value = match node.kind() {
             ValueExprKind::Constant => match arena.payload(ValueExprId::from_index(index as u32)) {
-                Ok(Some(ValueExprPayload::DurationCycles(value))) => {
-                    Ok(ExactDecimal::from_i64(*value))
-                }
-                Ok(Some(ValueExprPayload::Int64(value))) => Ok(ExactDecimal::from_i64(*value)),
+                Ok(Some(ValueExprPayload::DurationCycles(value))) => Ok(EvaluatedValue::numeric(
+                    ExactDecimal::from_i64(*value),
+                    ValueExprType::Duration,
+                )),
+                Ok(Some(ValueExprPayload::Int64(value))) => Ok(EvaluatedValue::numeric(
+                    ExactDecimal::from_i64(*value),
+                    ValueExprType::Int64,
+                )),
                 Ok(Some(ValueExprPayload::Float64(value))) => {
-                    ExactDecimal::from_f64_shortest(*value).ok_or_else(|| {
-                        OasmCompileError::new(format!("expression {index} is not finite"))
-                    })
+                    ExactDecimal::from_f64_shortest(*value)
+                        .map(|value| EvaluatedValue::numeric(value, ValueExprType::Float64))
+                        .ok_or_else(|| {
+                            OasmCompileError::new(format!("expression {index} is not finite"))
+                        })
                 }
+                Ok(Some(ValueExprPayload::Bool(value))) => Ok(EvaluatedValue::Bool(*value)),
                 Ok(Some(ValueExprPayload::Json(_))) => Err(OasmCompileError::new(format!(
                     "expression {index} is structured data, not a numeric value"
                 ))),
@@ -155,22 +196,46 @@ pub(super) fn evaluate_numeric_values(
                     "expression {index} is not an integer duration"
                 ))),
             },
-            ValueExprKind::Add => numeric_binary(&values, children, ExactDecimal::checked_add),
-            ValueExprKind::Subtract => numeric_binary(&values, children, ExactDecimal::checked_sub),
-            ValueExprKind::Multiply => numeric_binary(&values, children, ExactDecimal::checked_mul),
+            ValueExprKind::Add => numeric_binary(
+                &values,
+                children,
+                node.value_type(),
+                ExactDecimal::checked_add,
+            ),
+            ValueExprKind::Subtract => numeric_binary(
+                &values,
+                children,
+                node.value_type(),
+                ExactDecimal::checked_sub,
+            ),
+            ValueExprKind::Multiply => numeric_binary(
+                &values,
+                children,
+                node.value_type(),
+                ExactDecimal::checked_mul,
+            ),
             ValueExprKind::Divide => match numeric_operand(&values, children[1]) {
                 Ok(denominator) => numeric_operand(&values, children[0]).and_then(|numerator| {
                     numerator
                         .checked_div(denominator)
+                        .map(|value| EvaluatedValue::numeric(value, node.value_type()))
                         .ok_or_else(|| OasmCompileError::new("duration division is invalid"))
                 }),
                 Err(error) => Err(error),
             },
-            ValueExprKind::Modulo => numeric_binary(&values, children, ExactDecimal::checked_rem),
-            ValueExprKind::Maximum => numeric_binary(&values, children, ExactDecimal::maximum),
+            ValueExprKind::Modulo => numeric_binary(
+                &values,
+                children,
+                node.value_type(),
+                ExactDecimal::checked_rem,
+            ),
+            ValueExprKind::Maximum => {
+                numeric_binary(&values, children, node.value_type(), ExactDecimal::maximum)
+            }
             ValueExprKind::Negate => numeric_operand(&values, children[0]).and_then(|value| {
                 value
                     .checked_neg()
+                    .map(|value| EvaluatedValue::numeric(value, node.value_type()))
                     .ok_or_else(|| OasmCompileError::new("numeric negation overflows"))
             }),
             ValueExprKind::RuntimeSlot => {
@@ -180,7 +245,7 @@ pub(super) fn evaluate_numeric_values(
                         .get(name)
                         .filter(|value| value.matches_type(node.value_type()))
                         .cloned()
-                        .and_then(|value| value.into_numeric_for(node.value_type()))
+                        .and_then(|value| evaluate_link_value(value, node.value_type()))
                         .ok_or_else(|| {
                             OasmCompileError::new(format!(
                                 "Runtime Slot {name:?} is absent or has the wrong type in Link Bindings"
@@ -198,7 +263,7 @@ pub(super) fn evaluate_numeric_values(
                         .get(name)
                         .filter(|value| value.matches_type(node.value_type()))
                         .cloned()
-                        .and_then(|value| value.into_numeric_for(node.value_type()))
+                        .and_then(|value| evaluate_link_value(value, node.value_type()))
                         .ok_or_else(|| {
                             OasmCompileError::new(format!(
                                 "Environment Slot {name:?} is absent or has the wrong type in Link Bindings"
@@ -219,53 +284,53 @@ pub(super) fn evaluate_numeric_values(
 }
 
 fn numeric_binary(
-    values: &[Result<ExactDecimal, OasmCompileError>],
+    values: &[Result<EvaluatedValue, OasmCompileError>],
     children: &[ValueExprId],
+    value_type: ValueExprType,
     operation: impl FnOnce(ExactDecimal, ExactDecimal) -> Option<ExactDecimal>,
-) -> Result<ExactDecimal, OasmCompileError> {
+) -> Result<EvaluatedValue, OasmCompileError> {
     let left = numeric_operand(values, children[0])?;
     let right = numeric_operand(values, children[1])?;
-    operation(left, right).ok_or_else(|| OasmCompileError::new("exact numeric operation failed"))
+    operation(left, right)
+        .map(|value| EvaluatedValue::numeric(value, value_type))
+        .ok_or_else(|| OasmCompileError::new("exact numeric operation failed"))
 }
 
 fn numeric_operand(
-    values: &[Result<ExactDecimal, OasmCompileError>],
+    values: &[Result<EvaluatedValue, OasmCompileError>],
     id: ValueExprId,
 ) -> Result<ExactDecimal, OasmCompileError> {
-    values.get(id.index()).cloned().unwrap_or_else(|| {
+    let value = values.get(id.index()).cloned().unwrap_or_else(|| {
         Err(OasmCompileError::new(format!(
             "expression {} is not topological",
             id.index()
         )))
-    })
+    })?;
+    match value {
+        EvaluatedValue::Numeric { value, .. } => Ok(value),
+        EvaluatedValue::Bool(_) => Err(OasmCompileError::new(format!(
+            "expression {} is not numeric",
+            id.index()
+        ))),
+    }
 }
 
 pub(super) fn eval_cycles(
-    values: &[Result<ExactDecimal, OasmCompileError>],
+    values: &[Result<EvaluatedValue, OasmCompileError>],
     id: ValueExprId,
 ) -> Result<u64, OasmCompileError> {
-    let value = values.get(id.index()).cloned().unwrap_or_else(|| {
-        Err(OasmCompileError::new(format!(
-            "cannot evaluate expression {}",
-            id.index()
-        )))
-    })?;
+    let value = numeric_operand(values, id)?;
     value.to_cycle_count().ok_or_else(|| {
         OasmCompileError::new("duration is not an exact non-negative target Cycle Count")
     })
 }
 
 pub(super) fn eval_duration_cycles(
-    values: &[Result<ExactDecimal, OasmCompileError>],
+    values: &[Result<EvaluatedValue, OasmCompileError>],
     id: ValueExprId,
     quantization: DurationQuantization,
 ) -> Result<u64, OasmCompileError> {
-    let value = values.get(id.index()).cloned().unwrap_or_else(|| {
-        Err(OasmCompileError::new(format!(
-            "cannot evaluate expression {}",
-            id.index()
-        )))
-    })?;
+    let value = numeric_operand(values, id)?;
     let cycles = match quantization {
         DurationQuantization::Strict => value.to_cycle_count(),
         DurationQuantization::NearestEven => value.to_cycle_count_rounded(),
@@ -284,16 +349,11 @@ pub(super) fn eval_duration_cycles(
 }
 
 pub(super) fn eval_duration_delta(
-    values: &[Result<ExactDecimal, OasmCompileError>],
+    values: &[Result<EvaluatedValue, OasmCompileError>],
     id: ValueExprId,
     quantization: DurationQuantization,
 ) -> Result<i64, OasmCompileError> {
-    let value = values.get(id.index()).cloned().unwrap_or_else(|| {
-        Err(OasmCompileError::new(format!(
-            "cannot evaluate expression {}",
-            id.index()
-        )))
-    })?;
+    let value = numeric_operand(values, id)?;
     let cycles = match quantization {
         DurationQuantization::Strict => value.to_signed_cycle_delta(),
         DurationQuantization::NearestEven => value.to_signed_cycle_delta_rounded(),
@@ -309,4 +369,15 @@ pub(super) fn eval_duration_delta(
             id.index()
         ))
     })
+}
+
+fn evaluate_link_value(value: LinkValue, value_type: ValueExprType) -> Option<EvaluatedValue> {
+    match value {
+        LinkValue::Bool(value) if value_type == ValueExprType::Bool => {
+            Some(EvaluatedValue::Bool(value))
+        }
+        value => value
+            .into_numeric_for(value_type)
+            .map(|value| EvaluatedValue::numeric(value, value_type)),
+    }
 }

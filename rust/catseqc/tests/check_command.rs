@@ -1,15 +1,15 @@
 use std::fs;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use catseq_compiler::compile_json_request;
 
+static NEXT_SOURCE_FILE: AtomicU64 = AtomicU64::new(0);
+
 fn source_file() -> std::path::PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("catseqc-source-{nonce}.py"));
+    let nonce = NEXT_SOURCE_FILE.fetch_add(1, Ordering::Relaxed);
+    let process_id = std::process::id();
+    let path = std::env::temp_dir().join(format!("catseqc-source-{process_id}-{nonce}.py"));
     fs::write(
         &path,
         "class Experiment:\n    @arena_build\n    def sequence(self, params: ExpParams):\n        return identity(params[self.delay])\n",

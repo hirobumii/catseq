@@ -85,30 +85,36 @@ jobs:
           "@ | Set-Content -Path $netrc
           "NETRC=$netrc" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Sync the fixed Python environment
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        run: uv sync --locked --all-extras --dev
-
-      - name: Check Python code
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        run: uv run ruff check catseq tests tools benchmarks
-
-      - name: Run Python tests
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        run: uv run pytest -q
-
-      - name: Run Python type checks
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        run: uv run mypy catseq
-
-      - name: Execute the README quickstart
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        run: uv run python tools/run_readme_quickstart.py
-
       - name: Install the pinned Rust toolchain
         run: |
           rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal --component rustfmt --component clippy --no-self-update
           rustup default ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+          shared-key: ${{ matrix.target }}
+
+      - name: Sync the fixed Python environment
+        if: runner.os == 'Linux' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        run: uv sync --locked --all-extras --dev
+
+      - name: Check Python code
+        if: runner.os == 'Linux' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        run: uv run ruff check catseq tests tools benchmarks
+
+      - name: Run Python tests
+        if: runner.os == 'Linux' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        run: uv run pytest -q
+
+      - name: Run Python type checks
+        if: runner.os == 'Linux' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        run: uv run mypy catseq
+
+      - name: Execute the README quickstart
+        if: runner.os == 'Linux' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        run: uv run python tools/run_readme_quickstart.py
 
       - name: Check Rust formatting
         if: runner.os == 'Linux'

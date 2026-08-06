@@ -152,7 +152,7 @@ const STATIC_WAVEFORM_FIELDS: &[NativeRecordField] = &[
     },
     NativeRecordField {
         name: "phase",
-        field_type: NativeRecordFieldType::Float64,
+        field_type: NativeRecordFieldType::OptionalFloat64,
     },
     NativeRecordField {
         name: "fct",

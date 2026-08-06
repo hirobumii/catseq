@@ -26,7 +26,7 @@ class StaticWaveform:
     freq: OptionalFloatLike = None
     amp: OptionalFloatLike = None
     sbg_id: int | None = None
-    phase: FloatLike = 0.0
+    phase: OptionalFloatLike = 0.0
     fct: int | None = None
 
 

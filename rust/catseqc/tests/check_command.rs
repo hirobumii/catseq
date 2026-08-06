@@ -3191,6 +3191,24 @@ fn catseq_replace_desugars_to_an_equivalent_native_record() {
 }
 
 #[test]
+fn catseq_replace_accepts_a_static_waveform_with_no_initial_phase() {
+    let path = source_file();
+    let compiled = compile_rwg_source(
+        &path,
+        "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\ntarget = StaticWaveform(freq=1.0, amp=0.2, sbg_id=0, phase=None)\n\ndef sequence() -> Morphism:\n    updated = replace(target, phase=0.125)\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n",
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    let calls = compiled["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"]
+        .as_array()
+        .unwrap();
+    assert!(calls.iter().any(|call| {
+        call["function"] == "rwg_load_waveform" && call["args"][0]["initial_phase"] == 0.125
+    }));
+}
+
+#[test]
 fn compile_known_global_native_record_lowers_for_emit_arena_and_compile() {
     let path = source_file();
     let source = "from catseq import replace\nfrom catseq.hardware.rwg import initialize, set_state\nfrom catseq.morphism import Morphism, identity\nfrom catseq.types import StaticWaveform\n\ntarget = StaticWaveform(freq=1.0, sbg_id=0)\n\ndef sequence() -> Morphism:\n    updated = replace(target, freq=2.0)\n    return identity(0) >> {rwg0: initialize(80.0) >> set_state([updated])}\n";

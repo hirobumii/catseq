@@ -16,6 +16,9 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Accepted `None` as the initial phase of `StaticWaveform`, preserving the
+  existing phase when phase-less off waveforms are used directly or updated
+  through `catseq.replace`.
 - Accepted concrete scalar arguments for optional scalar parameters in
   restricted source calls, and made one-argument `round()` produce a checked
   ties-to-even `Int64` value suitable for exact blackbox durations and

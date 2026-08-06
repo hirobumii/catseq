@@ -66,9 +66,11 @@ name of the file you create.
 system may also supply `opaque_calls`, scalar `environment_values`, a target
 profile, and an incremental `cache_dir`; these are captured once by the
 Rust-owned compiler session. `Compiler.compile()` uses the method only to
-locate its source and bind restricted arguments. The method body and reachable
-service/module definitions are parsed by the Rust compiler; arbitrary host
-lifecycle code is not compiled.
+locate its source and bind restricted arguments. Explicit root scalar arguments
+are Compile-known specialization inputs, while scan mapping entries remain
+Link-time Runtime Slots. The method body and reachable service/module
+definitions are parsed by the Rust compiler; arbitrary host lifecycle code is
+not compiled.
 
 An annotated class field without a source initializer is an Environment Slot.
 Use `<module>.<entry-class-or-singleton>.<field>` as the `environment_values`

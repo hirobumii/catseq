@@ -44,6 +44,7 @@ pub enum ValueExprKind {
     Modulo,
     Maximum,
     Negate,
+    Round,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -201,7 +202,9 @@ impl ValueExprArena {
                         "intrinsic expression {index} has an invalid shape"
                     )));
                 }
-                ValueExprKind::Negate if children.len() != 1 || payload.is_some() => {
+                ValueExprKind::Negate | ValueExprKind::Round
+                    if children.len() != 1 || payload.is_some() =>
+                {
                     return Err(ValueExprError::new(format!(
                         "unary expression {index} has an invalid shape"
                     )));

@@ -76,6 +76,24 @@ fn compile_ttl_source_with(
     clock_hz: u64,
     link_bindings: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    compile_ttl_source_with_inputs(
+        source_path,
+        source,
+        entry,
+        clock_hz,
+        serde_json::json!({}),
+        link_bindings,
+    )
+}
+
+fn compile_ttl_source_with_inputs(
+    source_path: &std::path::Path,
+    source: &str,
+    entry: &str,
+    clock_hz: u64,
+    entry_arguments: serde_json::Value,
+    link_bindings: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     fs::write(source_path, source).unwrap();
     let module = source_path.file_stem().unwrap().to_string_lossy();
     let ttl0 = format!("{module}::ttl0");
@@ -116,6 +134,7 @@ fn compile_ttl_source_with(
                 }
             }
         },
+        "entry_arguments": entry_arguments,
         "link_bindings": link_bindings
     }))
     .unwrap();
@@ -1193,6 +1212,193 @@ fn compile_discriminated_optional_annotation_has_a_native_source_type() {
     assert_eq!(
         report["definitions"][0]["parameters"][0]["type"],
         "Optional<Float64>"
+    );
+}
+
+#[test]
+fn call_accepts_a_scalar_for_an_optional_scalar_parameter() {
+    let path = source_file();
+    fs::write(
+        &path,
+        "from catseq.morphism import Morphism, identity\n\ndef pulse(frequency: float | None) -> Morphism:\n    return identity(1)\n\ndef sequence() -> Morphism:\n    return pulse(1.0)\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_catseqc"))
+        .args(["check", path.to_str().unwrap(), "--entry", "sequence"])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn round_produces_an_integer_cycle_count() {
+    let path = source_file();
+    let response = compile_ttl_source(
+        &path,
+        "from catseq.morphism import Morphism, identity\nfrom catseq.time_utils import cycles\n\ndef sequence() -> Morphism:\n    return identity(cycles(round(2.5))) >> identity(cycles(round(3.5)))\n",
+        250_000_000,
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 6);
+}
+
+#[test]
+fn round_preserves_negative_ties_to_even_for_timeline_rewinds() {
+    let path = source_file();
+    let response = compile_ttl_source(
+        &path,
+        "from catseq.hardware.ttl import set_high, set_low\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import cycles\n\ndef sequence() -> Morphism:\n    return identity(cycles(10)) >> {ttl0: set_high()} >> identity(cycles(round(-2.5))) >> identity(cycles(round(-3.5))) >> {ttl0: set_low()}\n",
+        250_000_000,
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 10);
+    let calls = response["oasm_call_plan"]["epochs"][0]["boards"][0]["calls"]
+        .as_array()
+        .unwrap();
+    let ttl_offsets = calls
+        .iter()
+        .filter(|call| call["function"] == "ttl_set")
+        .map(|call| call["offset_cycles"].as_u64().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(ttl_offsets, [4, 10]);
+}
+
+#[test]
+fn round_keeps_link_time_values_symbolic_until_ties_to_even_linking() {
+    let path = source_file();
+    let response = compile_ttl_source_with(
+        &path,
+        "from catseq.morphism import Morphism, identity\nfrom catseq.time_utils import cycles\n\ndef sequence(params: ExpParams) -> Morphism:\n    return identity(cycles(round(params[sample_count])))\n",
+        "sequence",
+        250_000_000,
+        serde_json::json!({
+            "schema_version": 1,
+            "runtime_values": {"sample_count": 2.5},
+            "environment_values": {}
+        }),
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 2);
+}
+
+#[test]
+fn round_rejects_results_outside_int64() {
+    let path = source_file();
+    let error = compile_ttl_source(
+        &path,
+        "from catseq.morphism import Morphism, identity\nfrom catseq.time_utils import cycles\n\ndef sequence() -> Morphism:\n    return identity(cycles(round(1e30)))\n",
+        250_000_000,
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(error.contains("round result overflows Int64"), "{error}");
+}
+
+#[test]
+fn source_definition_named_round_keeps_its_source_semantics() {
+    let path = source_file();
+    let response = compile_ttl_source(
+        &path,
+        "from catseq.morphism import Morphism, identity\nfrom catseq.time_utils import cycles\n\ndef round(value: float) -> Morphism:\n    return identity(cycles(7))\n\ndef sequence() -> Morphism:\n    return round(2.5)\n",
+        250_000_000,
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 7);
+}
+
+#[test]
+fn foreign_round_is_not_treated_as_the_builtin_intrinsic() {
+    let path = source_file();
+    let error = compile_ttl_source(
+        &path,
+        "from foreign_math import round\nfrom catseq.morphism import Morphism, identity\nfrom catseq.time_utils import cycles\n\ndef sequence() -> Morphism:\n    return identity(cycles(round(2.5)))\n",
+        250_000_000,
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(error.contains("foreign_math.round"), "{error}");
+    assert!(error.contains("reachable Host call"), "{error}");
+}
+
+#[test]
+fn compile_binds_explicit_root_scalars_before_structural_specialization() {
+    let path = source_file();
+    let response = compile_ttl_source_with_inputs(
+        &path,
+        "from catseq.morphism import Morphism, identity\nfrom catseq.time_utils import Duration, cycles\n\ndef sequence(delay: Duration = cycles(2), omega: float | None = None) -> Morphism:\n    if omega is None:\n        omega = 1.0\n    return identity(delay) >> identity(cycles(round(omega)))\n",
+        "sequence",
+        250_000_000,
+        serde_json::json!({"delay": 0.000000008, "omega": 3.0}),
+        serde_json::json!({
+            "schema_version": 1,
+            "runtime_values": {},
+            "environment_values": {}
+        }),
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 5);
+}
+
+#[test]
+fn explicit_none_overrides_a_non_none_optional_entry_default() {
+    let path = source_file();
+    let response = compile_ttl_source_with_inputs(
+        &path,
+        "from catseq.morphism import Morphism, identity\nfrom catseq.time_utils import cycles\n\ndef sequence(omega: float | None = 3.0) -> Morphism:\n    if omega is None:\n        omega = 1.0\n    return identity(cycles(round(omega)))\n",
+        "sequence",
+        250_000_000,
+        serde_json::json!({"omega": null}),
+        serde_json::json!({
+            "schema_version": 1,
+            "runtime_values": {},
+            "environment_values": {}
+        }),
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+
+    assert_eq!(response["logical_duration_cycles"], 1);
+}
+
+#[test]
+fn compile_rejects_an_unknown_entry_argument() {
+    let path = source_file();
+    let error = compile_ttl_source_with_inputs(
+        &path,
+        "from catseq.morphism import Morphism, identity\nfrom catseq.time_utils import cycles\n\ndef sequence(count: int = 1) -> Morphism:\n    return identity(cycles(count))\n",
+        "sequence",
+        250_000_000,
+        serde_json::json!({"coutn": 2}),
+        serde_json::json!({
+            "schema_version": 1,
+            "runtime_values": {},
+            "environment_values": {}
+        }),
+    )
+    .unwrap_err();
+    fs::remove_file(path).unwrap();
+
+    assert!(
+        error.contains("unknown entry argument \"coutn\""),
+        "{error}"
     );
 }
 

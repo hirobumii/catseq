@@ -126,9 +126,11 @@ impl PyCompiler {
         source_path: PathBuf,
         entry: String,
         mut entry_opaque_callables: BTreeMap<String, Py<PyAny>>,
+        entry_arguments: &[u8],
         link_bindings: &[u8],
     ) -> PyResult<PyCompiledSequence> {
         let compiler = self.inner.clone();
+        let entry_arguments = entry_arguments.to_vec();
         let link_bindings = link_bindings.to_vec();
         let mut opaque_callables: BTreeMap<String, Py<PyAny>> = self
             .opaque_callables
@@ -138,7 +140,7 @@ impl PyCompiler {
         let inner = py
             .allow_threads(move || {
                 run_compiler_thread(move || {
-                    compiler.compile_entry(source_path, entry, &link_bindings)
+                    compiler.compile_entry(source_path, entry, &entry_arguments, &link_bindings)
                 })
             })
             .map_err(|error| PyRuntimeError::new_err(error.to_string()))?

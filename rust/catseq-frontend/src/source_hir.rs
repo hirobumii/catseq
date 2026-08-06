@@ -905,7 +905,12 @@ fn return_types_compatible(expected: &SourceType, found: &SourceType) -> bool {
 }
 
 fn argument_types_compatible(expected: &SourceType, found: &SourceType) -> bool {
-    expected == found || matches!((expected, found), (SourceType::Float64, SourceType::Int64))
+    expected == found
+        || matches!((expected, found), (SourceType::Float64, SourceType::Int64))
+        || matches!(
+            expected,
+            SourceType::Optional(inner) if argument_types_compatible(inner, found)
+        )
 }
 
 #[derive(Clone, Copy)]

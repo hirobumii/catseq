@@ -9,7 +9,11 @@ from types import ModuleType
 
 import pytest
 
-from catseq.compilation.native import CatSeqCompileError, compile_entry
+from catseq.compilation.native import (
+    CatSeqCompileError,
+    _compile_bindings,
+    compile_entry,
+)
 from catseq.compilation.types import OASMAddress, OASMFunction
 
 
@@ -18,6 +22,15 @@ class _Experiment:
     scan_values = (0.1, 0.2)
 
     def build_sequence(self, params):
+        raise AssertionError("compile_entry must not execute Python sequence code")
+
+
+class _ScalarExperiment:
+    def build_sequence(
+        self,
+        omega: float | None = 3.0,
+        duration: float = 0.1,
+    ) -> object:
         raise AssertionError("compile_entry must not execute Python sequence code")
 
 
@@ -64,8 +77,14 @@ def test_compile_entry_compiles_source_without_executing_the_bound_method(
         captured["command"] = command
         captured["kwargs"] = kwargs
         bindings_path = Path(command[command.index("--link-bindings") + 1])
+        entry_arguments_path = Path(
+            command[command.index("--entry-arguments") + 1]
+        )
         target_path = Path(command[command.index("--target-profile") + 1])
         captured["bindings"] = json.loads(bindings_path.read_text())
+        captured["entry_arguments"] = json.loads(
+            entry_arguments_path.read_text()
+        )
         captured["target"] = json.loads(target_path.read_text())
         return subprocess.CompletedProcess(command, 0, json.dumps(_response()), "")
 
@@ -86,6 +105,7 @@ def test_compile_entry_compiles_source_without_executing_the_bound_method(
     assert bindings["runtime_values"]["self.duration"] == 0.35
     assert "self.scan_values" not in bindings["runtime_values"]
     assert bindings["runtime_values"]['params["pulse_time_us"]'] == 0.35
+    assert captured["entry_arguments"] == {}
     assert captured["target"]["clock_hz"] == 250000000
     assert captured["target"]["rtmq_abi_version"] == 2
     assert result.logical_duration_cycles == 87500
@@ -125,12 +145,27 @@ def test_compile_entry_uses_the_in_process_native_compiler_by_default(
         "channels": {},
     }
     assert request["target_profile"]["rtmq_abi_version"] == 2
+    assert request["entry_arguments"] == {}
     assert request["link_bindings"]["runtime_values"]["self.duration"] == 0.35
     assert (
         request["link_bindings"]["runtime_values"]['params["pulse_time_us"]']
         == 0.35
     )
     assert result.logical_duration_cycles == 87500
+
+
+def test_compile_bindings_separate_root_scalars_from_runtime_slots() -> None:
+    experiment = _ScalarExperiment()
+
+    entry_arguments, runtime_values = _compile_bindings(
+        _ScalarExperiment.build_sequence,
+        experiment,
+        (None, 0.25),
+    )
+
+    assert entry_arguments == {"omega": None, "duration": 0.25}
+    assert "omega" not in runtime_values
+    assert "duration" not in runtime_values
 
 
 def test_compile_entry_reports_an_unavailable_native_extension(

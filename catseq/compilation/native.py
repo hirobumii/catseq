@@ -84,7 +84,9 @@ def compile_entry(
             f"entry source {source_path} is outside source root {root}"
         ) from error
 
-    runtime_values = _argument_bindings(function, owner, arguments)
+    entry_arguments, runtime_values = _compile_bindings(
+        function, owner, arguments
+    )
     bindings = _merge_link_bindings(link_bindings, runtime_values)
     target = rtmq_v2_profile()
     target_clock_hz = _target_clock_hz(target)
@@ -96,6 +98,7 @@ def compile_entry(
             entry=function.__qualname__,
             environment=environment,
             target=target,
+            entry_arguments=entry_arguments,
             link_bindings=bindings,
         )
         return _decode_result(response, target_clock_hz)
@@ -109,6 +112,9 @@ def compile_entry(
         bindings_path = _json_input(
             bindings, temporary_path / "link-bindings.json"
         )
+        entry_arguments_path = _json_input(
+            entry_arguments, temporary_path / "entry-arguments.json"
+        )
         command = [
             _compiler_path(compiler),
             "compile",
@@ -121,6 +127,8 @@ def compile_entry(
             str(environment_path),
             "--target-profile",
             str(target_path),
+            "--entry-arguments",
+            str(entry_arguments_path),
             "--link-bindings",
             str(bindings_path),
             "--format",
@@ -151,6 +159,7 @@ def _compile_in_process(
     entry: str,
     environment: JsonObject | str | Path,
     target: JsonObject | str | Path,
+    entry_arguments: JsonObject,
     link_bindings: JsonObject | str | Path,
 ) -> object:
     try:
@@ -162,6 +171,7 @@ def _compile_in_process(
             "entry": entry,
             "compile_environment": _json_payload(environment),
             "target_profile": _json_payload(target),
+            "entry_arguments": entry_arguments,
             "link_bindings": _json_payload(link_bindings),
             "cache_dir": str(_cache_dir(source_root)),
         }
@@ -212,14 +222,15 @@ def _source_root(function: Callable[..., object]) -> Path:
     return root
 
 
-def _argument_bindings(
+def _compile_bindings(
     function: Callable[..., object],
     owner: object | None,
     arguments: tuple[object, ...],
-) -> dict[str, object]:
-    values: dict[str, object] = {}
+) -> tuple[dict[str, object], dict[str, object]]:
+    entry_arguments: dict[str, object] = {}
+    runtime_values: dict[str, object] = {}
     if owner is not None:
-        _owner_bindings(owner, values)
+        _owner_bindings(owner, runtime_values)
 
     signature = inspect.signature(function)
     parameters = list(signature.parameters.values())
@@ -231,8 +242,14 @@ def _argument_bindings(
             f"got {len(arguments)}"
         )
     for parameter, argument in zip(parameters, arguments, strict=False):
-        _value_bindings(parameter.name, argument, owner, values)
-    return values
+        encoded = _json_entry_argument(argument)
+        if encoded is not _UNSUPPORTED_ENTRY_ARGUMENT:
+            entry_arguments[parameter.name] = encoded
+        else:
+            _runtime_argument_bindings(
+                parameter.name, argument, owner, runtime_values
+            )
+    return entry_arguments, runtime_values
 
 
 def _owner_bindings(owner: object, values: dict[str, object]) -> None:
@@ -261,16 +278,12 @@ def _owner_bindings(owner: object, values: dict[str, object]) -> None:
             values[f"self.{name}"] = encoded
 
 
-def _value_bindings(
+def _runtime_argument_bindings(
     name: str,
     value: object,
     owner: object | None,
     values: dict[str, object],
 ) -> None:
-    encoded = _json_link_value(value)
-    if encoded is not None:
-        values[name] = encoded
-        return
     if not isinstance(value, Mapping):
         return
     for key, item in value.items():
@@ -295,6 +308,15 @@ def _value_bindings(
             if declaration is key:
                 values[f"self.{attribute}"] = encoded_item
                 values[f"{name}[self.{attribute}]"] = encoded_item
+
+
+_UNSUPPORTED_ENTRY_ARGUMENT = object()
+
+
+def _json_entry_argument(value: object) -> object:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return _UNSUPPORTED_ENTRY_ARGUMENT
 
 
 def _json_link_value(value: object) -> object | None:

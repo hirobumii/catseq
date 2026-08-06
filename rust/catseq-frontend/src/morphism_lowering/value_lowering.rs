@@ -5,7 +5,9 @@ use catseq_core::value_expr::{
     ValueExprArenaBuilder, ValueExprId, ValueExprKind, ValueExprPayload, ValueExprType,
 };
 
-use crate::{ComparisonOperation, SourceHirNode, SourceLiteral, SourceType, ValueOperation};
+use crate::{
+    ComparisonOperation, SourceHirNode, SourceLiteral, SourceType, ValueOperation, intrinsics,
+};
 
 use super::normalized_value::{
     normalized_has_duration_unit, normalized_is_cycles_call, parse_normalized_cycles,
@@ -300,10 +302,12 @@ pub(super) fn lower_static_subscript(
 }
 
 pub(super) fn is_numeric_intrinsic(resolved: &str) -> bool {
-    matches!(
-        resolved.rsplit('.').next().unwrap_or(resolved),
-        "sqrt" | "arccos" | "cos" | "sin" | "mod" | "round" | "len" | "sum"
-    )
+    let leaf = resolved.rsplit('.').next().unwrap_or(resolved);
+    (leaf == "round" && intrinsics::is_builtin_round(resolved))
+        || matches!(
+            leaf,
+            "sqrt" | "arccos" | "cos" | "sin" | "mod" | "len" | "sum"
+        )
 }
 
 pub(super) fn lower_numeric_intrinsic(
@@ -311,6 +315,7 @@ pub(super) fn lower_numeric_intrinsic(
     children: &[u32],
     resolved: &str,
     values: &[Option<LoweredValue>],
+    builder: &mut ValueExprArenaBuilder,
 ) -> Result<Option<LoweredValue>, MorphismLoweringError> {
     let resolved = resolved.rsplit('.').next().unwrap_or(resolved);
     let arguments = children
@@ -351,6 +356,25 @@ pub(super) fn lower_numeric_intrinsic(
         }
         return Ok(Some(LoweredValue::Scalar(total)));
     }
+    if let ("round", [argument]) = (resolved, arguments.as_slice()) {
+        let value = match argument {
+            LoweredValue::Scalar(ScalarValue::Int(value)) => {
+                return Ok(Some(LoweredValue::Scalar(ScalarValue::Int(*value))));
+            }
+            LoweredValue::Scalar(ScalarValue::Float(value))
+            | LoweredValue::Scalar(ScalarValue::DurationCycles(value)) => *value,
+            LoweredValue::Scalar(ScalarValue::Expr(id)) => {
+                return Ok(Some(LoweredValue::Scalar(ScalarValue::Expr(
+                    builder.operation(ValueExprKind::Round, ValueExprType::Int64, &[*id]),
+                ))));
+            }
+            _ => return Ok(None),
+        };
+        let rounded = value
+            .to_signed_cycle_delta_rounded()
+            .ok_or_else(|| lowering_error(node, "round result overflows Int64"))?;
+        return Ok(Some(LoweredValue::Scalar(ScalarValue::Int(rounded))));
+    }
     let numeric = arguments
         .iter()
         .map(|argument| match argument {
@@ -369,7 +393,6 @@ pub(super) fn lower_numeric_intrinsic(
         ("cos", [value]) => value.cos(),
         ("sin", [value]) => value.sin(),
         ("mod", [left, right]) => left.rem_euclid(*right),
-        ("round", [value]) => value.round_ties_even(),
         _ => return Ok(None),
     };
     let value = ExactDecimal::from_f64_shortest(value)

@@ -1,6 +1,6 @@
 //! Direct Typed Source HIR to target-resolved native arena lowering.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -145,6 +145,20 @@ pub fn specialize_typed_report_to_native_arenas(
     report: &TypedCheckReport,
     clock_hz: u64,
 ) -> Result<NativeArenas, MorphismLoweringError> {
+    specialize_typed_report_to_native_arenas_with_entry_arguments(
+        report,
+        clock_hz,
+        &BTreeMap::new(),
+    )
+}
+
+/// Specialize a checked source graph while binding explicitly supplied root
+/// scalar parameters before Morphism structure is selected.
+pub fn specialize_typed_report_to_native_arenas_with_entry_arguments(
+    report: &TypedCheckReport,
+    clock_hz: u64,
+    entry_arguments: &BTreeMap<String, serde_json::Value>,
+) -> Result<NativeArenas, MorphismLoweringError> {
     let definitions = report
         .definitions()
         .iter()
@@ -157,15 +171,52 @@ pub fn specialize_typed_report_to_native_arenas(
         ))
     })?;
     let mut lowerer = SpecializationLowerer::new(definitions, clock_hz);
-    let root = match lowerer.lower_definition(entry, &[], default_instance_identity(entry))? {
-        LoweredValue::Morphism(root) => root,
-        _ => {
-            return Err(MorphismLoweringError::new(format!(
-                "{} does not specialize to a Morphism",
-                entry.qualified_name()
-            )));
-        }
-    };
+    let parameters = entry
+        .signature()
+        .parameters()
+        .iter()
+        .filter(|parameter| !matches!(parameter.source_type(), SourceType::Instance(_)))
+        .collect::<Vec<_>>();
+    if let Some(name) = entry_arguments.keys().find(|name| {
+        !parameters
+            .iter()
+            .any(|parameter| parameter.name() == name.as_str())
+    }) {
+        return Err(MorphismLoweringError::new(format!(
+            "unknown entry argument {name:?} for {}",
+            entry.qualified_name()
+        )));
+    }
+    let arguments = parameters
+        .into_iter()
+        .filter_map(|parameter| {
+            entry_arguments
+                .get(parameter.name())
+                .map(|value| (parameter, value))
+        })
+        .map(|(parameter, value)| {
+            Ok(SpecializationArgument {
+                name: Some(parameter.name().to_owned()),
+                value: lower_entry_argument(
+                    entry.qualified_name(),
+                    parameter.name(),
+                    parameter.source_type(),
+                    value,
+                    clock_hz,
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>, MorphismLoweringError>>()?;
+    let root =
+        match lowerer.lower_definition(entry, &arguments, default_instance_identity(entry))? {
+            LoweredValue::Morphism(root) => root,
+            _ => {
+                return Err(MorphismLoweringError::new(format!(
+                    "{} does not specialize to a Morphism",
+                    entry.qualified_name()
+                )));
+            }
+        };
     let morphisms = lowerer
         .builder
         .finish(root)
@@ -176,6 +227,61 @@ pub fn specialize_typed_report_to_native_arenas(
         .map_err(|error| MorphismLoweringError::new(error.to_string()))?;
     NativeArenas::new(morphisms, values)
         .map_err(|error| MorphismLoweringError::new(error.to_string()))
+}
+
+fn lower_entry_argument(
+    entry: &str,
+    parameter: &str,
+    source_type: &SourceType,
+    value: &serde_json::Value,
+    clock_hz: u64,
+) -> Result<LoweredValue, MorphismLoweringError> {
+    let mismatch = || {
+        MorphismLoweringError::new(format!(
+            "entry argument {entry}.{parameter} must be {source_type}, got {value}"
+        ))
+    };
+    match source_type {
+        SourceType::Optional(_) if value.is_null() => Ok(LoweredValue::Null),
+        SourceType::Optional(inner) => {
+            lower_entry_argument(entry, parameter, inner, value, clock_hz)
+        }
+        SourceType::Bool => value
+            .as_bool()
+            .map(|value| LoweredValue::Scalar(ScalarValue::Bool(value)))
+            .ok_or_else(mismatch),
+        SourceType::Int64 => json_i64(value)
+            .map(|value| LoweredValue::Scalar(ScalarValue::Int(value)))
+            .ok_or_else(mismatch),
+        SourceType::Float64 => json_decimal(value)
+            .map(|value| LoweredValue::Scalar(ScalarValue::Float(value)))
+            .ok_or_else(mismatch),
+        SourceType::Duration => json_decimal(value)
+            .and_then(|value| value.checked_mul(ExactDecimal::from_u64(clock_hz)))
+            .map(|value| LoweredValue::Scalar(ScalarValue::DurationCycles(value)))
+            .ok_or_else(mismatch),
+        SourceType::String => value
+            .as_str()
+            .map(|value| LoweredValue::Scalar(ScalarValue::String(value.to_owned())))
+            .ok_or_else(mismatch),
+        _ => Err(mismatch()),
+    }
+}
+
+fn json_i64(value: &serde_json::Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+}
+
+fn json_decimal(value: &serde_json::Value) -> Option<ExactDecimal> {
+    if let Some(value) = value.as_i64() {
+        return Some(ExactDecimal::from_i64(value));
+    }
+    if let Some(value) = value.as_u64() {
+        return Some(ExactDecimal::from_u64(value));
+    }
+    value.as_f64().and_then(ExactDecimal::from_f64_shortest)
 }
 
 struct SpecializationLowerer<'a> {
@@ -543,6 +649,7 @@ impl<'a> SpecializationLowerer<'a> {
                         children,
                         fact.resolved_definition().expect("checked above"),
                         &values,
+                        &mut self.value_builder,
                     )?
                 }
                 SourceHirKind::Call => lower_call(
@@ -792,6 +899,7 @@ impl<'a> SpecializationLowerer<'a> {
                     children,
                     fact.resolved_definition().expect("checked above"),
                     &evaluated,
+                    &mut self.value_builder,
                 )?
             }
             SourceHirKind::Subscript => lower_static_subscript(children, &evaluated),

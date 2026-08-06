@@ -10,7 +10,8 @@ use catseq_frontend::{
     check_typed_bundle_entry_summary_incremental_with_loader, check_typed_bundle_entry_with_loader,
     check_typed_bundle_entry_with_loader_and_opaque_definitions, check_typed_entry,
     check_typed_entry_incremental, check_typed_entry_summary_incremental,
-    lower_typed_report_to_native_arenas, specialize_typed_report_to_native_arenas,
+    lower_typed_report_to_native_arenas,
+    specialize_typed_report_to_native_arenas_with_entry_arguments,
 };
 use catseq_rtmq::{
     CompileEnvironment, LinkBindings, OasmArgument, OasmCallPlan, OasmFunction, TargetProfile,
@@ -146,8 +147,12 @@ impl CompilerSession {
         &self,
         source_path: PathBuf,
         entry: String,
+        entry_arguments: &[u8],
         link_bindings: &[u8],
     ) -> Result<CompiledSequence, String> {
+        let entry_arguments =
+            serde_json::from_slice::<BTreeMap<String, serde_json::Value>>(entry_arguments)
+                .map_err(|error| format!("cannot decode entry arguments: {error}"))?;
         let mut link_bindings = serde_json::from_slice::<LinkBindings>(link_bindings)
             .map_err(|error| format!("cannot decode link bindings: {error}"))?;
         link_bindings.replace_environment_values_from(&self.environment_bindings);
@@ -172,9 +177,12 @@ impl CompilerSession {
             &source_path,
             &entry,
             self.cache_dir.as_deref(),
-            &self.compile_environment,
-            &self.target_profile,
-            &link_bindings,
+            NativeCompileInputs {
+                environment: Some(&self.compile_environment),
+                target: Some(&self.target_profile),
+                entry_arguments: &entry_arguments,
+                link_bindings: &link_bindings,
+            },
         )
     }
 }
@@ -197,6 +205,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     let mut source_root = None::<PathBuf>;
     let mut compile_environment_path = None::<PathBuf>;
     let mut target_profile_path = None::<PathBuf>;
+    let mut entry_arguments_path = None::<PathBuf>;
     let mut link_bindings_path = None::<PathBuf>;
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -212,6 +221,9 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             }
             "--target-profile" => {
                 target_profile_path = Some(PathBuf::from(args.next().ok_or_else(usage)?))
+            }
+            "--entry-arguments" => {
+                entry_arguments_path = Some(PathBuf::from(args.next().ok_or_else(usage)?))
             }
             "--link-bindings" => {
                 link_bindings_path = Some(PathBuf::from(args.next().ok_or_else(usage)?))
@@ -275,6 +287,17 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         })
         .transpose()?
         .unwrap_or_else(LinkBindings::empty);
+    let entry_arguments = entry_arguments_path
+        .as_ref()
+        .map(|path| {
+            let bytes = fs::read(path)
+                .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+            serde_json::from_slice::<BTreeMap<String, serde_json::Value>>(&bytes).map_err(|error| {
+                format!("cannot decode entry arguments {}: {error}", path.display())
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
     let checked = match source_root {
         Some(source_root) => check_source_bundle(
             &source_root,
@@ -286,6 +309,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             NativeCompileInputs {
                 environment: compile_environment.as_ref(),
                 target: target_profile.as_ref(),
+                entry_arguments: &entry_arguments,
                 link_bindings: &link_bindings,
             },
         )?,
@@ -323,6 +347,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
                     report,
                     compile_environment.as_ref().expect("checked above"),
                     target_profile.as_ref().expect("checked above"),
+                    &entry_arguments,
                     &link_bindings,
                 )?
             }
@@ -333,6 +358,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
                     report,
                     compile_environment.as_ref().expect("checked above"),
                     target_profile.as_ref().expect("checked above"),
+                    &entry_arguments,
                     &link_bindings,
                 )?
             }
@@ -398,12 +424,17 @@ fn compile_output(
     report: TypedCheckReport,
     environment: &CompileEnvironment,
     target: &TargetProfile,
+    entry_arguments: &BTreeMap<String, serde_json::Value>,
     link_bindings: &LinkBindings,
 ) -> Result<CheckedOutput, String> {
     validate_target_clock(target)?;
     let start = Instant::now();
-    let program = specialize_typed_report_to_native_arenas(&report, target.clock_hz())
-        .map_err(|error| error.to_string())?;
+    let program = specialize_typed_report_to_native_arenas_with_entry_arguments(
+        &report,
+        target.clock_hz(),
+        entry_arguments,
+    )
+    .map_err(|error| error.to_string())?;
     let plan = compile_oasm_call_plan(&program, environment, target, link_bindings)
         .map_err(|error| error.to_string())?;
     Ok(CheckedOutput::CallPlan {
@@ -505,6 +536,7 @@ fn check_source_bundle(
                 report,
                 compile_inputs.environment.expect("validated by caller"),
                 compile_inputs.target.expect("validated by caller"),
+                compile_inputs.entry_arguments,
                 compile_inputs.link_bindings,
             )
         }
@@ -520,6 +552,7 @@ fn check_source_bundle(
                 report,
                 compile_inputs.environment.expect("validated by caller"),
                 compile_inputs.target.expect("validated by caller"),
+                compile_inputs.entry_arguments,
                 compile_inputs.link_bindings,
             )
         }
@@ -530,6 +563,7 @@ fn check_source_bundle(
 struct NativeCompileInputs<'a> {
     environment: Option<&'a CompileEnvironment>,
     target: Option<&'a TargetProfile>,
+    entry_arguments: &'a BTreeMap<String, serde_json::Value>,
     link_bindings: &'a LinkBindings,
 }
 
@@ -542,6 +576,8 @@ struct CompileRequest {
     entry: String,
     compile_environment: CompileEnvironment,
     target_profile: TargetProfile,
+    #[serde(default)]
+    entry_arguments: BTreeMap<String, serde_json::Value>,
     link_bindings: LinkBindings,
     #[serde(default)]
     cache_dir: Option<PathBuf>,
@@ -561,9 +597,12 @@ pub fn compile_json_request(request: &[u8]) -> Result<Vec<u8>, String> {
         &request.source_path,
         &request.entry,
         request.cache_dir.as_deref(),
-        &request.compile_environment,
-        &request.target_profile,
-        &request.link_bindings,
+        NativeCompileInputs {
+            environment: Some(&request.compile_environment),
+            target: Some(&request.target_profile),
+            entry_arguments: &request.entry_arguments,
+            link_bindings: &request.link_bindings,
+        },
     )?;
     response::encode_compiled_sequence(&compiled)
 }
@@ -573,9 +612,7 @@ fn compile_source_bundle(
     source_path: &std::path::Path,
     entry: &str,
     cache_dir: Option<&std::path::Path>,
-    compile_environment: &CompileEnvironment,
-    target_profile: &TargetProfile,
-    link_bindings: &LinkBindings,
+    compile_inputs: NativeCompileInputs<'_>,
 ) -> Result<CompiledSequence, String> {
     let source = fs::read_to_string(source_path)
         .map_err(|error| format!("cannot read {}: {error}", source_path.display()))?;
@@ -586,11 +623,7 @@ fn compile_source_bundle(
         entry,
         cache_dir,
         CommandKind::Compile,
-        NativeCompileInputs {
-            environment: Some(compile_environment),
-            target: Some(target_profile),
-            link_bindings,
-        },
+        compile_inputs,
     )?;
     let CheckedOutput::CallPlan {
         report,
@@ -632,7 +665,7 @@ fn print_text_summary(summary: &TypedCheckSummary) {
 
 fn usage() -> String {
     String::from(
-        "usage: catseqc --version\n       catseqc check <source.py> [--source-root <path>] [--entry <qualified-name>] [--format text|json] [--cache-dir <path>]\n       catseqc emit-hir <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]\n       catseqc emit-arena <source.py> [--source-root <path>] [--entry <qualified-name>] --target-profile <path> [--format json] [--cache-dir <path>]\n       catseqc compile <source.py> [--source-root <path>] --entry <qualified-name> --compile-environment <path> --target-profile <path> [--link-bindings <path>] [--format json] [--cache-dir <path>]",
+        "usage: catseqc --version\n       catseqc check <source.py> [--source-root <path>] [--entry <qualified-name>] [--format text|json] [--cache-dir <path>]\n       catseqc emit-hir <source.py> [--source-root <path>] [--entry <qualified-name>] [--format json] [--cache-dir <path>]\n       catseqc emit-arena <source.py> [--source-root <path>] [--entry <qualified-name>] --target-profile <path> [--format json] [--cache-dir <path>]\n       catseqc compile <source.py> [--source-root <path>] --entry <qualified-name> --compile-environment <path> --target-profile <path> [--entry-arguments <path>] [--link-bindings <path>] [--format json] [--cache-dir <path>]",
     )
 }
 

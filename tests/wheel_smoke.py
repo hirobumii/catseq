@@ -28,8 +28,8 @@ SYNTHETIC_REPLY = (60_001, 31)
 SYNTHETIC_BOARD_ROUTES = {"rwg0": 60_000}
 
 
-def wheel_public_sequence() -> Morphism:
-    return identity(cycles(1))
+def wheel_public_sequence(count: int = 1) -> Morphism:
+    return identity(cycles(count))
 
 
 assert catseq.__version__ == version("catseq")
@@ -76,8 +76,8 @@ with tempfile.TemporaryDirectory(prefix="catseq-wheel-smoke-") as temporary:
     source.write_text(
         "from catseq.morphism import Morphism, identity\n"
         "from catseq.time_utils import cycles\n\n"
-        "def sequence() -> Morphism:\n"
-        "    return identity(cycles(1))\n"
+        "def sequence(count: int = 1) -> Morphism:\n"
+        "    return identity(cycles(count))\n"
     )
     request = {
         "schema_version": 1,
@@ -86,6 +86,7 @@ with tempfile.TemporaryDirectory(prefix="catseq-wheel-smoke-") as temporary:
         "entry": "sequence",
         "compile_environment": {"schema_version": 1, "channels": {}},
         "target_profile": rtmq_v2_profile(),
+        "entry_arguments": {"count": 2},
         "link_bindings": {
             "schema_version": 1,
             "runtime_values": {},
@@ -100,7 +101,7 @@ with tempfile.TemporaryDirectory(prefix="catseq-wheel-smoke-") as temporary:
         channels={},
         cache_dir=root / "public-cache",
     )
-    compiled = compiler.compile(wheel_public_sequence)
+    compiled = compiler.compile(wheel_public_sequence, 3)
     runtime = catseq.EthernetRuntime(
         interface=SYNTHETIC_INTERFACE,
         destination=SYNTHETIC_DESTINATION,
@@ -109,7 +110,7 @@ with tempfile.TemporaryDirectory(prefix="catseq-wheel-smoke-") as temporary:
     )
 
 assert response["stage"] == "oasm_call_plan"
-assert response["logical_duration_cycles"] == 1
+assert response["logical_duration_cycles"] == 2
 assert isinstance(compiled, catseq.CompiledSequence)
-assert compiled.logical_duration_cycles == 1
+assert compiled.logical_duration_cycles == 3
 assert runtime.boards == SYNTHETIC_BOARD_ROUTES

@@ -51,10 +51,29 @@ def emit_other_raw_oasm() -> None:
     nop(n=12)
 
 
+def emit_parameterized_raw_oasm(scale: float, samples: int) -> None:
+    del scale
+    nop(n=samples)
+
+
 def blackbox_sequence() -> Morphism:
     return black_box(
         duration_cycles=12,
         board_funcs={rwg0: emit_raw_oasm},
+    )
+
+
+def parameterized_blackbox_sequence(
+    scale: float = 1.0,
+    duration_scale: float | None = None,
+) -> Morphism:
+    if duration_scale is None:
+        duration_scale = scale
+    samples = round(duration_scale * 10)
+    return black_box(
+        duration_cycles=samples,
+        board_funcs={rwg0: emit_parameterized_raw_oasm},
+        user_args=(scale, samples),
     )
 
 
@@ -284,6 +303,16 @@ class CompileKnownWaveformExperiment:
         }
 
 
+class ParameterizedWaveformExperiment:
+    target = StaticWaveform(freq=1.0, amp=0.2, sbg_id=0)
+
+    def sequence(self, amplitude: float = 0.2) -> Morphism:
+        updated = replace(self.target, amp=amplitude)
+        return identity(0) >> {
+            rwg_channel: initialize(80.0) >> set_state([updated])
+        }
+
+
 class MalformedCompileKnownWaveformExperiment:
     target = StaticWaveform(freq="not-a-frequency", amp=0.2, sbg_id=0)  # type: ignore[arg-type]
 
@@ -393,6 +422,29 @@ def test_source_blackbox_compiles_to_the_existing_oasm_callback_handoff(
     assembled = encode_compiled_sequence(compiled, reply=SYNTHETIC_REPLY)
     assert assembled.boards[0].address == "rwg0"
     assert assembled.boards[0].exception_handler_word > 0
+
+
+def test_explicit_root_scalars_reach_blackbox_duration_payload_and_callback(
+    tmp_path: Path,
+) -> None:
+    compiled = Compiler(
+        source_root=BlackBoxSystem.source_root,
+        channels=BlackBoxSystem.channels,
+        cache_dir=tmp_path / "cache",
+    ).compile(parameterized_blackbox_sequence, 2.5, None)
+
+    assert compiled.logical_duration_cycles == 25
+    assert compiled._opaque_callables == {
+        "test_public_execution_api.emit_parameterized_raw_oasm": (
+            emit_parameterized_raw_oasm
+        ),
+    }
+    call = compiled.oasm_call_plan["epochs"][0]["boards"][0]["calls"][0]
+    assert call["args"] == [
+        "test_public_execution_api.emit_parameterized_raw_oasm",
+        [2.5, 25],
+        {},
+    ]
 
 
 def test_source_blackbox_rejects_the_removed_channel_states_argument(
@@ -797,6 +849,20 @@ def test_replace_accepts_a_compile_known_native_record_attribute(
         "phase_reset": True,
         "fct": None,
     }
+
+
+def test_explicit_root_scalar_flows_through_catseq_replace(
+    tmp_path: Path,
+) -> None:
+    compiled = Compiler(
+        source_root=Path(__file__).parent,
+        channels={"test_public_execution_api.rwg_channel": rwg_channel},
+        cache_dir=tmp_path / "cache",
+    ).compile(ParameterizedWaveformExperiment().sequence, 0.45)
+
+    calls = compiled.oasm_call_plan["epochs"][0]["boards"][0]["calls"]
+    loaded = next(call for call in calls if call["function"] == "rwg_load_waveform")
+    assert loaded["args"][0]["amp_coeffs"] == [0.45, None, None, None]
 
 
 def test_replace_rejects_malformed_fields_from_a_compile_known_base(

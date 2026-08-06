@@ -1,21 +1,47 @@
 use std::fs;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use catseq_compiler::compile_json_request;
 
+static PROCESS_NONCE: OnceLock<u128> = OnceLock::new();
 static NEXT_SOURCE_FILE: AtomicU64 = AtomicU64::new(0);
 
+fn source_file_path(process_nonce: u128, process_id: u32, sequence: u64) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "catseqc-source-{process_nonce}-{process_id}-{sequence}.py"
+    ))
+}
+
+fn process_nonce() -> u128 {
+    *PROCESS_NONCE.get_or_init(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock must be after the Unix epoch")
+            .as_nanos()
+    })
+}
+
 fn source_file() -> std::path::PathBuf {
-    let nonce = NEXT_SOURCE_FILE.fetch_add(1, Ordering::Relaxed);
+    let sequence = NEXT_SOURCE_FILE.fetch_add(1, Ordering::Relaxed);
     let process_id = std::process::id();
-    let path = std::env::temp_dir().join(format!("catseqc-source-{process_id}-{nonce}.py"));
+    let path = source_file_path(process_nonce(), process_id, sequence);
     fs::write(
         &path,
         "class Experiment:\n    @arena_build\n    def sequence(self, params: ExpParams):\n        return identity(params[self.delay])\n",
     )
     .unwrap();
     path
+}
+
+#[test]
+fn source_fixture_names_survive_pid_reuse() {
+    let first_process = source_file_path(100, 42, 0);
+    let restarted_process = source_file_path(101, 42, 0);
+
+    assert_ne!(first_process, restarted_process);
 }
 
 fn ttl_target_profile(source_path: &std::path::Path) -> std::path::PathBuf {

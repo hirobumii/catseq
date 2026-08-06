@@ -40,6 +40,7 @@ pub use incremental::{
 pub use morphism_lowering::{
     MorphismLoweringError, lower_typed_report_to_native_arenas,
     specialize_typed_report_to_native_arenas,
+    specialize_typed_report_to_native_arenas_with_entry_arguments,
 };
 pub use names::{PathRoot, ResolvedPath, ScanSlotUse};
 pub use session::{

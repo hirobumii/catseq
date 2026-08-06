@@ -16,6 +16,13 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Accepted concrete scalar arguments for optional scalar parameters in
+  restricted source calls, and made one-argument `round()` produce a checked
+  ties-to-even `Int64` value suitable for exact blackbox durations and
+  `cycles(...)`.
+- Honored explicit root-method scalar arguments during source specialization,
+  including explicit `None` for Optional parameters, without exposing
+  Link-time Runtime Bindings to the specialization stage.
 - Preserved same-board blackbox exclusivity and removed the need for downstream
   compiler-only operation stubs, per-blackbox Atomic Schema declarations, and
   channel state boilerplate. `board_funcs` now directly defines participation;

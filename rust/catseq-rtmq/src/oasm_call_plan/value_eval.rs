@@ -154,6 +154,13 @@ pub(super) fn value_to_oasm_argument(
                 OasmCompileError::new(format!("unknown OASM argument expression {}", id.index()))
             })??;
             match value {
+                EvaluatedValue::Numeric {
+                    value,
+                    value_type: ValueExprType::Int64,
+                } => value
+                    .to_signed_cycle_delta()
+                    .map(OasmArgument::Signed)
+                    .ok_or_else(|| OasmCompileError::new("Int64 OASM argument is not an integer")),
                 EvaluatedValue::Numeric { value, .. } => Ok(OasmArgument::Float(value.to_f64())),
                 EvaluatedValue::Bool(value) => Ok(OasmArgument::Bool(value)),
             }
@@ -237,6 +244,13 @@ pub(super) fn evaluate_link_values(
                     .checked_neg()
                     .map(|value| EvaluatedValue::numeric(value, node.value_type()))
                     .ok_or_else(|| OasmCompileError::new("numeric negation overflows"))
+            }),
+            ValueExprKind::Round => numeric_operand(&values, children[0]).and_then(|value| {
+                value
+                    .to_signed_cycle_delta_rounded()
+                    .map(ExactDecimal::from_i64)
+                    .map(|value| EvaluatedValue::numeric(value, ValueExprType::Int64))
+                    .ok_or_else(|| OasmCompileError::new("round result overflows Int64"))
             }),
             ValueExprKind::RuntimeSlot => {
                 match arena.payload(ValueExprId::from_index(index as u32)) {

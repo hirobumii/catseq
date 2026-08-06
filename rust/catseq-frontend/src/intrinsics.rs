@@ -3,7 +3,7 @@
 use crate::native_records;
 use crate::typed::SourceType;
 
-pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 9;
+pub(crate) const REGISTRY_SEMANTIC_VERSION: u32 = 10;
 const NATIVE_RECORD_REPLACE: &str = "catseq.replace";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -134,6 +134,10 @@ const INTRINSICS: &[Intrinsic] = &[
         result: ResultRule::Float64,
     },
     Intrinsic {
+        leaf: "round",
+        result: ResultRule::Int64,
+    },
+    Intrinsic {
         leaf: "float",
         result: ResultRule::Float64,
     },
@@ -199,6 +203,9 @@ pub(crate) fn return_type(path: &str, first_argument: Option<&SourceType>) -> Op
     if leaf == "cycles" && path != "cycles" && path != "catseq.time_utils.cycles" {
         return None;
     }
+    if leaf == "round" && !is_builtin_round(path) {
+        return None;
+    }
     let intrinsic = INTRINSICS.iter().find(|intrinsic| intrinsic.leaf == leaf);
     if intrinsic.is_none() && path.starts_with("catseq.hardware.") {
         return Some(SourceType::MorphismTemplate);
@@ -213,6 +220,10 @@ pub(crate) fn return_type(path: &str, first_argument: Option<&SourceType>) -> Op
         ResultRule::Duration => SourceType::Duration,
         ResultRule::FixedAggregate => SourceType::FixedAggregate,
     })
+}
+
+pub(crate) fn is_builtin_round(path: &str) -> bool {
+    path == "round" || path == "builtins.round"
 }
 
 pub(crate) fn parameter_types(path: &str) -> Vec<(usize, &'static str, SourceType)> {

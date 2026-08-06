@@ -96,6 +96,7 @@ where
         }
         let suite = &parsed[&module_name];
         let imports = module_imports(&module_name, suite);
+        let module_defines_round = definition_exists(suite, "round");
         let mut analysis =
             find_definition(&module_name, suite, &mut Vec::new(), &lexical_name, None)?
                 .ok_or_else(|| TypedCheckError::EntryNotFound {
@@ -127,7 +128,12 @@ where
         }
         for source_call in analysis.calls {
             let call = resolve_self_call(&lexical_name, &source_call.target_path);
-            let resolved = resolve_call_path(&module_name, &imports, &call);
+            let resolved =
+                if call == "round" && !imports.contains_key("round") && !module_defines_round {
+                    "builtins.round".to_owned()
+                } else {
+                    resolve_call_path(&module_name, &imports, &call)
+                };
             let (resolved, instance_identity) =
                 resolve_compile_instance_call(&mut sources, &mut parsed, loader, &resolved)?;
             let locally_shadowed_registered_call = source_call.source_path

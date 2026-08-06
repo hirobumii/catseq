@@ -76,10 +76,17 @@ intrinsic signatures. It is shared by compilations for one sequencing system;
 Runtime scan values and physical execution settings are not part of it.
 _Avoid_: Python object graph, runtime globals
 
+**Entry Arguments**:
+The explicitly supplied scalar arguments of the root sequence method. They are
+Compile-known specialization inputs, may select structural control flow, and
+are transported separately from Link-time Runtime Bindings. An omitted argument
+uses its source default; explicit `None` is retained for an Optional parameter.
+_Avoid_: Runtime Bindings, Runtime Slot values
+
 **Compile Request**:
 The versioned one-shot binary input naming a Source Bundle, compile entry,
-Compile Environment, Target Profile, optional Link Bindings, and incremental
-cache. It contains no Python objects or syntax trees.
+Compile Environment, Entry Arguments, Target Profile, optional Link Bindings,
+and incremental cache. It contains no Python objects or syntax trees.
 _Avoid_: Python compiler callback, daemon session request
 
 **Target Profile**:

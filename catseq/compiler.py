@@ -13,9 +13,9 @@ from . import _native
 from ._native import CompiledSequence
 from .compilation.native import (
     CatSeqCompileError,
-    _argument_bindings,
     _bound_function,
     _cache_dir,
+    _compile_bindings,
     _source_path,
 )
 from .targets import rtmq_v2_profile
@@ -100,7 +100,9 @@ class Compiler:
 
         function, owner = _bound_function(entry)
         source_path = _source_path(function)
-        runtime_values = _argument_bindings(function, owner, arguments)
+        entry_arguments, runtime_values = _compile_bindings(
+            function, owner, arguments
+        )
         link_bindings = {
             "schema_version": 1,
             "runtime_values": runtime_values,
@@ -115,6 +117,7 @@ class Compiler:
                     self.source_root,
                     source_path,
                 ),
+                _encode_json(entry_arguments),
                 _encode_json(link_bindings),
             )
         except (OSError, RuntimeError, TypeError, ValueError) as error:

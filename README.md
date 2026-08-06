@@ -5,11 +5,11 @@
 ![Python](https://img.shields.io/badge/python-3.12-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)
 
-CatSeq 0.4.1 is a categorical timing-composition language, native compiler,
+CatSeq 0.4.2 is a categorical timing-composition language, native compiler,
 RTMQ execution runtime, and host-side experiment controller for hardware
 sequences.
 
-CatSeq 0.4.1 preserves the Python `Morphism`, `MorphismDef`, `>>`, `@`, `|`, and
+CatSeq 0.4.2 preserves the Python `Morphism`, `MorphismDef`, `>>`, `@`, `|`, and
 channel-dictionary syntax. The public `Compiler` parses one sequence entry and
 its reachable definitions, then lowers them to a Rust-owned
 `CompiledSequence`. `EthernetRuntime` separately owns physical chassis routing
@@ -96,6 +96,11 @@ stable compile-instance identity (for example,
 `quickstart_ttl.Experiment.rewind` for an entry class or
 `quickstart_ttl.service.rewind` for a module singleton); a `Duration` value is
 a signed target Cycle Delta.
+
+Compile-reachable immutable updates of CatSeq Native Records use
+`catseq.replace(record, **changes)`, not `dataclasses.replace`. This is a
+compiler-only special form: the Rust frontend validates the record schema,
+field names, and field value types before arena lowering.
 
 ## Compose downstream OASM with a blackbox
 
@@ -197,7 +202,7 @@ run control, panel publisher, and `H5Writer`. Hardware locks, process policy,
 MQTT transport, and platform-specific device implementations remain in the
 consumer rather than CatSeq.
 
-## 0.4.1 API boundary
+## 0.4.2 API boundary
 
 `Compiler`, `CompiledSequence`, and `EthernetRuntime` are the stable application
 seam. The compiled sequence is immutable and contains the OASM Call Plan,

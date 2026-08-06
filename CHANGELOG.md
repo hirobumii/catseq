@@ -7,8 +7,13 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-06
+
 ### Added
 
+- Added CatSeq-owned immutable Native Record updates through
+  `catseq.replace(record, **changes)`, with Rust-side schema validation for
+  field names and value types during source compilation.
 - Added `catseq.oasm.black_box` as a native compiler special form.
   Exact opaque regions retain board callback identities in the Python-free
   arena, lower to one `USER_DEFINED_FUNC` call per participating board, and

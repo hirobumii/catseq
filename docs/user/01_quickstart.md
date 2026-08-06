@@ -1,6 +1,6 @@
-# CatSeq 0.4.1 quickstart
+# CatSeq 0.4.2 quickstart
 
-CatSeq 0.4.1 keeps the Python Morphism composition syntax, but production
+CatSeq 0.4.2 keeps the Python Morphism composition syntax, but production
 compilation starts from a source definition. It does not execute the Python
 builder and does not compile an already-constructed Python `Morphism`.
 
@@ -77,6 +77,35 @@ Use `<module>.<entry-class-or-singleton>.<field>` as the `environment_values`
 key (for example, `quickstart_ttl.Experiment.rewind`); this keeps fields on two
 instances of the same class distinct. A `Duration` binding is a signed target
 Cycle Delta.
+
+## Update a Native Record
+
+Use `catseq.replace` inside compile-reachable source when a sequence needs an
+immutable update of a CatSeq Native Record:
+
+```python
+from catseq import replace
+from catseq.hardware.rwg import initialize, set_state
+from catseq.morphism import Morphism, identity
+from catseq.types import Board, Channel, ChannelType, StaticWaveform
+
+
+rwg_board = Board("rwg0")
+rwg_channel = Channel(rwg_board, local_id=0, channel_type=ChannelType.RWG)
+target = StaticWaveform(freq=1.0, amp=0.2, sbg_id=0)
+
+
+def waveform_sequence() -> Morphism:
+    updated = replace(target, freq=2.0)
+    return identity(0) >> {
+        rwg_channel: initialize(80.0) >> set_state([updated])
+    }
+```
+
+`replace` is a compiler-only special form rather than a host-side dataclass
+helper. The Rust frontend preserves the Native Record type and validates every
+changed field name and value type. Calling it directly in ordinary CPython
+host code raises `CompilerOnlyError`.
 
 ## Use a source-level OASM blackbox
 

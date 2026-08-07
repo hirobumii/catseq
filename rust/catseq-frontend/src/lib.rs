@@ -48,8 +48,9 @@ pub use session::{
     SourceCompilerSession,
 };
 pub use source_hir::{
-    ComparisonOperation, DependencyRole, MorphismComposition, SemanticFact, SourceAnchor,
-    SourceHirKind, SourceHirNode, SourceLiteral, TypedSourceHir, ValueAvailability, ValueOperation,
+    BooleanOperation, ComparisonOperation, DependencyRole, MorphismComposition, SemanticFact,
+    SourceAnchor, SourceHirKind, SourceHirNode, SourceLiteral, TypedSourceHir, ValueAvailability,
+    ValueOperation,
 };
 pub use typed::{
     IncrementalStats, SourceType, TypeSignature, TypedCheckError, TypedCheckReport,

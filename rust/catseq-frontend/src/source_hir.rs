@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use nac3ast::{Cmpop, Constant, Expr, ExprKind, Operator, Stmt, StmtKind};
+use nac3ast::{Boolop, Cmpop, Constant, Expr, ExprKind, Operator, Stmt, StmtKind};
 use serde::{Deserialize, Serialize};
 
 use crate::intrinsics;
@@ -104,6 +104,21 @@ pub enum ComparisonOperation {
     NotIn,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum BooleanOperation {
+    And,
+    Or,
+}
+
+impl BooleanOperation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::And => "and",
+            Self::Or => "or",
+        }
+    }
+}
+
 impl ComparisonOperation {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -184,6 +199,8 @@ pub struct SourceHirNode {
     literal: Option<SourceLiteral>,
     value_operation: Option<ValueOperation>,
     #[serde(default)]
+    boolean_operation: Option<BooleanOperation>,
+    #[serde(default)]
     comparison_operations: Vec<ComparisonOperation>,
     #[serde(default)]
     call_positional_count: u32,
@@ -217,6 +234,10 @@ impl SourceHirNode {
 
     pub const fn value_operation(&self) -> Option<ValueOperation> {
         self.value_operation
+    }
+
+    pub const fn boolean_operation(&self) -> Option<BooleanOperation> {
+        self.boolean_operation
     }
 
     pub fn comparison_operations(&self) -> &[ComparisonOperation] {
@@ -1016,6 +1037,7 @@ pub(crate) fn lower_definition_hir(
                     morphism_composition: expression_morphism_composition(expression),
                     literal: expression_literal(expression),
                     value_operation: expression_value_operation(expression),
+                    boolean_operation: expression_boolean_operation(expression),
                     comparison_operations: expression_comparison_operations(expression),
                     call_positional_count: call_shape(expression, context.erased_state_names).0,
                     call_keyword_names: call_shape(expression, context.erased_state_names).1,
@@ -1050,6 +1072,7 @@ pub(crate) fn lower_definition_hir(
                     morphism_composition: None,
                     literal: None,
                     value_operation: None,
+                    boolean_operation: None,
                     comparison_operations: Vec::new(),
                     call_positional_count: 0,
                     call_keyword_names: Vec::new(),
@@ -1896,6 +1919,16 @@ fn expression_value_operation(expression: &Expr) -> Option<ValueOperation> {
         },
         _ => None,
     }
+}
+
+fn expression_boolean_operation(expression: &Expr) -> Option<BooleanOperation> {
+    let ExprKind::BoolOp { op, .. } = expression.node else {
+        return None;
+    };
+    Some(match op {
+        Boolop::And => BooleanOperation::And,
+        Boolop::Or => BooleanOperation::Or,
+    })
 }
 
 fn expression_comparison_operations(expression: &Expr) -> Vec<ComparisonOperation> {

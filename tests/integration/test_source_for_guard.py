@@ -109,6 +109,12 @@ def source_for_helper(count: int = 3) -> Morphism:
     return result
 
 
+def source_for_bool() -> bool:
+    for _ in range(1):
+        return True
+    return False
+
+
 def unselected_source_for_call() -> Morphism:
     if False:
         return source_for_helper()
@@ -138,6 +144,10 @@ def loop_free_selected_return_value() -> Morphism:
     if True:
         return identity(cycles(1))
     return identity(cycles(4))
+
+
+def loop_free_boolean_conditional_value() -> Morphism:
+    return identity(cycles(1)) if False or True else identity(cycles(4))
 
 
 def source_for_only_helper() -> Morphism:
@@ -193,6 +203,22 @@ def selected_bound_intrinsic_comprehension_source_for_call() -> Morphism:
     return identity(cycles(1))
 
 
+def conditional_source_for(selected: bool = True) -> Morphism:
+    if selected:
+        return source_for_helper()
+    return identity(cycles(1))
+
+
+def selected_bound_argument_comprehension_source_for_call() -> Morphism:
+    _selected = [conditional_source_for(selected) for selected in (True,)]
+    return identity(cycles(1))
+
+
+def unselected_bound_argument_comprehension_source_for_call() -> Morphism:
+    _unused = [conditional_source_for(selected) for selected in (False,)]
+    return identity(cycles(1))
+
+
 def filtered_bound_intrinsic_comprehension_source_for_call() -> Morphism:
     item = (1,)  # noqa: F841 - exercises a stale outer binding in Source HIR
     _unused = [source_for_helper() for item in ((),) if len(item) > 0]
@@ -206,6 +232,69 @@ def selected_reduce_lambda_source_for_call() -> Morphism:
     )
 
 
+def initialized_single_item_reduce_lambda_source_for_call() -> Morphism:
+    return reduce(
+        lambda left, right: left | source_for_helper(),
+        [identity(cycles(1))],
+        identity(0),
+    )
+
+
+def uninitialized_single_item_reduce_lambda_source_for_call() -> Morphism:
+    return reduce(
+        lambda left, right: left | source_for_helper(),
+        [identity(cycles(1))],
+    )
+
+
+def initialized_empty_reduce_lambda_source_for_call() -> Morphism:
+    return reduce(
+        lambda left, right: left | source_for_helper(),
+        [],
+        identity(0),
+    )
+
+
+def short_circuited_and_source_for_call() -> Morphism:
+    _unused = False and source_for_bool()
+    return identity(cycles(1))
+
+
+def short_circuited_or_source_for_call() -> Morphism:
+    _unused = True or source_for_bool()
+    return identity(cycles(1))
+
+
+def short_circuited_zero_and_source_for_call() -> Morphism:
+    _unused = 0 and source_for_bool()
+    return identity(cycles(1))
+
+
+def short_circuited_one_or_source_for_call() -> Morphism:
+    _unused = 1 or source_for_bool()
+    return identity(cycles(1))
+
+
+def nested_short_circuited_and_source_for_call() -> Morphism:
+    _unused = (False or False) and source_for_bool()
+    return identity(cycles(1))
+
+
+def nested_short_circuited_or_source_for_call() -> Morphism:
+    _unused = (True and True) or source_for_bool()
+    return identity(cycles(1))
+
+
+def selected_and_source_for_call() -> Morphism:
+    _selected = True and source_for_bool()
+    return identity(cycles(1))
+
+
+def selected_or_source_for_call() -> Morphism:
+    _selected = False or source_for_bool()
+    return identity(cycles(1))
+
+
 def source_without_native_specialization() -> Morphism:
     pass
 
@@ -213,6 +302,71 @@ def source_without_native_specialization() -> Morphism:
 def selected_source_without_native_specialization_call() -> Morphism:
     if True:
         return source_without_native_specialization()
+    return identity(cycles(1))
+
+
+def bound_probe_with_invalid_repeat(count: int = 1) -> Morphism:
+    return repeat_morphism(identity(cycles(1)), count)
+
+
+def comprehension_with_loop_free_bound_probe_failure() -> Morphism:
+    _unused = [bound_probe_with_invalid_repeat(count) for count in (0,)]
+    return identity(cycles(1))
+
+
+def bound_probe_with_invalid_repeat_before_source_for(count: int = 1) -> Morphism:
+    _unused = repeat_morphism(identity(cycles(1)), count)
+    if count == 0:
+        for _ in range(1):
+            pass
+    return identity(cycles(1))
+
+
+def comprehension_with_bound_probe_failure_before_source_for() -> Morphism:
+    _unused = [
+        bound_probe_with_invalid_repeat_before_source_for(count) for count in (0,)
+    ]
+    return identity(cycles(1))
+
+
+def bound_probe_with_invalid_range(step: int = 1) -> Morphism:
+    _unused = range(0, 1, step)
+    return identity(cycles(1))
+
+
+def comprehension_with_loop_free_invalid_range_probe() -> Morphism:
+    _unused = [bound_probe_with_invalid_range(step) for step in (0,)]
+    return identity(cycles(1))
+
+
+def bound_probe_with_invalid_range_before_source_for(step: int = 1) -> Morphism:
+    _unused = range(0, 1, step)
+    if step == 0:
+        for _ in range(1):
+            pass
+    return identity(cycles(1))
+
+
+def comprehension_with_invalid_range_probe_before_source_for() -> Morphism:
+    _unused = [
+        bound_probe_with_invalid_range_before_source_for(step) for step in (0,)
+    ]
+    return identity(cycles(1))
+
+
+def bound_probe_with_invalid_filter_before_source_for(divisor: int = 1) -> Morphism:
+    _unused = [item for item in (1,) if (item // divisor) > 0]
+    if divisor == 0:
+        for _ in range(1):
+            pass
+    return identity(cycles(1))
+
+
+def comprehension_with_invalid_filter_probe_before_source_for() -> Morphism:
+    _unused = [
+        bound_probe_with_invalid_filter_before_source_for(divisor)
+        for divisor in (0,)
+    ]
     return identity(cycles(1))
 
 
@@ -234,6 +388,10 @@ class SourceForService:
 
     def compile(self) -> Morphism:
         _selected = [module.broken() for module in self.modules]
+        return identity(cycles(1))
+
+    def compile_filtered(self) -> Morphism:
+        _unused = [module.broken() for module in self.modules if False]
         return identity(cycles(1))
 
 
@@ -332,6 +490,12 @@ def test_guard_does_not_change_loop_free_value_selection(compiler: Compiler) -> 
     assert compiled.logical_duration_cycles == 4
 
 
+def test_guard_does_not_add_boolean_lowering(compiler: Compiler) -> None:
+    compiled = compiler.compile(loop_free_boolean_conditional_value)
+
+    assert compiled.logical_duration_cycles == 4
+
+
 def test_unselected_source_for_call_does_not_require_a_lowered_value(
     compiler: Compiler,
 ) -> None:
@@ -404,6 +568,70 @@ def test_bound_intrinsic_comprehension_selects_source_for_calls(
     )
 
 
+def test_bound_comprehension_arguments_select_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        selected_bound_argument_comprehension_source_for_call,
+        source_with_for=source_for_helper,
+    )
+
+
+def test_bound_comprehension_arguments_can_leave_source_for_unselected(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(unselected_bound_argument_comprehension_source_for_call)
+
+    assert compiled.logical_duration_cycles == 1
+
+
+def test_bound_guard_probe_does_not_surface_unrelated_lowering_errors(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(comprehension_with_loop_free_bound_probe_failure)
+
+    assert compiled.logical_duration_cycles == 1
+
+
+def test_bound_guard_probe_still_reports_a_later_selected_source_for(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        comprehension_with_bound_probe_failure_before_source_for,
+        source_with_for=bound_probe_with_invalid_repeat_before_source_for,
+    )
+
+
+def test_bound_guard_probe_does_not_surface_an_invalid_range_error(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(comprehension_with_loop_free_invalid_range_probe)
+
+    assert compiled.logical_duration_cycles == 1
+
+
+def test_invalid_range_probe_still_reports_a_later_selected_source_for(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        comprehension_with_invalid_range_probe_before_source_for,
+        source_with_for=bound_probe_with_invalid_range_before_source_for,
+    )
+
+
+def test_invalid_filter_probe_still_reports_a_later_selected_source_for(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        comprehension_with_invalid_filter_probe_before_source_for,
+        source_with_for=bound_probe_with_invalid_filter_before_source_for,
+    )
+
+
 def test_static_property_comprehension_selects_source_for_calls(
     compiler: Compiler,
 ) -> None:
@@ -414,6 +642,14 @@ def test_static_property_comprehension_selects_source_for_calls(
     )
 
 
+def test_static_property_comprehension_filters_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(source_for_service.compile_filtered)
+
+    assert compiled.logical_duration_cycles == 1
+
+
 def test_consumed_reduce_lambda_selects_source_for_calls(
     compiler: Compiler,
 ) -> None:
@@ -421,6 +657,66 @@ def test_consumed_reduce_lambda_selects_source_for_calls(
         compiler,
         selected_reduce_lambda_source_for_call,
         source_with_for=source_for_helper,
+    )
+
+
+def test_initialized_single_item_reduce_selects_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        initialized_single_item_reduce_lambda_source_for_call,
+        source_with_for=source_for_helper,
+    )
+
+
+def test_single_item_reduce_skips_an_unconsumed_lambda_source_for_call(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(uninitialized_single_item_reduce_lambda_source_for_call)
+
+    assert compiled.logical_duration_cycles == 1
+
+
+def test_empty_initialized_reduce_does_not_select_its_lambda_source_for_call(
+    compiler: Compiler,
+) -> None:
+    with pytest.raises(CatSeqCompileError) as error:
+        compiler.compile(initialized_empty_reduce_lambda_source_for_call)
+
+    assert "cannot reduce an empty Morphism aggregate" in str(error.value)
+    assert SOURCE_FOR_GUARD_MESSAGE not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        short_circuited_and_source_for_call,
+        short_circuited_or_source_for_call,
+        short_circuited_zero_and_source_for_call,
+        short_circuited_one_or_source_for_call,
+        nested_short_circuited_and_source_for_call,
+        nested_short_circuited_or_source_for_call,
+    ],
+)
+def test_short_circuited_operands_do_not_select_source_for_calls(
+    compiler: Compiler,
+    entry: Callable[..., object],
+) -> None:
+    compiled = compiler.compile(entry)
+
+    assert compiled.logical_duration_cycles == 1
+
+
+@pytest.mark.parametrize("entry", [selected_and_source_for_call, selected_or_source_for_call])
+def test_consumed_boolean_operands_select_source_for_calls(
+    compiler: Compiler,
+    entry: Callable[..., object],
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        entry,
+        source_with_for=source_for_bool,
     )
 
 

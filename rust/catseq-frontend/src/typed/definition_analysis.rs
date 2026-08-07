@@ -51,6 +51,12 @@ pub(super) struct ReachableCall {
     pub(super) target_path: String,
     pub(super) line: usize,
     pub(super) column: usize,
+    pub(super) use_kind: ReachableUse,
+}
+
+pub(super) enum ReachableUse {
+    Call,
+    ReduceCallback { reduce_path: String },
 }
 
 pub(super) fn find_definition(
@@ -136,12 +142,23 @@ fn find_definition_with_imports(
                             let values = elements
                                 .iter()
                                 .map(|element| {
-                                    module_values.get(element).cloned().or_else(|| {
-                                        element
-                                            .strip_prefix("self.")
-                                            .and_then(|field| fields.values.get(field))
-                                            .cloned()
-                                    })
+                                    let normalized =
+                                        module_values.get(element).cloned().or_else(|| {
+                                            element
+                                                .strip_prefix("self.")
+                                                .and_then(|field| fields.values.get(field))
+                                                .cloned()
+                                        })?;
+                                    Some(
+                                        if normalized.starts_with("call:")
+                                            && !normalized
+                                                .starts_with("call:catseq.time_utils.cycles(")
+                                        {
+                                            format!("instance:{file_name}.{element}")
+                                        } else {
+                                            normalized
+                                        },
+                                    )
                                 })
                                 .collect::<Option<Vec<_>>>()?;
                             Some((property.clone(), values))
@@ -397,7 +414,8 @@ fn visit_expression_calls(
         } => {
             let compile_environment_load =
                 expression_path(func).is_some_and(|path| path == "np.load" || path == "numpy.load");
-            if let Some(path) = callable_path(func) {
+            let callable = callable_path(func);
+            if let Some(path) = callable.clone() {
                 let mut segments = path.split('.');
                 let first = segments.next().unwrap_or(&path);
                 let remainder = segments.collect::<Vec<_>>().join(".");
@@ -411,6 +429,7 @@ fn visit_expression_calls(
                         },
                         line: expression.location.row,
                         column: expression.location.column,
+                        use_kind: ReachableUse::Call,
                     }));
                 } else {
                     calls.push(ReachableCall {
@@ -418,8 +437,20 @@ fn visit_expression_calls(
                         target_path: path,
                         line: expression.location.row,
                         column: expression.location.column,
+                        use_kind: ReachableUse::Call,
                     });
                 }
+            }
+            if let (Some(reduce_path), Some(callback)) =
+                (callable, args.first().and_then(expression_path))
+            {
+                calls.push(ReachableCall {
+                    source_path: callback.clone(),
+                    target_path: callback,
+                    line: args[0].location.row,
+                    column: args[0].location.column,
+                    use_kind: ReachableUse::ReduceCallback { reduce_path },
+                });
             }
             if compile_environment_load {
                 return;

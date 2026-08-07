@@ -19,7 +19,7 @@ mod validation;
 
 use ast_util::parse_module;
 use compile_attributes::{load_referenced_compile_modules, resolve_bundle_compile_attributes};
-use definition_analysis::{definition_exists, find_definition};
+use definition_analysis::{ReachableUse, definition_exists, find_definition};
 use resolution::{
     load_source_module, locate_source_definition, module_imports, resolve_call_path,
     resolve_compile_instance_call, resolve_self_call,
@@ -127,6 +127,53 @@ where
             }
         }
         for source_call in analysis.calls {
+            if let ReachableUse::ReduceCallback { reduce_path } = &source_call.use_kind {
+                let reduce = resolve_self_call(&lexical_name, reduce_path);
+                if resolve_call_path(&module_name, &imports, &reduce) != "functools.reduce" {
+                    continue;
+                }
+                if analysis
+                    .definition
+                    .hir
+                    .definition_reference_resolves_to_lambda(
+                        &source_call.source_path,
+                        source_call.line,
+                        source_call.column,
+                    )
+                {
+                    continue;
+                }
+                let callback = resolve_self_call(&lexical_name, &source_call.target_path);
+                let resolved = resolve_call_path(&module_name, &imports, &callback);
+                analysis.definition.hir.resolve_definition_reference(
+                    &source_call.source_path,
+                    source_call.line,
+                    source_call.column,
+                    &resolved,
+                );
+                if let Some((target_module, target_definition)) =
+                    locate_source_definition(&resolved, &mut sources, loader)?
+                {
+                    if !parsed.contains_key(&target_module) {
+                        let source = &sources[&target_module];
+                        parsed.insert(target_module.clone(), parse_module(&target_module, source)?);
+                    }
+                    if definition_exists(&parsed[&target_module], &target_definition) {
+                        pending.push_back((target_module, target_definition));
+                        continue;
+                    }
+                }
+                if intrinsics::is_registered(&resolved) || opaque_definitions.contains(&resolved) {
+                    continue;
+                }
+                return Err(TypedCheckError::ReachableHostCall {
+                    file_name: module_name,
+                    definition: lexical_name,
+                    target: resolved,
+                    line: source_call.line,
+                    column: source_call.column,
+                });
+            }
             let call = resolve_self_call(&lexical_name, &source_call.target_path);
             let resolved =
                 if call == "round" && !imports.contains_key("round") && !module_defines_round {

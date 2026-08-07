@@ -317,7 +317,7 @@ impl Serialize for NodeJson<'_> {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SourceHirNode", 14)?;
+        let mut state = serializer.serialize_struct("SourceHirNode", 16)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("kind", self.node.kind().as_str())?;
         state.serialize_field("symbol", &self.node.symbol())?;
@@ -355,6 +355,14 @@ impl Serialize for NodeJson<'_> {
         state.serialize_field(
             "lambda_parameter_names",
             &self.node.lambda_parameter_names(),
+        )?;
+        state.serialize_field(
+            "comprehension_element_count",
+            &self.node.comprehension_element_count(),
+        )?;
+        state.serialize_field(
+            "comprehension_filter_counts",
+            &self.node.comprehension_filter_counts(),
         )?;
         state.serialize_field("edge_start", &self.node.edge_start())?;
         state.serialize_field("edge_count", &self.node.edge_count())?;

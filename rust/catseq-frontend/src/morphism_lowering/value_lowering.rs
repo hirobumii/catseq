@@ -117,6 +117,7 @@ fn lowered_values_equal(left: &LoweredValue, right: &LoweredValue) -> Option<boo
     match (left, right) {
         (LoweredValue::Null, LoweredValue::Null) => Some(true),
         (LoweredValue::Null, _) | (_, LoweredValue::Null) => Some(false),
+        (LoweredValue::Instance(left), LoweredValue::Instance(right)) => Some(left == right),
         (
             LoweredValue::Scalar(ScalarValue::Bool(left)),
             LoweredValue::Scalar(ScalarValue::Bool(right)),
@@ -423,10 +424,11 @@ pub(super) fn lowered_to_json(
         LoweredValue::Scalar(ScalarValue::Expr(id)) => Ok(serde_json::json!({
             "$value_expr": id.index()
         })),
-        LoweredValue::Morphism(_)
+        LoweredValue::Instance(_)
+        | LoweredValue::Morphism(_)
         | LoweredValue::Template(_)
         | LoweredValue::ChannelBindings(_) => Err(MorphismLoweringError::new(
-            "Morphism value cannot be embedded in a native record",
+            "compile instance or Morphism value cannot be embedded in a native record",
         )),
     }
 }
@@ -748,7 +750,8 @@ pub(super) fn call_arguments(
             LoweredValue::Null => {
                 arguments.push(builder.constant(ValueExprPayload::Json(serde_json::Value::Null)))
             }
-            LoweredValue::Morphism(_)
+            LoweredValue::Instance(_)
+            | LoweredValue::Morphism(_)
             | LoweredValue::Template(_)
             | LoweredValue::ChannelBindings(_) => {}
         }

@@ -73,6 +73,16 @@ def nested_selected_source_for() -> Morphism:
     return identity(cycles(1))
 
 
+def selected_rebound_nested_if_source_for() -> Morphism:
+    selected = False
+    if True:
+        selected = True
+        if selected:
+            for _ in range(3):
+                return identity(cycles(4))
+    return identity(cycles(1))
+
+
 def unselected_source_for() -> Morphism:
     if False:
         for _ in range(3):
@@ -191,6 +201,18 @@ def selected_comprehension_source_for_call() -> Morphism:
     return identity(cycles(1))
 
 
+def selected_multi_generator_comprehension_source_for_call() -> Morphism:
+    _selected = [
+        source_for_helper() for left in (1,) for right in (1,) if left == right
+    ]
+    return identity(cycles(1))
+
+
+def selected_dictionary_comprehension_source_for_call() -> Morphism:
+    _selected = {key: source_for_helper() for key in (1,)}
+    return identity(cycles(1))
+
+
 def selected_conditional_comprehension_source_for_call() -> Morphism:
     _selected = [
         source_for_helper() if take else identity(cycles(1)) for take in (True,)
@@ -265,6 +287,26 @@ def selected_reduce_lambda_alias_source_for_call() -> Morphism:
     combine = lambda left, right: left | source_for_helper()  # noqa: E731
     return reduce(
         combine,
+        [identity(cycles(1)), identity(cycles(2))],
+    )
+
+
+def named_source_for_reducer(left: Morphism, right: Morphism) -> Morphism:
+    return left | right | source_for_helper()
+
+
+def selected_named_reduce_source_for_call() -> Morphism:
+    return reduce(
+        named_source_for_reducer,
+        [identity(cycles(1)), identity(cycles(2))],
+    )
+
+
+def selected_conditional_reduce_lambda_source_for_call() -> Morphism:
+    return reduce(
+        (lambda left, right: left | right | source_for_helper())
+        if True
+        else (lambda left, right: left | right),
         [identity(cycles(1)), identity(cycles(2))],
     )
 
@@ -367,6 +409,20 @@ def selected_nested_boolean_conditional_source_for_call() -> Morphism:
 
 def short_circuited_comparison_boolean_source_for_call() -> Morphism:
     _unused = (False == True == source_for_bool_only()) and source_for_bool_only()  # noqa: E712
+    return identity(cycles(1))
+
+
+def distinct_aggregate_identity_source_for_call() -> Morphism:
+    left = [1]
+    right = [1]
+    _unused = (left is right) and source_for_bool()
+    return identity(cycles(1))
+
+
+def aliased_aggregate_identity_source_for_call() -> Morphism:
+    shared = [1]
+    alias = shared
+    _selected = (shared is alias) and source_for_bool()
     return identity(cycles(1))
 
 
@@ -504,6 +560,13 @@ class SourceForService:
         ]
         return identity(cycles(1))
 
+    def compile_object_target_filtered(self) -> Morphism:
+        module = False  # noqa: F841 - target object must replace this stale binding
+        _selected = [
+            source_for_helper() for module in self.modules if module
+        ]
+        return identity(cycles(1))
+
     def compile_empty_static_property(self) -> Morphism:
         _unused = [source_for_helper() for selected in self.empty_flags if selected]
         return identity(cycles(1))
@@ -526,6 +589,12 @@ def test_public_compiler_rejects_a_nested_selected_source_for(
     compiler: Compiler,
 ) -> None:
     _assert_source_for_rejected(compiler, nested_selected_source_for)
+
+
+def test_selected_suite_rebinding_selects_a_later_source_for(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(compiler, selected_rebound_nested_if_source_for)
 
 
 def test_public_compiler_ignores_the_guard_on_an_unselected_source_for(
@@ -658,6 +727,26 @@ def test_evaluated_comprehension_selects_source_for_calls(
     _assert_source_for_rejected(
         compiler,
         selected_comprehension_source_for_call,
+        source_with_for=source_for_helper,
+    )
+
+
+def test_multi_generator_comprehension_selects_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        selected_multi_generator_comprehension_source_for_call,
+        source_with_for=source_for_helper,
+    )
+
+
+def test_dictionary_comprehension_value_selects_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        selected_dictionary_comprehension_source_for_call,
         source_with_for=source_for_helper,
     )
 
@@ -820,6 +909,16 @@ def test_static_property_filter_does_not_use_a_stale_outer_value(
     assert compiled.logical_duration_cycles == 1
 
 
+def test_object_static_property_filter_uses_its_target_value(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        source_for_service.compile_object_target_filtered,
+        source_with_for=source_for_helper,
+    )
+
+
 def test_empty_static_property_does_not_select_source_for_calls(
     compiler: Compiler,
 ) -> None:
@@ -844,6 +943,26 @@ def test_consumed_reduce_lambda_alias_selects_source_for_calls(
     _assert_source_for_rejected(
         compiler,
         selected_reduce_lambda_alias_source_for_call,
+        source_with_for=source_for_helper,
+    )
+
+
+def test_consumed_named_reduce_callback_selects_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        selected_named_reduce_source_for_call,
+        source_with_for=source_for_helper,
+    )
+
+
+def test_consumed_conditional_reduce_lambda_selects_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        selected_conditional_reduce_lambda_source_for_call,
         source_with_for=source_for_helper,
     )
 
@@ -970,6 +1089,24 @@ def test_comparison_result_short_circuits_an_outer_boolean_operation(
     compiled = compiler.compile(short_circuited_comparison_boolean_source_for_call)
 
     assert compiled.logical_duration_cycles == 1
+
+
+def test_distinct_equal_aggregates_are_not_identical_for_path_selection(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(distinct_aggregate_identity_source_for_call)
+
+    assert compiled.logical_duration_cycles == 1
+
+
+def test_aggregate_aliases_remain_identical_for_path_selection(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        aliased_aggregate_identity_source_for_call,
+        source_with_for=source_for_bool,
+    )
 
 
 def test_loop_free_missing_specialization_value_still_fails(

@@ -205,6 +205,10 @@ pub struct SourceHirNode {
     #[serde(default)]
     lambda_parameter_names: Vec<String>,
     #[serde(default)]
+    comprehension_element_count: u32,
+    #[serde(default)]
+    comprehension_filter_counts: Vec<u32>,
+    #[serde(default)]
     call_positional_count: u32,
     #[serde(default)]
     call_keyword_names: Vec<String>,
@@ -248,6 +252,14 @@ impl SourceHirNode {
 
     pub fn lambda_parameter_names(&self) -> &[String] {
         &self.lambda_parameter_names
+    }
+
+    pub const fn comprehension_element_count(&self) -> u32 {
+        self.comprehension_element_count
+    }
+
+    pub fn comprehension_filter_counts(&self) -> &[u32] {
+        &self.comprehension_filter_counts
     }
 
     pub const fn call_positional_count(&self) -> u32 {
@@ -550,6 +562,51 @@ impl TypedSourceHir {
                 record_resolution(fact, resolved);
             }
         }
+    }
+
+    pub(crate) fn resolve_definition_reference(
+        &mut self,
+        source_path: &str,
+        line: usize,
+        column: usize,
+        resolved: &str,
+    ) {
+        for (node, fact) in self.nodes.iter().zip(&mut self.facts) {
+            if matches!(node.kind, SourceHirKind::Name | SourceHirKind::Attribute)
+                && node.symbol.as_deref() == Some(source_path)
+                && node.anchor.line == line
+                && node.anchor.column == column
+            {
+                record_resolution(fact, resolved);
+            }
+        }
+    }
+
+    pub(crate) fn definition_reference_resolves_to_lambda(
+        &self,
+        source_path: &str,
+        line: usize,
+        column: usize,
+    ) -> bool {
+        let Some(mut current) = self.nodes.iter().position(|node| {
+            matches!(node.kind, SourceHirKind::Name | SourceHirKind::Attribute)
+                && node.symbol.as_deref() == Some(source_path)
+                && node.anchor.line == line
+                && node.anchor.column == column
+        }) else {
+            return false;
+        };
+        let mut visited = HashSet::new();
+        while visited.insert(current) {
+            if self.nodes[current].kind == SourceHirKind::Lambda {
+                return true;
+            }
+            let Some(resolved) = self.facts[current].resolved_node else {
+                return false;
+            };
+            current = resolved as usize;
+        }
+        false
     }
 
     pub(crate) fn mark_opaque_atomic_call(
@@ -1046,6 +1103,8 @@ pub(crate) fn lower_definition_hir(
                     context,
                 );
                 let id = nodes.len() as u32;
+                let (comprehension_element_count, comprehension_filter_counts) =
+                    expression_comprehension_shape(expression);
                 nodes.push(SourceHirNode {
                     kind: expression_kind(expression),
                     symbol: expression_symbol(expression),
@@ -1055,6 +1114,8 @@ pub(crate) fn lower_definition_hir(
                     boolean_operation: expression_boolean_operation(expression),
                     comparison_operations: expression_comparison_operations(expression),
                     lambda_parameter_names: expression_lambda_parameter_names(expression),
+                    comprehension_element_count,
+                    comprehension_filter_counts,
                     call_positional_count: call_shape(expression, context.erased_state_names).0,
                     call_keyword_names: call_shape(expression, context.erased_state_names).1,
                     control_body_count: 0,
@@ -1091,6 +1152,8 @@ pub(crate) fn lower_definition_hir(
                     boolean_operation: None,
                     comparison_operations: Vec::new(),
                     lambda_parameter_names: Vec::new(),
+                    comprehension_element_count: 0,
+                    comprehension_filter_counts: Vec::new(),
                     call_positional_count: 0,
                     call_keyword_names: Vec::new(),
                     control_body_count,
@@ -1987,6 +2050,23 @@ fn expression_comprehension_static_values(
     let property = expression_path(&generator.iter)
         .and_then(|path| path.strip_prefix("self.").map(str::to_owned))?;
     context.property_compile_values.get(&property).cloned()
+}
+
+fn expression_comprehension_shape(expression: &Expr) -> (u32, Vec<u32>) {
+    let (element_count, generators) = match &expression.node {
+        ExprKind::ListComp { generators, .. }
+        | ExprKind::SetComp { generators, .. }
+        | ExprKind::GeneratorExp { generators, .. } => (1, generators.as_slice()),
+        ExprKind::DictComp { generators, .. } => (2, generators.as_slice()),
+        _ => return (0, Vec::new()),
+    };
+    (
+        element_count,
+        generators
+            .iter()
+            .map(|generator| generator.ifs.len() as u32)
+            .collect(),
+    )
 }
 
 fn expression_lambda_parameter_names(expression: &Expr) -> Vec<String> {

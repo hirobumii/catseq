@@ -121,6 +121,9 @@ pub(super) fn parse_normalized_cycles(value: &str) -> Option<ExactDecimal> {
 }
 
 pub(super) fn lower_normalized_default(value: &str, clock_hz: u64) -> Option<LoweredValue> {
+    if let Some(identity) = value.strip_prefix("instance:") {
+        return Some(LoweredValue::Instance(identity.to_owned()));
+    }
     let scalar = match value {
         "constant:None" => return Some(LoweredValue::Null),
         "constant:Bool(true)" => ScalarValue::Bool(true),

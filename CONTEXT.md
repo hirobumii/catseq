@@ -38,7 +38,8 @@ _Avoid_: OASM assembly, RTMQ binary
 
 **Compiled Sequence**:
 The immutable public result of compiling and linking one sequence entry. It
-contains the OASM Call Plan, logical timing, and diagnostics, but no OASM
+contains the OASM Call Plan, logical timing, diagnostics, and the per-board ICH
+Capacity snapshot needed to finalize its Board ICH Programs, but no OASM
 assembler context or physical execution state.
 _Avoid_: seq, OASM assembler, live Python Morphism
 
@@ -59,6 +60,27 @@ Device. Availability qualifies a base type rather than creating separate
 runtime versions of every type.
 _Avoid_: Compilation stage, Runtime type wrapper
 
+**Control Execution**:
+The execution domain of a supported control decision: ordinary Python `for` and
+`if` are CompileTime, while exact `catseq.hardware.control` special forms
+explicitly request Hardware. Value Availability validates but never changes the
+source-selected domain. Unsupported `while` has no Control Execution.
+_Avoid_: Availability-inferred staging, Dependency Role
+
+**Specialization Environment**:
+The compiler-owned mapping of local names to Compile-known values while selected
+CompileTime control is evaluated. Control bodies produce new bindings rather
+than mutating CPython objects, and each loop iteration observes the bindings
+produced by its predecessor. CompileTime control does not create a block scope;
+bindings follow Python function scope along the selected path.
+_Avoid_: Compile Environment, Python locals dictionary, mutable object graph
+
+**CompileTime Completion**:
+The outcome of evaluating a selected CompileTime suite: Normal, Break,
+Continue, or Return. The nearest loop consumes Break and Continue, while Return
+propagates through nested control and completes the current source definition.
+_Avoid_: Morphism Effect, hardware branch result, Python exception
+
 **Type Signature**:
 The stable base and nominal input, field, local, and result types inferred for a
 definition SCC, independent of Value Availability and specialization values.
@@ -78,26 +100,54 @@ _Avoid_: Python object graph, runtime globals
 
 **Entry Arguments**:
 The explicitly supplied scalar arguments of the root sequence method. They are
-Compile-known specialization inputs, may select structural control flow, and
-are transported separately from Link-time Runtime Bindings. An omitted argument
-uses its source default; explicit `None` is retained for an Optional parameter.
+Compile-known specialization inputs, may select ordinary CompileTime control,
+and are transported separately from Link-time Runtime Bindings. An omitted
+argument uses its source default; explicit `None` is retained for an Optional
+parameter.
 _Avoid_: Runtime Bindings, Runtime Slot values
 
 **Compile Request**:
 The versioned one-shot binary input naming a Source Bundle, compile entry,
-Compile Environment, Entry Arguments, Target Profile, optional Link Bindings,
-and incremental cache. It contains no Python objects or syntax trees.
+Compile Environment, Entry Arguments, Compiler Limits, Target Profile, optional
+Link Bindings, and incremental cache. It contains no Python objects or syntax
+trees.
 _Avoid_: Python compiler callback, daemon session request
 
+**Compiler Limits**:
+The Rust-owned, versioned, non-semantic host resource ceilings for one
+compilation, including `max_compile_time_iterations` across nested ordinary
+loops and `max_native_nodes` across the Morphism and Value Expression arenas.
+Defaults may be overridden explicitly and do not participate in artifact
+identity. Their versioned defaults are 100,000 iterations and 1,000,000 native
+nodes.
+_Avoid_: Compile Environment, Target Profile, dynamic free-memory probe
+
+**ICH Capacity**:
+The maximum number of instruction words accepted by one board. A Target Profile
+declares it for every logical board, and the Ethernet Runtime independently
+checks the finalized Board ICH Program against the physical endpoint before
+download. It is a target constraint rather than a host compiler resource
+ceiling.
+_Avoid_: Compiler Limit, native node budget, inferred default
+
+**Board ICH Program**:
+The finalized ordered 32-bit OASM instruction words for one logical board,
+together with the exception-handler position that indexes those words. It is
+assembled from an OASM Call Plan and downloaded into that board's instruction
+cache.
+_Avoid_: Disk image, OASM Call Plan, Download loader
+
 **Target Profile**:
-The versioned RTMQ ABI, board capabilities, clock definition, and Atomic Schema
-target mappings against which a program is lowered.
+The versioned RTMQ ABI, required per-board ICH Capacity, clock definition, and
+Atomic Schema target mappings against which a program is lowered.
 _Avoid_: Hardware map, Compile Environment
 
 **Ethernet Runtime**:
-The execution environment that dispatches assembled board programs to one
-physical chassis through the RTLink Ethernet protocol. Platform-specific raw
-socket or capture-driver mechanisms are not part of its public identity.
+The execution environment that prepares and dispatches Board ICH Programs to
+one physical chassis through the RTLink Ethernet protocol. Preparation is a
+side-effect-free finalization and validation step; dispatch performs physical
+I/O. Platform-specific raw socket or capture-driver mechanisms are not part of
+its public identity.
 _Avoid_: Raw Ethernet Runtime, OASM eth_intf
 
 **Relocatable Artifact**:
@@ -362,9 +412,9 @@ each shorter branch holds its final state until that boundary.
 _Avoid_: Max-only parallelism, unaligned parallel branches
 
 **Serial**:
-An ordered Morphism composition whose adjacent boundaries independently use
-automatic or strict state matching.
-_Avoid_: Sequence node, chain node
+An ordered Morphism composition whose `>>` boundaries thread each child's
+outgoing State Environment into the next child's incoming environment.
+_Avoid_: StrictSerial, sequence node, chain node
 
 **Parallel**:
 A Morphism composition whose branches share their start and aligned end

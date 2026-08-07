@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0052
 ---
 
 # Preserve sequencing for as native loops
@@ -20,3 +20,7 @@ Pure Compile data loops that do not accumulate sequencing may still be
 evaluated by the abstract evaluator. Native sequencing loops must have a valid
 effect from one iteration boundary to the next; state-closed bodies are the
 canonical safe case.
+
+ADR-0052 supersedes this default: ordinary Python control is CompileTime, and
+only future explicit compiler-owned special forms under the reserved
+`catseq.hardware.control` namespace may request Hardware control.

@@ -27,3 +27,8 @@ This representation reduces composition depth and treats dictionary
 application, ordinary parallel composition, and service-template composition
 uniformly. Per-child and per-boundary provenance is retained so flattening does
 not weaken diagnostics.
+
+ADR-0053 supersedes only the choice of multiple Serial boundary policies: `>>`
+is now the sole Serial boundary and strict `@` composition is removed. The
+variadic Serial/Parallel representation, flat edge table, flattening rules, and
+provenance decisions in this ADR remain accepted.

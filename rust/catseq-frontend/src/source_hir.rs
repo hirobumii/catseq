@@ -44,6 +44,7 @@ pub enum SourceHirKind {
     Aggregate,
     Compare,
     ConditionalExpression,
+    NamedExpression,
     Lambda,
     Comprehension,
     Assignment,
@@ -178,6 +179,7 @@ impl SourceHirKind {
             Self::Aggregate => "aggregate",
             Self::Compare => "compare",
             Self::ConditionalExpression => "conditional_expression",
+            Self::NamedExpression => "named_expression",
             Self::Lambda => "lambda",
             Self::Comprehension => "comprehension",
             Self::Assignment => "assignment",
@@ -1148,7 +1150,7 @@ pub(crate) fn lower_definition_hir(
                     symbol: None,
                     morphism_composition: None,
                     literal: None,
-                    value_operation: None,
+                    value_operation: statement_value_operation(statement),
                     boolean_operation: None,
                     comparison_operations: Vec::new(),
                     lambda_parameter_names: Vec::new(),
@@ -1495,6 +1497,7 @@ fn expression_kind(expression: &Expr) -> SourceHirKind {
         }
         ExprKind::Compare { .. } => SourceHirKind::Compare,
         ExprKind::IfExp { .. } => SourceHirKind::ConditionalExpression,
+        ExprKind::NamedExpr { .. } => SourceHirKind::NamedExpression,
         ExprKind::Lambda { .. } => SourceHirKind::Lambda,
         ExprKind::ListComp { .. }
         | ExprKind::SetComp { .. }
@@ -1656,6 +1659,10 @@ fn expression_fact(
         ExprKind::IfExp { .. } => (
             child_fact(1).and_then(SemanticFact::source_type).cloned(),
             joined_availability(),
+        ),
+        ExprKind::NamedExpr { .. } => (
+            child_fact(1).and_then(SemanticFact::source_type).cloned(),
+            child_fact(1).map_or(ValueAvailability::Compile, |fact| fact.availability),
         ),
         ExprKind::Dict { .. } => (Some(SourceType::ChannelBindings), joined_availability()),
         ExprKind::List { .. } | ExprKind::Tuple { .. } | ExprKind::Set { .. } => {
@@ -1982,23 +1989,34 @@ fn expression_literal(expression: &Expr) -> Option<SourceLiteral> {
 
 fn expression_value_operation(expression: &Expr) -> Option<ValueOperation> {
     match expression.node {
-        ExprKind::BinOp { op, .. } => match op {
-            Operator::Add => Some(ValueOperation::Add),
-            Operator::Sub => Some(ValueOperation::Subtract),
-            Operator::Mult => Some(ValueOperation::Multiply),
-            Operator::Div => Some(ValueOperation::Divide),
-            Operator::FloorDiv => Some(ValueOperation::FloorDivide),
-            Operator::Mod => Some(ValueOperation::Modulo),
-            Operator::Pow => Some(ValueOperation::Power),
-            Operator::LShift => Some(ValueOperation::LeftShift),
-            _ => None,
-        },
+        ExprKind::BinOp { op, .. } => binary_value_operation(op),
         ExprKind::UnaryOp { op, .. } => match op {
             nac3ast::Unaryop::USub => Some(ValueOperation::Negate),
             nac3ast::Unaryop::UAdd => Some(ValueOperation::Positive),
             nac3ast::Unaryop::Not => Some(ValueOperation::LogicalNot),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+fn statement_value_operation(statement: &Stmt) -> Option<ValueOperation> {
+    let StmtKind::AugAssign { op, .. } = statement.node else {
+        return None;
+    };
+    binary_value_operation(op)
+}
+
+const fn binary_value_operation(operation: Operator) -> Option<ValueOperation> {
+    match operation {
+        Operator::Add => Some(ValueOperation::Add),
+        Operator::Sub => Some(ValueOperation::Subtract),
+        Operator::Mult => Some(ValueOperation::Multiply),
+        Operator::Div => Some(ValueOperation::Divide),
+        Operator::FloorDiv => Some(ValueOperation::FloorDivide),
+        Operator::Mod => Some(ValueOperation::Modulo),
+        Operator::Pow => Some(ValueOperation::Power),
+        Operator::LShift => Some(ValueOperation::LeftShift),
         _ => None,
     }
 }

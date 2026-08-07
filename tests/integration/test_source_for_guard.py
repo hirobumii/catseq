@@ -83,6 +83,24 @@ def selected_rebound_nested_if_source_for() -> Morphism:
     return identity(cycles(1))
 
 
+def selected_augmented_rebound_source_for() -> Morphism:
+    count = 1
+    count += 1
+    if count == 2:
+        for _ in range(3):
+            return identity(cycles(4))
+    return identity(cycles(1))
+
+
+def selected_named_expression_rebound_source_for() -> Morphism:
+    selected = False
+    _ = (selected := True)
+    if selected:
+        for _ in range(3):
+            return identity(cycles(4))
+    return identity(cycles(1))
+
+
 def unselected_source_for() -> Morphism:
     if False:
         for _ in range(3):
@@ -595,6 +613,18 @@ def test_selected_suite_rebinding_selects_a_later_source_for(
     compiler: Compiler,
 ) -> None:
     _assert_source_for_rejected(compiler, selected_rebound_nested_if_source_for)
+
+
+def test_augmented_rebinding_selects_a_later_source_for(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(compiler, selected_augmented_rebound_source_for)
+
+
+def test_named_expression_rebinding_selects_a_later_source_for(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(compiler, selected_named_expression_rebound_source_for)
 
 
 def test_public_compiler_ignores_the_guard_on_an_unselected_source_for(

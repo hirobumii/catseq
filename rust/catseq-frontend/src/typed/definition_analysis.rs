@@ -128,6 +128,26 @@ fn find_definition_with_imports(
                 let empty_field_types = HashMap::new();
                 let empty_field_values = HashMap::new();
                 let empty_field_aggregate_element_types = HashMap::new();
+                let property_compile_values = class_context.map_or_else(HashMap::new, |fields| {
+                    fields
+                        .property_elements
+                        .iter()
+                        .filter_map(|(property, elements)| {
+                            let values = elements
+                                .iter()
+                                .map(|element| {
+                                    module_values.get(element).cloned().or_else(|| {
+                                        element
+                                            .strip_prefix("self.")
+                                            .and_then(|field| fields.values.get(field))
+                                            .cloned()
+                                    })
+                                })
+                                .collect::<Option<Vec<_>>>()?;
+                            Some((property.clone(), values))
+                        })
+                        .collect()
+                });
                 let hir_context = DefinitionHirContext::new(
                     file_name,
                     class_context.map_or(&empty_field_types, |fields| &fields.types),
@@ -135,6 +155,7 @@ fn find_definition_with_imports(
                     class_context.map_or(&empty_field_aggregate_element_types, |fields| {
                         &fields.aggregate_element_types
                     }),
+                    &property_compile_values,
                     &erased_state_names,
                     imports,
                 );

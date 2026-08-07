@@ -203,6 +203,8 @@ pub struct SourceHirNode {
     #[serde(default)]
     comparison_operations: Vec<ComparisonOperation>,
     #[serde(default)]
+    lambda_parameter_names: Vec<String>,
+    #[serde(default)]
     call_positional_count: u32,
     #[serde(default)]
     call_keyword_names: Vec<String>,
@@ -242,6 +244,10 @@ impl SourceHirNode {
 
     pub fn comparison_operations(&self) -> &[ComparisonOperation] {
         &self.comparison_operations
+    }
+
+    pub fn lambda_parameter_names(&self) -> &[String] {
+        &self.lambda_parameter_names
     }
 
     pub const fn call_positional_count(&self) -> u32 {
@@ -339,6 +345,8 @@ pub struct SemanticFact {
     module_binding_shadowed: bool,
     phase_frame: Option<String>,
     compile_value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    comprehension_static_values: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     compile_aggregate_element_types: Vec<SourceType>,
 }
@@ -378,6 +386,10 @@ impl SemanticFact {
 
     pub fn compile_value(&self) -> Option<&str> {
         self.compile_value.as_deref()
+    }
+
+    pub fn comprehension_static_values(&self) -> Option<&[String]> {
+        self.comprehension_static_values.as_deref()
     }
 
     pub fn compile_aggregate_element_types(&self) -> &[SourceType] {
@@ -951,6 +963,7 @@ pub(crate) struct DefinitionHirContext<'a> {
     fields: &'a HashMap<String, SourceType>,
     field_values: &'a HashMap<String, String>,
     field_aggregate_element_types: &'a HashMap<String, Vec<SourceType>>,
+    property_compile_values: &'a HashMap<String, Vec<String>>,
     erased_state_names: &'a HashSet<String>,
     imports: &'a HashMap<String, String>,
 }
@@ -961,6 +974,7 @@ impl<'a> DefinitionHirContext<'a> {
         fields: &'a HashMap<String, SourceType>,
         field_values: &'a HashMap<String, String>,
         field_aggregate_element_types: &'a HashMap<String, Vec<SourceType>>,
+        property_compile_values: &'a HashMap<String, Vec<String>>,
         erased_state_names: &'a HashSet<String>,
         imports: &'a HashMap<String, String>,
     ) -> Self {
@@ -969,6 +983,7 @@ impl<'a> DefinitionHirContext<'a> {
             fields,
             field_values,
             field_aggregate_element_types,
+            property_compile_values,
             erased_state_names,
             imports,
         }
@@ -1039,6 +1054,7 @@ pub(crate) fn lower_definition_hir(
                     value_operation: expression_value_operation(expression),
                     boolean_operation: expression_boolean_operation(expression),
                     comparison_operations: expression_comparison_operations(expression),
+                    lambda_parameter_names: expression_lambda_parameter_names(expression),
                     call_positional_count: call_shape(expression, context.erased_state_names).0,
                     call_keyword_names: call_shape(expression, context.erased_state_names).1,
                     control_body_count: 0,
@@ -1074,6 +1090,7 @@ pub(crate) fn lower_definition_hir(
                     value_operation: None,
                     boolean_operation: None,
                     comparison_operations: Vec::new(),
+                    lambda_parameter_names: Vec::new(),
                     call_positional_count: 0,
                     call_keyword_names: Vec::new(),
                     control_body_count,
@@ -1618,6 +1635,7 @@ fn expression_fact(
         module_binding_shadowed,
         phase_frame,
         compile_value,
+        comprehension_static_values: expression_comprehension_static_values(expression, context),
         compile_aggregate_element_types,
     }
 }
@@ -1744,6 +1762,7 @@ fn statement_fact(
         module_binding_shadowed: false,
         phase_frame: None,
         compile_value: None,
+        comprehension_static_values: None,
         compile_aggregate_element_types: Vec::new(),
     }
 }
@@ -1948,5 +1967,35 @@ fn expression_comparison_operations(expression: &Expr) -> Vec<ComparisonOperatio
             Cmpop::In => ComparisonOperation::In,
             Cmpop::NotIn => ComparisonOperation::NotIn,
         })
+        .collect()
+}
+
+fn expression_comprehension_static_values(
+    expression: &Expr,
+    context: &DefinitionHirContext<'_>,
+) -> Option<Vec<String>> {
+    let generators = match &expression.node {
+        ExprKind::ListComp { generators, .. }
+        | ExprKind::SetComp { generators, .. }
+        | ExprKind::DictComp { generators, .. }
+        | ExprKind::GeneratorExp { generators, .. } => generators,
+        _ => return None,
+    };
+    let [generator] = generators.as_slice() else {
+        return None;
+    };
+    let property = expression_path(&generator.iter)
+        .and_then(|path| path.strip_prefix("self.").map(str::to_owned))?;
+    context.property_compile_values.get(&property).cloned()
+}
+
+fn expression_lambda_parameter_names(expression: &Expr) -> Vec<String> {
+    let ExprKind::Lambda { args, .. } = &expression.node else {
+        return Vec::new();
+    };
+    args.posonlyargs
+        .iter()
+        .chain(&args.args)
+        .map(|argument| argument.node.arg.to_string())
         .collect()
 }

@@ -115,6 +115,11 @@ def source_for_bool() -> bool:
     return False
 
 
+def source_for_bool_only() -> bool:
+    for _ in range(1):
+        return True
+
+
 def unselected_source_for_call() -> Morphism:
     if False:
         return source_for_helper()
@@ -219,6 +224,30 @@ def unselected_bound_argument_comprehension_source_for_call() -> Morphism:
     return identity(cycles(1))
 
 
+def selected_boolean_conditional_argument_source_for_call() -> Morphism:
+    return conditional_source_for(True if False or True else False)
+
+
+def unselected_boolean_conditional_argument_source_for_call() -> Morphism:
+    return conditional_source_for(False if False or True else True)
+
+
+def positional_guard_probe(
+    unavailable: bool,
+    selected: bool = False,
+) -> Morphism:
+    if selected:
+        return source_for_helper()
+    return identity(cycles(1))
+
+
+def comprehension_with_unavailable_positional_before_bound_guard() -> Morphism:
+    _selected = [
+        positional_guard_probe(selected and True, selected) for selected in (True,)
+    ]
+    return identity(cycles(1))
+
+
 def filtered_bound_intrinsic_comprehension_source_for_call() -> Morphism:
     item = (1,)  # noqa: F841 - exercises a stale outer binding in Source HIR
     _unused = [source_for_helper() for item in ((),) if len(item) > 0]
@@ -228,6 +257,22 @@ def filtered_bound_intrinsic_comprehension_source_for_call() -> Morphism:
 def selected_reduce_lambda_source_for_call() -> Morphism:
     return reduce(
         lambda left, right: left | source_for_helper(),
+        [identity(cycles(1)), identity(cycles(2))],
+    )
+
+
+def selected_reduce_lambda_alias_source_for_call() -> Morphism:
+    combine = lambda left, right: left | source_for_helper()  # noqa: E731
+    return reduce(
+        combine,
+        [identity(cycles(1)), identity(cycles(2))],
+    )
+
+
+def selected_bound_reduce_parameter_source_for_call() -> Morphism:
+    return reduce(
+        lambda left, right: left
+        | (source_for_helper() if right else identity(cycles(1))),
         [identity(cycles(1)), identity(cycles(2))],
     )
 
@@ -292,6 +337,36 @@ def selected_and_source_for_call() -> Morphism:
 
 def selected_or_source_for_call() -> Morphism:
     _selected = False or source_for_bool()
+    return identity(cycles(1))
+
+
+def short_circuited_comparison_source_for_call() -> Morphism:
+    _unused = False == True == source_for_bool()  # noqa: E712
+    return identity(cycles(1))
+
+
+def selected_comparison_source_for_call() -> Morphism:
+    _selected = True == True == source_for_bool()  # noqa: E712
+    return identity(cycles(1))
+
+
+def selected_boolean_conditional_source_for_call() -> Morphism:
+    _selected = source_for_bool() if False or True else False
+    return identity(cycles(1))
+
+
+def unselected_boolean_conditional_source_for_call() -> Morphism:
+    _unused = False if False or True else source_for_bool()
+    return identity(cycles(1))
+
+
+def selected_nested_boolean_conditional_source_for_call() -> Morphism:
+    _selected = (True if False or True else False) and source_for_bool()
+    return identity(cycles(1))
+
+
+def short_circuited_comparison_boolean_source_for_call() -> Morphism:
+    _unused = (False == True == source_for_bool_only()) and source_for_bool_only()  # noqa: E712
     return identity(cycles(1))
 
 
@@ -379,6 +454,8 @@ class SourceForModule:
 
 
 source_for_module = SourceForModule()
+static_selected = True
+static_unselected = False
 
 
 class SourceForService:
@@ -386,12 +463,49 @@ class SourceForService:
     def modules(self) -> list[SourceForModule]:
         return [source_for_module]
 
+    @property
+    def selected_flags(self) -> list[bool]:
+        return [static_selected]
+
+    @property
+    def unselected_flags(self) -> list[bool]:
+        return [static_unselected]
+
+    @property
+    def empty_flags(self) -> list[bool]:
+        return []
+
     def compile(self) -> Morphism:
         _selected = [module.broken() for module in self.modules]
         return identity(cycles(1))
 
     def compile_filtered(self) -> Morphism:
         _unused = [module.broken() for module in self.modules if False]
+        return identity(cycles(1))
+
+    def compile_wrapped(self) -> Morphism:
+        _selected = [
+            module.broken() if True else identity(cycles(1))
+            for module in self.modules
+        ]
+        return identity(cycles(1))
+
+    def compile_target_filtered(self) -> Morphism:
+        selected = False  # noqa: F841 - exercises stale outer HIR binding
+        _selected = [
+            source_for_helper() for selected in self.selected_flags if selected
+        ]
+        return identity(cycles(1))
+
+    def compile_target_filtered_out(self) -> Morphism:
+        selected = True  # noqa: F841 - exercises stale outer HIR binding
+        _unused = [
+            source_for_helper() for selected in self.unselected_flags if selected
+        ]
+        return identity(cycles(1))
+
+    def compile_empty_static_property(self) -> Morphism:
+        _unused = [source_for_helper() for selected in self.empty_flags if selected]
         return identity(cycles(1))
 
 
@@ -586,6 +700,34 @@ def test_bound_comprehension_arguments_can_leave_source_for_unselected(
     assert compiled.logical_duration_cycles == 1
 
 
+def test_boolean_conditional_argument_selects_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        selected_boolean_conditional_argument_source_for_call,
+        source_with_for=source_for_helper,
+    )
+
+
+def test_boolean_conditional_argument_skips_unselected_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(unselected_boolean_conditional_argument_source_for_call)
+
+    assert compiled.logical_duration_cycles == 1
+
+
+def test_bound_comprehension_arguments_preserve_positional_slots(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        comprehension_with_unavailable_positional_before_bound_guard,
+        source_with_for=source_for_helper,
+    )
+
+
 def test_bound_guard_probe_does_not_surface_unrelated_lowering_errors(
     compiler: Compiler,
 ) -> None:
@@ -650,12 +792,68 @@ def test_static_property_comprehension_filters_source_for_calls(
     assert compiled.logical_duration_cycles == 1
 
 
+def test_wrapped_static_property_comprehension_selects_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        source_for_service.compile_wrapped,
+        source_with_for=SourceForModule.broken,
+    )
+
+
+def test_static_property_filter_uses_its_target_value(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        source_for_service.compile_target_filtered,
+        source_with_for=source_for_helper,
+    )
+
+
+def test_static_property_filter_does_not_use_a_stale_outer_value(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(source_for_service.compile_target_filtered_out)
+
+    assert compiled.logical_duration_cycles == 1
+
+
+def test_empty_static_property_does_not_select_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(source_for_service.compile_empty_static_property)
+
+    assert compiled.logical_duration_cycles == 1
+
+
 def test_consumed_reduce_lambda_selects_source_for_calls(
     compiler: Compiler,
 ) -> None:
     _assert_source_for_rejected(
         compiler,
         selected_reduce_lambda_source_for_call,
+        source_with_for=source_for_helper,
+    )
+
+
+def test_consumed_reduce_lambda_alias_selects_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        selected_reduce_lambda_alias_source_for_call,
+        source_with_for=source_for_helper,
+    )
+
+
+def test_consumed_reduce_binds_lambda_parameters_for_selected_paths(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        selected_bound_reduce_parameter_source_for_call,
         source_with_for=source_for_helper,
     )
 
@@ -718,6 +916,60 @@ def test_consumed_boolean_operands_select_source_for_calls(
         entry,
         source_with_for=source_for_bool,
     )
+
+
+def test_short_circuited_comparison_operand_does_not_select_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(short_circuited_comparison_source_for_call)
+
+    assert compiled.logical_duration_cycles == 1
+
+
+def test_consumed_comparison_operand_selects_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        selected_comparison_source_for_call,
+        source_with_for=source_for_bool,
+    )
+
+
+def test_boolean_conditional_selects_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        selected_boolean_conditional_source_for_call,
+        source_with_for=source_for_bool,
+    )
+
+
+def test_boolean_conditional_skips_unselected_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(unselected_boolean_conditional_source_for_call)
+
+    assert compiled.logical_duration_cycles == 1
+
+
+def test_nested_boolean_conditional_selects_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        selected_nested_boolean_conditional_source_for_call,
+        source_with_for=source_for_bool,
+    )
+
+
+def test_comparison_result_short_circuits_an_outer_boolean_operation(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(short_circuited_comparison_boolean_source_for_call)
+
+    assert compiled.logical_duration_cycles == 1
 
 
 def test_loop_free_missing_specialization_value_still_fails(

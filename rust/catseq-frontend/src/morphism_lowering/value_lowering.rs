@@ -66,7 +66,7 @@ pub(super) fn lower_compile_compare(
     Ok(Some(LoweredValue::Scalar(ScalarValue::Bool(result))))
 }
 
-fn compare_lowered_values(
+pub(super) fn compare_lowered_values(
     operation: ComparisonOperation,
     left: &LoweredValue,
     right: &LoweredValue,

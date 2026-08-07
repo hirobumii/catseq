@@ -317,7 +317,7 @@ impl Serialize for NodeJson<'_> {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SourceHirNode", 13)?;
+        let mut state = serializer.serialize_struct("SourceHirNode", 14)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("kind", self.node.kind().as_str())?;
         state.serialize_field("symbol", &self.node.symbol())?;
@@ -351,6 +351,10 @@ impl Serialize for NodeJson<'_> {
                 .iter()
                 .map(|operation| operation.as_str())
                 .collect::<Vec<_>>(),
+        )?;
+        state.serialize_field(
+            "lambda_parameter_names",
+            &self.node.lambda_parameter_names(),
         )?;
         state.serialize_field("edge_start", &self.node.edge_start())?;
         state.serialize_field("edge_count", &self.node.edge_count())?;
@@ -400,7 +404,7 @@ impl Serialize for FactJson<'_> {
         S: Serializer,
     {
         let fact = self.0;
-        let mut state = serializer.serialize_struct("SemanticFact", 9)?;
+        let mut state = serializer.serialize_struct("SemanticFact", 10)?;
         state.serialize_field("type", &OptionalDisplayJson(fact.source_type()))?;
         state.serialize_field("availability", fact.availability().as_str())?;
         state.serialize_field("roles", &RolesJson(fact))?;
@@ -410,6 +414,10 @@ impl Serialize for FactJson<'_> {
         state.serialize_field("resolved_call_targets", fact.resolved_call_targets())?;
         state.serialize_field("phase_frame", &fact.phase_frame())?;
         state.serialize_field("compile_value", &fact.compile_value())?;
+        state.serialize_field(
+            "comprehension_static_values",
+            &fact.comprehension_static_values(),
+        )?;
         state.end()
     }
 }

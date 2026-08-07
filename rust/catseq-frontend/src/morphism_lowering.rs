@@ -28,10 +28,10 @@ use normalized_value::{
     lower_normalized_default, normalized_board_id, normalized_has_duration_unit, normalized_to_json,
 };
 use value_lowering::{
-    call_arguments, is_numeric_intrinsic, lower_aggregate_intrinsic, lower_aggregate_operation,
-    lower_compile_compare, lower_compile_value, lower_cycles_intrinsic, lower_duration_unit,
-    lower_literal, lower_numeric_intrinsic, lower_static_subscript, lower_value_operation,
-    lowered_to_json, scalar_to_expr, source_type_to_value_type,
+    call_arguments, compare_lowered_values, is_numeric_intrinsic, lower_aggregate_intrinsic,
+    lower_aggregate_operation, lower_compile_compare, lower_compile_value, lower_cycles_intrinsic,
+    lower_duration_unit, lower_literal, lower_numeric_intrinsic, lower_static_subscript,
+    lower_value_operation, lowered_to_json, scalar_to_expr, source_type_to_value_type,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,8 +80,14 @@ struct ChannelBinding {
 
 #[derive(Clone, PartialEq)]
 struct SpecializationArgument {
-    name: Option<String>,
+    target: SpecializationArgumentTarget,
     value: LoweredValue,
+}
+
+#[derive(Clone, PartialEq)]
+enum SpecializationArgumentTarget {
+    Position(usize),
+    Keyword(String),
 }
 
 struct DefinitionSpecialization {
@@ -241,7 +247,7 @@ pub fn specialize_typed_report_to_native_arenas_with_entry_arguments(
         })
         .map(|(parameter, value)| {
             Ok(SpecializationArgument {
-                name: Some(parameter.name().to_owned()),
+                target: SpecializationArgumentTarget::Keyword(parameter.name().to_owned()),
                 value: lower_entry_argument(
                     entry.qualified_name(),
                     parameter.name(),
@@ -432,18 +438,20 @@ impl<'a> SpecializationLowerer<'a> {
             .iter()
             .filter(|parameter| !matches!(parameter.source_type(), SourceType::Instance(_)))
             .collect::<Vec<_>>();
-        let positional = arguments
-            .iter()
-            .filter(|argument| argument.name.is_none())
-            .collect::<Vec<_>>();
         for (index, parameter) in parameters.into_iter().enumerate() {
-            let value = positional
-                .get(index)
+            let value = arguments
+                .iter()
+                .find(|argument| argument.target == SpecializationArgumentTarget::Position(index))
                 .map(|argument| argument.value.clone())
                 .or_else(|| {
                     arguments
                         .iter()
-                        .find(|argument| argument.name.as_deref() == Some(parameter.name()))
+                        .find(|argument| {
+                            argument.target
+                                == SpecializationArgumentTarget::Keyword(
+                                    parameter.name().to_owned(),
+                                )
+                        })
                         .map(|argument| argument.value.clone())
                 })
                 .or_else(|| {
@@ -956,6 +964,7 @@ impl<'a> SpecializationLowerer<'a> {
                     values,
                     selected_paths,
                     self.mode == SpecializationMode::SelectedPathProbe,
+                    self.clock_hz,
                 );
                 match node_id {
                     Some(node_id) => scanner.scan_node(node_id, &HashMap::new())?,
@@ -1072,10 +1081,14 @@ fn collect_specialization_arguments(
         let Some(value) = value_for(*child)? else {
             continue;
         };
-        let name = (index >= node.call_positional_count() as usize).then(|| {
-            node.call_keyword_names()[index - node.call_positional_count() as usize].clone()
-        });
-        arguments.push(SpecializationArgument { name, value });
+        let target = if index < node.call_positional_count() as usize {
+            SpecializationArgumentTarget::Position(index)
+        } else {
+            SpecializationArgumentTarget::Keyword(
+                node.call_keyword_names()[index - node.call_positional_count() as usize].clone(),
+            )
+        };
+        arguments.push(SpecializationArgument { target, value });
     }
     Ok(arguments)
 }
@@ -2708,12 +2721,19 @@ enum SelectedPathScan {
     },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SelectedExpressionMode {
+    ScanSelectedPath,
+    CompileValue,
+}
+
 struct SelectedPathScanner<'a> {
     hir: &'a TypedSourceHir,
     values: &'a [Option<LoweredValue>],
     state: &'a mut SelectedPathState,
     evaluator_values: ValueExprArenaBuilder,
     tolerate_lowering_errors: bool,
+    clock_hz: u64,
 }
 
 impl<'a> SelectedPathScanner<'a> {
@@ -2722,6 +2742,7 @@ impl<'a> SelectedPathScanner<'a> {
         values: &'a [Option<LoweredValue>],
         state: &'a mut SelectedPathState,
         tolerate_lowering_errors: bool,
+        clock_hz: u64,
     ) -> Self {
         Self {
             hir,
@@ -2729,6 +2750,7 @@ impl<'a> SelectedPathScanner<'a> {
             state,
             evaluator_values: ValueExprArenaBuilder::new(),
             tolerate_lowering_errors,
+            clock_hz,
         }
     }
 
@@ -2791,21 +2813,18 @@ impl<'a> SelectedPathScanner<'a> {
             return Ok(SelectedPathScan::Normal);
         }
         let children = node_children(node, hir).to_vec();
-        if let Some(operation) = node.boolean_operation() {
-            for child in &children {
-                match self.scan_node(*child, bindings)? {
-                    SelectedPathScan::Normal => {}
-                    completion => return Ok(completion),
-                }
-                let short_circuits = matches!(
-                    (operation, self.truthiness(*child, bindings)?),
-                    (BooleanOperation::And, Some(false)) | (BooleanOperation::Or, Some(true))
-                );
-                if short_circuits {
-                    break;
-                }
-            }
-            return Ok(SelectedPathScan::Normal);
+        if node.boolean_operation().is_some()
+            || matches!(
+                node.kind(),
+                SourceHirKind::Compare | SourceHirKind::ConditionalExpression
+            )
+        {
+            let (scan, _) = self.evaluate_selected_expression(
+                node_id,
+                bindings,
+                SelectedExpressionMode::ScanSelectedPath,
+            )?;
+            return Ok(scan);
         }
         if node.kind() == &SourceHirKind::If {
             let condition = children
@@ -2818,28 +2837,8 @@ impl<'a> SelectedPathScanner<'a> {
             let selected = selected_compile_if_statements(node, &children, self.values)?;
             return self.scan_suite(selected, bindings);
         }
-        if node.kind() == &SourceHirKind::ConditionalExpression {
-            let Some(condition) = children.first() else {
-                return Ok(SelectedPathScan::Normal);
-            };
-            match self.scan_node(*condition, bindings)? {
-                SelectedPathScan::Normal => {}
-                completion => return Ok(completion),
-            }
-            let condition_value = self.compile_value(*condition, bindings)?;
-            let selected = match condition_value {
-                Some(LoweredValue::Scalar(ScalarValue::Bool(true))) => children.get(1),
-                Some(LoweredValue::Scalar(ScalarValue::Bool(false))) => children.get(2),
-                Some(LoweredValue::Null) | None if bindings.is_empty() => children.get(2),
-                Some(_) if bindings.is_empty() => children.get(2),
-                Some(_) | None => None,
-            };
-            return selected.map_or(Ok(SelectedPathScan::Normal), |selected| {
-                self.scan_node(*selected, bindings)
-            });
-        }
         if node.kind() == &SourceHirKind::Comprehension {
-            return self.scan_comprehension(node, &children, bindings);
+            return self.scan_comprehension(node_id, node, &children, bindings);
         }
         if node.kind() == &SourceHirKind::Call
             && hir.facts()[node_id as usize].resolved_definition() == Some("functools.reduce")
@@ -2853,7 +2852,6 @@ impl<'a> SelectedPathScanner<'a> {
             }
         }
         if node.kind() == &SourceHirKind::Call
-            && !bindings.is_empty()
             && !hir.facts()[node_id as usize]
                 .resolved_definitions()
                 .is_empty()
@@ -2861,18 +2859,30 @@ impl<'a> SelectedPathScanner<'a> {
             let arguments = collect_specialization_arguments(node, &children, |child| {
                 self.compile_value(child, bindings)
             })?;
-            if let Some(specialization) = self.state.bound_calls[node_id as usize]
-                .iter()
-                .find(|specialization| specialization.arguments == arguments)
-            {
-                return Ok(specialization
-                    .selected_source_for_error
+            let native_arguments = bindings.is_empty().then(|| {
+                collect_specialization_arguments(node, &children, |child| {
+                    Ok(self.values[child as usize].clone())
+                })
+            });
+            let requires_selected_path_specialization = !bindings.is_empty()
+                || native_arguments
+                    .transpose()?
                     .as_ref()
-                    .map_or(SelectedPathScan::Normal, |error| {
-                        SelectedPathScan::SourceForError(error.clone())
-                    }));
-            } else {
-                return Ok(SelectedPathScan::NeedsCallSpecialization { node_id, arguments });
+                    .is_some_and(|native| native != &arguments);
+            if requires_selected_path_specialization {
+                if let Some(specialization) = self.state.bound_calls[node_id as usize]
+                    .iter()
+                    .find(|specialization| specialization.arguments == arguments)
+                {
+                    return Ok(specialization
+                        .selected_source_for_error
+                        .as_ref()
+                        .map_or(SelectedPathScan::Normal, |error| {
+                            SelectedPathScan::SourceForError(error.clone())
+                        }));
+                } else {
+                    return Ok(SelectedPathScan::NeedsCallSpecialization { node_id, arguments });
+                }
             }
         }
         if let Some(error) = self.state.call_errors[node_id as usize].as_ref() {
@@ -2886,6 +2896,7 @@ impl<'a> SelectedPathScanner<'a> {
 
     fn scan_comprehension(
         &mut self,
+        node_id: u32,
         node: &SourceHirNode,
         children: &[u32],
         outer_bindings: &HashMap<String, LoweredValue>,
@@ -2897,8 +2908,18 @@ impl<'a> SelectedPathScanner<'a> {
             SelectedPathScan::Normal => {}
             completion => return Ok(completion),
         }
-        let Some(LoweredValue::Aggregate(items)) = self.compile_value(*iterable, outer_bindings)?
-        else {
+        let items = match self.compile_value(*iterable, outer_bindings)? {
+            Some(LoweredValue::Aggregate(items)) => Some(items),
+            _ => self.hir.facts()[node_id as usize]
+                .comprehension_static_values()
+                .and_then(|values| {
+                    values
+                        .iter()
+                        .map(|value| lower_normalized_default(value, self.clock_hz))
+                        .collect::<Option<Vec<_>>>()
+                }),
+        };
+        let Some(items) = items else {
             for filter in filters {
                 match self.scan_node(*filter, outer_bindings)? {
                     SelectedPathScan::Normal => {}
@@ -2907,12 +2928,6 @@ impl<'a> SelectedPathScanner<'a> {
                 if self.truthiness(*filter, outer_bindings)? == Some(false) {
                     return Ok(SelectedPathScan::Normal);
                 }
-            }
-            if self.hir.facts()[*element as usize]
-                .resolved_call_targets()
-                .is_empty()
-            {
-                return Ok(SelectedPathScan::Normal);
             }
             return self.scan_node(*element, outer_bindings);
         };
@@ -2949,50 +2964,75 @@ impl<'a> SelectedPathScanner<'a> {
         children: &[u32],
         bindings: &HashMap<String, LoweredValue>,
     ) -> Result<SelectedPathScan, MorphismLoweringError> {
-        let mut lambda = None;
-        let mut aggregate_len = None;
+        let lambda = children
+            .get(1)
+            .and_then(|callable| self.resolved_node_of_kind(*callable, SourceHirKind::Lambda));
         for child in children {
-            if self.hir.nodes()[*child as usize].kind() == &SourceHirKind::Lambda {
-                lambda = Some(*child);
-                continue;
-            }
             match self.scan_node(*child, bindings)? {
                 SelectedPathScan::Normal => {}
                 completion => return Ok(completion),
             }
-            if let Some(LoweredValue::Aggregate(items)) = self.compile_value(*child, bindings)? {
-                aggregate_len = Some(items.len());
-            }
         }
         let node = &self.hir.nodes()[node_id as usize];
-        let has_initializer = node.call_positional_count() >= 3
-            || node
-                .call_keyword_names()
-                .iter()
-                .any(|name| name == "initial");
-        let invokes_lambda = aggregate_len.is_some_and(|count| {
-            if has_initializer {
-                count >= 1
-            } else {
-                count >= 2
-            }
-        });
-        if invokes_lambda
-            && let Some(body) = lambda.and_then(|lambda| {
-                node_children(&self.hir.nodes()[lambda as usize], self.hir)
-                    .first()
-                    .copied()
-            })
-        {
-            match self.scan_node(body, bindings)? {
-                SelectedPathScan::Normal => {}
-                completion => return Ok(completion),
+        let aggregate_node = call_argument_node(node, children, 1, "iterable");
+        let initializer_node = call_argument_node(node, children, 2, "initial");
+        let aggregate = match aggregate_node {
+            Some(aggregate) => self.compile_value(aggregate, bindings)?,
+            None => None,
+        };
+        let initializer = match initializer_node {
+            Some(initializer) => self.compile_value(initializer, bindings)?,
+            None => None,
+        };
+        if let (Some(lambda), Some(LoweredValue::Aggregate(items))) = (lambda, aggregate) {
+            let lambda_node = &self.hir.nodes()[lambda as usize];
+            let body = node_children(lambda_node, self.hir).first().copied();
+            let parameters = lambda_node.lambda_parameter_names().to_vec();
+            if let Some(body) = body {
+                let mut items = items.into_iter();
+                let mut accumulator = if initializer_node.is_some() {
+                    initializer
+                } else {
+                    items.next()
+                };
+                if accumulator.is_none() && initializer_node.is_some() && items.len() > 0 {
+                    match self.scan_node(body, bindings)? {
+                        SelectedPathScan::Normal => {}
+                        completion => return Ok(completion),
+                    }
+                }
+                while let (Some(left), Some(right)) = (accumulator.clone(), items.next()) {
+                    let mut lambda_bindings = bindings.clone();
+                    if let Some(parameter) = parameters.first() {
+                        lambda_bindings.insert(parameter.clone(), left);
+                    }
+                    if let Some(parameter) = parameters.get(1) {
+                        lambda_bindings.insert(parameter.clone(), right.clone());
+                    }
+                    match self.scan_node(body, &lambda_bindings)? {
+                        SelectedPathScan::Normal => {}
+                        completion => return Ok(completion),
+                    }
+                    accumulator = self.compile_value(body, &lambda_bindings)?.or(Some(right));
+                }
             }
         }
         if let Some(error) = self.state.call_errors[node_id as usize].as_ref() {
             return Ok(SelectedPathScan::SourceForError(error.clone()));
         }
         Ok(SelectedPathScan::Normal)
+    }
+
+    fn resolved_node_of_kind(&self, node_id: u32, kind: SourceHirKind) -> Option<u32> {
+        let mut current = node_id;
+        let mut visited = HashSet::new();
+        while visited.insert(current) {
+            if self.hir.nodes()[current as usize].kind() == &kind {
+                return Some(current);
+            }
+            current = self.hir.facts()[current as usize].resolved_node()?;
+        }
+        None
     }
 
     fn truthiness(
@@ -3008,28 +3048,10 @@ impl<'a> SelectedPathScanner<'a> {
                 CachedTruthiness::Unknown => None,
             });
         }
-        let node = &self.hir.nodes()[node_id as usize];
-        let truthiness = if let Some(operation) = node.boolean_operation() {
-            let mut result = None;
-            for child in node_children(node, self.hir).to_vec() {
-                let Some(value) = self.truthiness(child, bindings)? else {
-                    result = None;
-                    break;
-                };
-                result = Some(value);
-                if matches!(
-                    (operation, value),
-                    (BooleanOperation::And, false) | (BooleanOperation::Or, true)
-                ) {
-                    break;
-                }
-            }
-            result
-        } else {
-            self.compile_value(node_id, bindings)?
-                .as_ref()
-                .and_then(lowered_truthiness)
-        };
+        let truthiness = self
+            .compile_value(node_id, bindings)?
+            .as_ref()
+            .and_then(lowered_truthiness);
         if bindings.is_empty() {
             self.state.truthiness_cache[node_id as usize] = Some(match truthiness {
                 Some(value) => CachedTruthiness::Known(value),
@@ -3044,10 +3066,155 @@ impl<'a> SelectedPathScanner<'a> {
         node_id: u32,
         bindings: &HashMap<String, LoweredValue>,
     ) -> Result<Option<LoweredValue>, MorphismLoweringError> {
+        let node = &self.hir.nodes()[node_id as usize];
+        if node.boolean_operation().is_some()
+            || matches!(
+                node.kind(),
+                SourceHirKind::Compare | SourceHirKind::ConditionalExpression
+            )
+        {
+            let (_, value) = self.evaluate_selected_expression(
+                node_id,
+                bindings,
+                SelectedExpressionMode::CompileValue,
+            )?;
+            return Ok(value);
+        }
         if bindings.is_empty() {
             return Ok(self.values[node_id as usize].clone());
         }
         self.evaluate(node_id, bindings)
+    }
+
+    fn evaluate_selected_expression(
+        &mut self,
+        node_id: u32,
+        bindings: &HashMap<String, LoweredValue>,
+        mode: SelectedExpressionMode,
+    ) -> Result<(SelectedPathScan, Option<LoweredValue>), MorphismLoweringError> {
+        let node = &self.hir.nodes()[node_id as usize];
+        let children = node_children(node, self.hir).to_vec();
+        if let Some(operation) = node.boolean_operation() {
+            let mut result = None;
+            for child in children {
+                let (scan, value) = self.selected_expression_child(child, bindings, mode)?;
+                if !matches!(scan, SelectedPathScan::Normal) {
+                    return Ok((scan, None));
+                }
+                let Some(value) = value.as_ref().and_then(lowered_truthiness) else {
+                    result = None;
+                    if mode == SelectedExpressionMode::CompileValue {
+                        break;
+                    }
+                    continue;
+                };
+                result = Some(value);
+                if matches!(
+                    (operation, value),
+                    (BooleanOperation::And, false) | (BooleanOperation::Or, true)
+                ) {
+                    break;
+                }
+            }
+            let value = (mode == SelectedExpressionMode::CompileValue)
+                .then(|| result.map(|value| LoweredValue::Scalar(ScalarValue::Bool(value))))
+                .flatten();
+            return Ok((SelectedPathScan::Normal, value));
+        }
+        if node.kind() == &SourceHirKind::Compare {
+            if node.comparison_operations().len() + 1 != children.len() {
+                return Err(lowering_error(node, "invalid comparison operand shape"));
+            }
+            let Some(first) = children.first() else {
+                return Ok((SelectedPathScan::Normal, None));
+            };
+            let (scan, mut left) = self.selected_expression_child(*first, bindings, mode)?;
+            if !matches!(scan, SelectedPathScan::Normal) {
+                return Ok((scan, None));
+            }
+            if mode == SelectedExpressionMode::CompileValue && left.is_none() {
+                return Ok((SelectedPathScan::Normal, None));
+            }
+            for (operation, right_node) in node
+                .comparison_operations()
+                .iter()
+                .zip(children.iter().skip(1))
+            {
+                let (scan, right) = self.selected_expression_child(*right_node, bindings, mode)?;
+                if !matches!(scan, SelectedPathScan::Normal) {
+                    return Ok((scan, None));
+                }
+                let comparison = match left.as_ref().zip(right.as_ref()) {
+                    Some((left, right)) => match compare_lowered_values(*operation, left, right) {
+                        Some(comparison) => Some(comparison),
+                        None if mode == SelectedExpressionMode::CompileValue => {
+                            return Err(lowering_error(
+                                node,
+                                "comparison is not compile-time evaluable",
+                            ));
+                        }
+                        None => None,
+                    },
+                    None => None,
+                };
+                if comparison == Some(false) {
+                    let value = (mode == SelectedExpressionMode::CompileValue)
+                        .then_some(LoweredValue::Scalar(ScalarValue::Bool(false)));
+                    return Ok((SelectedPathScan::Normal, value));
+                }
+                if mode == SelectedExpressionMode::CompileValue && comparison.is_none() {
+                    return Ok((SelectedPathScan::Normal, None));
+                }
+                left = right;
+            }
+            let value = (mode == SelectedExpressionMode::CompileValue)
+                .then_some(LoweredValue::Scalar(ScalarValue::Bool(true)));
+            return Ok((SelectedPathScan::Normal, value));
+        }
+        if node.kind() == &SourceHirKind::ConditionalExpression {
+            let Some(condition) = children.first() else {
+                return Ok((SelectedPathScan::Normal, None));
+            };
+            let (scan, condition) = self.selected_expression_child(*condition, bindings, mode)?;
+            if !matches!(scan, SelectedPathScan::Normal) {
+                return Ok((scan, None));
+            }
+            let selected = match condition.as_ref().and_then(lowered_truthiness) {
+                Some(true) => children.get(1),
+                Some(false) => children.get(2),
+                None => None,
+            };
+            let Some(selected) = selected else {
+                return Ok((SelectedPathScan::Normal, None));
+            };
+            return if mode == SelectedExpressionMode::ScanSelectedPath {
+                Ok((self.scan_node(*selected, bindings)?, None))
+            } else {
+                Ok((
+                    SelectedPathScan::Normal,
+                    self.compile_value(*selected, bindings)?,
+                ))
+            };
+        }
+        unreachable!("selected expression evaluator requires a control expression")
+    }
+
+    fn selected_expression_child(
+        &mut self,
+        node_id: u32,
+        bindings: &HashMap<String, LoweredValue>,
+        mode: SelectedExpressionMode,
+    ) -> Result<(SelectedPathScan, Option<LoweredValue>), MorphismLoweringError> {
+        if mode == SelectedExpressionMode::ScanSelectedPath {
+            let scan = self.scan_node(node_id, bindings)?;
+            if !matches!(scan, SelectedPathScan::Normal) {
+                return Ok((scan, None));
+            }
+        }
+        Ok((
+            SelectedPathScan::Normal,
+            self.compile_value(node_id, bindings)?,
+        ))
     }
 
     fn evaluate(

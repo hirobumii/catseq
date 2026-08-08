@@ -133,6 +133,20 @@ impl SelectedPathState {
         }
     }
 
+    fn bound_call_specialization(
+        &self,
+        node_id: u32,
+        definition: Option<&str>,
+        arguments: &[SpecializationArgument],
+    ) -> Option<&BoundCallSpecialization> {
+        self.bound_calls[node_id as usize]
+            .iter()
+            .find(|specialization| {
+                specialization.definition.as_deref() == definition
+                    && specialization.arguments == arguments
+            })
+    }
+
     fn invalidate(&mut self, node_id: usize) {
         self.cache[node_id] = None;
         self.truthiness_cache[node_id] = None;
@@ -3103,13 +3117,9 @@ impl<'a> SelectedPathScanner<'a> {
                     .as_ref()
                     .is_some_and(|native| native != &arguments);
             if requires_selected_path_specialization {
-                if let Some(specialization) =
-                    self.state.bound_calls[node_id as usize]
-                        .iter()
-                        .find(|specialization| {
-                            specialization.definition.is_none()
-                                && specialization.arguments == arguments
-                        })
+                if let Some(specialization) = self
+                    .state
+                    .bound_call_specialization(node_id, None, &arguments)
                 {
                     return Ok(specialization
                         .selected_source_for_error
@@ -3367,13 +3377,11 @@ impl<'a> SelectedPathScanner<'a> {
                             value: right.clone(),
                         },
                     ];
-                    if let Some(specialization) = self.state.bound_calls[*callable as usize]
-                        .iter()
-                        .find(|specialization| {
-                            specialization.definition.as_deref() == Some(definition.as_str())
-                                && specialization.arguments == arguments
-                        })
-                    {
+                    if let Some(specialization) = self.state.bound_call_specialization(
+                        *callable,
+                        Some(definition.as_str()),
+                        &arguments,
+                    ) {
                         if let Some(error) = specialization.selected_source_for_error.as_ref() {
                             return Ok(SelectedPathScan::SourceForError(error.clone()));
                         }
@@ -3460,6 +3468,21 @@ impl<'a> SelectedPathScanner<'a> {
         bindings: &HashMap<String, LoweredValue>,
     ) -> Result<Option<LoweredValue>, MorphismLoweringError> {
         let node = &self.hir.nodes()[node_id as usize];
+        if node.kind() == &SourceHirKind::Call
+            && !self.state.bound_calls[node_id as usize].is_empty()
+        {
+            let children = node_children(node, self.hir).to_vec();
+            let arguments = collect_specialization_arguments(node, &children, |child| {
+                self.compile_value(child, bindings)
+            })?;
+            if let Some(specialization) = self
+                .state
+                .bound_call_specialization(node_id, None, &arguments)
+                && let Some(value) = specialization.value.clone()
+            {
+                return Ok(Some(value));
+            }
+        }
         if node.boolean_operation().is_some()
             || matches!(
                 node.kind(),

@@ -83,6 +83,28 @@ def selected_rebound_nested_if_source_for() -> Morphism:
     return identity(cycles(1))
 
 
+def identity_bool(selected: bool) -> bool:
+    return selected
+
+
+def selected_named_expression_call_result_source_for() -> Morphism:
+    selected = False
+    _ = (selected := True)
+    if identity_bool(selected):
+        for _ in range(3):
+            return identity(cycles(4))
+    return identity(cycles(1))
+
+
+def unselected_named_expression_call_result_source_for() -> Morphism:
+    selected = True
+    _ = (selected := False)
+    if identity_bool(selected):
+        for _ in range(3):
+            return identity(cycles(4))
+    return identity(cycles(1))
+
+
 def selected_augmented_rebound_source_for() -> Morphism:
     count = 1
     count += 1
@@ -674,6 +696,20 @@ def test_selected_suite_rebinding_selects_a_later_source_for(
     compiler: Compiler,
 ) -> None:
     _assert_source_for_rejected(compiler, selected_rebound_nested_if_source_for)
+
+
+def test_named_expression_rebinding_updates_a_later_call_result(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(compiler, selected_named_expression_call_result_source_for)
+
+
+def test_named_expression_rebinding_can_clear_a_later_call_result(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(unselected_named_expression_call_result_source_for)
+
+    assert compiled.logical_duration_cycles == 1
 
 
 def test_augmented_rebinding_selects_a_later_source_for(

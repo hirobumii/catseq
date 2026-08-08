@@ -20,7 +20,7 @@ use crate::{
 };
 
 const CACHE_FORMAT_VERSION: u32 = 14;
-const FRONTEND_SEMANTIC_VERSION: u32 = 22;
+const FRONTEND_SEMANTIC_VERSION: u32 = 23;
 const DEP_GRAPH_FILE: &str = "dep-graph.json";
 const CURRENT_FILE: &str = "CURRENT";
 

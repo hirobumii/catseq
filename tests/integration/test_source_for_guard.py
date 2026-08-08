@@ -219,6 +219,24 @@ def selected_comprehension_source_for_call() -> Morphism:
     return identity(cycles(1))
 
 
+def selected_comprehension_named_expression_rebound_source_for() -> Morphism:
+    selected = False
+    _unused = [(selected := True) for _item in (1,)]
+    if selected:
+        for _ in range(1):
+            return identity(cycles(4))
+    return identity(cycles(1))
+
+
+def comprehension_target_does_not_rebind_outer_guard() -> Morphism:
+    selected = False
+    _unused = [selected for selected in (True,)]
+    if selected:
+        for _ in range(1):
+            return identity(cycles(4))
+    return identity(cycles(1))
+
+
 def selected_multi_generator_comprehension_source_for_call() -> Morphism:
     _selected = [
         source_for_helper() for left in (1,) for right in (1,) if left == right
@@ -316,6 +334,49 @@ def named_source_for_reducer(left: Morphism, right: Morphism) -> Morphism:
 def selected_named_reduce_source_for_call() -> Morphism:
     return reduce(
         named_source_for_reducer,
+        [identity(cycles(1)), identity(cycles(2))],
+    )
+
+
+def return_left_source_for_reducer(left: Morphism, right: Morphism) -> Morphism:
+    if left is right:
+        for _ in range(1):
+            return left
+    return left
+
+
+def selected_return_left_reduce_source_for_call() -> Morphism:
+    first = identity(cycles(1))
+    second = identity(cycles(2))
+    return reduce(return_left_source_for_reducer, (first, second, first))
+
+
+def unselected_return_left_reduce_source_for_call() -> Morphism:
+    first = identity(cycles(1))
+    second = identity(cycles(1))
+    return reduce(return_left_source_for_reducer, (first, second, second))
+
+
+def loop_free_named_reducer(left: Morphism, right: Morphism) -> Morphism:
+    return left | right
+
+
+def direct_source_for_named_reducer(left: Morphism, right: Morphism) -> Morphism:
+    for _ in range(1):
+        return left | right
+    return left | right
+
+
+def selected_conditional_named_reduce_source_for_call() -> Morphism:
+    return reduce(
+        direct_source_for_named_reducer if True else loop_free_named_reducer,
+        [identity(cycles(1)), identity(cycles(2))],
+    )
+
+
+def unselected_conditional_named_reduce_source_for_call() -> Morphism:
+    return reduce(
+        loop_free_named_reducer if True else direct_source_for_named_reducer,
         [identity(cycles(1)), identity(cycles(2))],
     )
 
@@ -761,6 +822,23 @@ def test_evaluated_comprehension_selects_source_for_calls(
     )
 
 
+def test_comprehension_preserves_outer_named_expression_rebindings(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        selected_comprehension_named_expression_rebound_source_for,
+    )
+
+
+def test_comprehension_iteration_target_does_not_leak(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(comprehension_target_does_not_rebind_outer_guard)
+
+    assert compiled.logical_duration_cycles == 1
+
+
 def test_multi_generator_comprehension_selects_source_for_calls(
     compiler: Compiler,
 ) -> None:
@@ -985,6 +1063,42 @@ def test_consumed_named_reduce_callback_selects_source_for_calls(
         selected_named_reduce_source_for_call,
         source_with_for=source_for_helper,
     )
+
+
+def test_named_reduce_preserves_callback_return_value_between_invocations(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        selected_return_left_reduce_source_for_call,
+        source_with_for=return_left_source_for_reducer,
+    )
+
+
+def test_named_reduce_return_value_does_not_select_a_wrong_later_invocation(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(unselected_return_left_reduce_source_for_call)
+
+    assert compiled.logical_duration_cycles == 1
+
+
+def test_conditional_named_reduce_callback_selects_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        selected_conditional_named_reduce_source_for_call,
+        source_with_for=direct_source_for_named_reducer,
+    )
+
+
+def test_conditional_named_reduce_skips_the_unselected_callback(
+    compiler: Compiler,
+) -> None:
+    compiled = compiler.compile(unselected_conditional_named_reduce_source_for_call)
+
+    assert compiled.logical_duration_cycles == 2
 
 
 def test_consumed_conditional_reduce_lambda_selects_source_for_calls(

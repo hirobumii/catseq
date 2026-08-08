@@ -106,6 +106,7 @@ enum SpecializationMode {
 struct BoundCallSpecialization {
     definition: Option<String>,
     arguments: Vec<SpecializationArgument>,
+    value: Option<LoweredValue>,
     selected_source_for_error: Option<MorphismLoweringError>,
 }
 
@@ -944,15 +945,13 @@ impl<'a> SpecializationLowerer<'a> {
         hir: &'a TypedSourceHir,
         arguments: &[SpecializationArgument],
         instance_identity: &str,
-    ) -> Result<Option<MorphismLoweringError>, MorphismLoweringError> {
+    ) -> Result<DefinitionSpecialization, MorphismLoweringError> {
         let mut probe = Self::with_mode(
             self.definitions.clone(),
             self.clock_hz,
             SpecializationMode::SelectedPathProbe,
         );
-        probe
-            .lower_resolved_call(node_id, hir, arguments, instance_identity)
-            .map(|specialization| specialization.selected_source_for_error)
+        probe.lower_resolved_call(node_id, hir, arguments, instance_identity)
     }
 
     fn lower_named_call(
@@ -986,15 +985,13 @@ impl<'a> SpecializationLowerer<'a> {
         definition: &str,
         arguments: &[SpecializationArgument],
         instance_identity: &str,
-    ) -> Result<Option<MorphismLoweringError>, MorphismLoweringError> {
+    ) -> Result<DefinitionSpecialization, MorphismLoweringError> {
         let mut probe = Self::with_mode(
             self.definitions.clone(),
             self.clock_hz,
             SpecializationMode::SelectedPathProbe,
         );
-        probe
-            .lower_named_call(node_id, hir, definition, arguments, instance_identity)
-            .map(|specialization| specialization.selected_source_for_error)
+        probe.lower_named_call(node_id, hir, definition, arguments, instance_identity)
     }
 
     fn scan_selected_path(
@@ -1032,24 +1029,23 @@ impl<'a> SpecializationLowerer<'a> {
             // and values. A top-level scan uses an isolated, selection-only
             // lowerer so failed probes cannot mutate the output arenas. Nested
             // probes reuse that isolated lowerer to retain recursion tracking.
-            let selected_source_for_error = match definition.as_deref() {
+            let specialization = match definition.as_deref() {
                 Some(definition) if self.mode == SpecializationMode::SelectedPathProbe => {
                     self.lower_named_call(node_id, hir, definition, &arguments, instance_identity)?
-                        .selected_source_for_error
                 }
                 Some(definition) => {
                     self.probe_named_call(node_id, hir, definition, &arguments, instance_identity)?
                 }
                 None if self.mode == SpecializationMode::SelectedPathProbe => {
                     self.lower_resolved_call(node_id, hir, &arguments, instance_identity)?
-                        .selected_source_for_error
                 }
                 None => self.probe_resolved_call(node_id, hir, &arguments, instance_identity)?,
             };
             selected_paths.bound_calls[node_id as usize].push(BoundCallSpecialization {
                 definition,
                 arguments,
-                selected_source_for_error,
+                value: specialization.value,
+                selected_source_for_error: specialization.selected_source_for_error,
             });
         }
     }
@@ -1284,6 +1280,39 @@ fn bind_comprehension_target(
             owner,
             "unsupported native comprehension target",
         )),
+    }
+}
+
+fn collect_comprehension_target_names(
+    target: u32,
+    hir: &TypedSourceHir,
+    names: &mut HashSet<String>,
+) {
+    let node = &hir.nodes()[target as usize];
+    match node.kind() {
+        SourceHirKind::Name => {
+            if let Some(name) = node.symbol() {
+                names.insert(name.to_owned());
+            }
+        }
+        SourceHirKind::Aggregate => {
+            for child in node_children(node, hir) {
+                collect_comprehension_target_names(*child, hir, names);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn propagate_comprehension_bindings(
+    iteration_bindings: &HashMap<String, LoweredValue>,
+    outer_bindings: &mut HashMap<String, LoweredValue>,
+    target_names: &HashSet<String>,
+) {
+    for (name, value) in iteration_bindings {
+        if !target_names.contains(name) {
+            outer_bindings.insert(name.clone(), value.clone());
+        }
     }
 }
 
@@ -2826,6 +2855,14 @@ struct ComprehensionClause {
     filters: Vec<u32>,
 }
 
+struct ComprehensionScanContext<'a> {
+    node_id: u32,
+    node: &'a SourceHirNode,
+    elements: &'a [u32],
+    clauses: &'a [ComprehensionClause],
+    target_names: &'a HashSet<String>,
+}
+
 impl<'a> SelectedPathScanner<'a> {
     fn new(
         hir: &'a TypedSourceHir,
@@ -3133,26 +3170,34 @@ impl<'a> SelectedPathScanner<'a> {
         if elements.is_empty() || clauses.is_empty() || offset != children.len() {
             return Err(lowering_error(node, "invalid comprehension shape"));
         }
-        self.scan_comprehension_clause(node_id, node, elements, &clauses, 0, outer_bindings)
+        let mut target_names = HashSet::new();
+        for clause in &clauses {
+            collect_comprehension_target_names(clause.target, self.hir, &mut target_names);
+        }
+        let context = ComprehensionScanContext {
+            node_id,
+            node,
+            elements,
+            clauses: &clauses,
+            target_names: &target_names,
+        };
+        self.scan_comprehension_clause(&context, 0, outer_bindings)
     }
 
     fn scan_comprehension_clause(
         &mut self,
-        node_id: u32,
-        node: &SourceHirNode,
-        elements: &[u32],
-        clauses: &[ComprehensionClause],
+        context: &ComprehensionScanContext<'_>,
         clause_index: usize,
         outer_bindings: &mut HashMap<String, LoweredValue>,
     ) -> Result<SelectedPathScan, MorphismLoweringError> {
-        let clause = &clauses[clause_index];
+        let clause = &context.clauses[clause_index];
         match self.scan_node(clause.iterable, outer_bindings)? {
             SelectedPathScan::Normal => {}
             completion => return Ok(completion),
         }
         let items = match self.compile_value(clause.iterable, outer_bindings)? {
             Some(LoweredValue::Aggregate(items)) => Some(items),
-            _ if clauses.len() == 1 => self.hir.facts()[node_id as usize]
+            _ if context.clauses.len() == 1 => self.hir.facts()[context.node_id as usize]
                 .comprehension_static_values()
                 .and_then(|values| {
                     values
@@ -3172,22 +3217,15 @@ impl<'a> SelectedPathScanner<'a> {
                     return Ok(SelectedPathScan::Normal);
                 }
             }
-            return if clause_index + 1 < clauses.len() {
-                self.scan_comprehension_clause(
-                    node_id,
-                    node,
-                    elements,
-                    clauses,
-                    clause_index + 1,
-                    outer_bindings,
-                )
+            return if clause_index + 1 < context.clauses.len() {
+                self.scan_comprehension_clause(context, clause_index + 1, outer_bindings)
             } else {
-                self.scan_comprehension_elements(elements, outer_bindings)
+                self.scan_comprehension_elements(context.elements, outer_bindings)
             };
         };
         for item in items {
             let mut bindings = outer_bindings.clone();
-            bind_comprehension_target(clause.target, item, self.hir, &mut bindings, node)?;
+            bind_comprehension_target(clause.target, item, self.hir, &mut bindings, context.node)?;
             let mut accepted = true;
             for filter in &clause.filters {
                 match self.scan_node(*filter, &mut bindings)? {
@@ -3196,29 +3234,32 @@ impl<'a> SelectedPathScanner<'a> {
                 }
                 match self.truthiness(*filter, &bindings)? {
                     Some(value) => accepted &= value,
-                    None => return Ok(SelectedPathScan::Normal),
+                    None => {
+                        propagate_comprehension_bindings(
+                            &bindings,
+                            outer_bindings,
+                            context.target_names,
+                        );
+                        return Ok(SelectedPathScan::Normal);
+                    }
                 }
                 if !accepted {
                     break;
                 }
             }
             if accepted {
-                let scan = if clause_index + 1 < clauses.len() {
-                    self.scan_comprehension_clause(
-                        node_id,
-                        node,
-                        elements,
-                        clauses,
-                        clause_index + 1,
-                        &mut bindings,
-                    )?
+                let scan = if clause_index + 1 < context.clauses.len() {
+                    self.scan_comprehension_clause(context, clause_index + 1, &mut bindings)?
                 } else {
-                    self.scan_comprehension_elements(elements, &mut bindings)?
+                    self.scan_comprehension_elements(context.elements, &mut bindings)?
                 };
+                propagate_comprehension_bindings(&bindings, outer_bindings, context.target_names);
                 match scan {
                     SelectedPathScan::Normal => {}
                     completion => return Ok(completion),
                 }
+            } else {
+                propagate_comprehension_bindings(&bindings, outer_bindings, context.target_names);
             }
         }
         Ok(SelectedPathScan::Normal)
@@ -3336,6 +3377,7 @@ impl<'a> SelectedPathScanner<'a> {
                         if let Some(error) = specialization.selected_source_for_error.as_ref() {
                             return Ok(SelectedPathScan::SourceForError(error.clone()));
                         }
+                        accumulator = specialization.value.clone().or(Some(right));
                     } else {
                         return Ok(SelectedPathScan::NeedsCallSpecialization {
                             node_id: *callable,
@@ -3343,7 +3385,6 @@ impl<'a> SelectedPathScanner<'a> {
                             arguments,
                         });
                     }
-                    accumulator = Some(right);
                 }
             }
         }
@@ -3571,6 +3612,7 @@ impl<'a> SelectedPathScanner<'a> {
         let identical = || match (left, right) {
             (LoweredValue::Null, LoweredValue::Null) => true,
             (LoweredValue::Instance(left), LoweredValue::Instance(right)) => left == right,
+            (LoweredValue::Morphism(left), LoweredValue::Morphism(right)) => left == right,
             (
                 LoweredValue::Scalar(ScalarValue::Bool(left)),
                 LoweredValue::Scalar(ScalarValue::Bool(right)),

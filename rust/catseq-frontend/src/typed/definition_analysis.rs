@@ -441,16 +441,22 @@ fn visit_expression_calls(
                     });
                 }
             }
-            if let (Some(reduce_path), Some(callback)) =
-                (callable, args.first().and_then(expression_path))
-            {
-                calls.push(ReachableCall {
-                    source_path: callback.clone(),
-                    target_path: callback,
-                    line: args[0].location.row,
-                    column: args[0].location.column,
-                    use_kind: ReachableUse::ReduceCallback { reduce_path },
-                });
+            if let (Some(reduce_path), Some(callback)) = (callable, args.first()) {
+                let mut callback_paths = Vec::new();
+                collect_reduce_callback_paths(callback, &mut callback_paths);
+                calls.extend(
+                    callback_paths
+                        .into_iter()
+                        .map(|(callback, path)| ReachableCall {
+                            source_path: path.clone(),
+                            target_path: path,
+                            line: callback.location.row,
+                            column: callback.location.column,
+                            use_kind: ReachableUse::ReduceCallback {
+                                reduce_path: reduce_path.clone(),
+                            },
+                        }),
+                );
             }
             if compile_environment_load {
                 return;
@@ -569,6 +575,17 @@ fn visit_expression_calls(
             calls,
         ),
         _ => {}
+    }
+}
+
+fn collect_reduce_callback_paths<'a>(expression: &'a Expr, paths: &mut Vec<(&'a Expr, String)>) {
+    if let Some(path) = expression_path(expression) {
+        paths.push((expression, path));
+        return;
+    }
+    if let ExprKind::IfExp { body, orelse, .. } = &expression.node {
+        collect_reduce_callback_paths(body, paths);
+        collect_reduce_callback_paths(orelse, paths);
     }
 }
 

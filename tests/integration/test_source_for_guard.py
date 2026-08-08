@@ -83,6 +83,17 @@ def selected_rebound_nested_if_source_for() -> Morphism:
     return identity(cycles(1))
 
 
+def selected_destructured_rebound_source_for() -> Morphism:
+    selected = False
+    _other = 1
+    if True:
+        selected, _other = (True, 0)
+    if selected:
+        for _ in range(1):
+            return identity(cycles(4))
+    return identity(cycles(1))
+
+
 def identity_bool(selected: bool) -> bool:
     return selected
 
@@ -170,6 +181,12 @@ def source_for_bool_only() -> bool:
         return True
 
 
+def source_for_items() -> list[int]:
+    for _ in range(1):
+        return [1]
+    return []
+
+
 def unselected_source_for_call() -> Morphism:
     if False:
         return source_for_helper()
@@ -228,6 +245,16 @@ def selected_outer_source_for_repeat_call() -> Morphism:
 
 def unused_lambda_source_for_call() -> Morphism:
     _unused = lambda: source_for_helper()  # noqa: E731
+    return identity(cycles(1))
+
+
+def unused_generator_expression_source_for_call() -> Morphism:
+    _unused = (source_for_helper() for _ in (1,))
+    return identity(cycles(1))
+
+
+def generator_with_selected_outer_iterable_source_for_call() -> Morphism:
+    _unused = (identity(cycles(1)) for _ in source_for_items())
     return identity(cycles(1))
 
 
@@ -412,6 +439,20 @@ def selected_conditional_reduce_lambda_source_for_call() -> Morphism:
     )
 
 
+def selected_boolean_reduce_lambda_source_for_call() -> Morphism:
+    return reduce(
+        False or (lambda left, right: left | right | source_for_helper()),
+        [identity(cycles(1)), identity(cycles(2))],
+    )
+
+
+def consumed_generator_source_for_call() -> Morphism:
+    return reduce(
+        lambda left, right: left | right,
+        (source_for_helper() for _ in (1, 2)),
+    )
+
+
 def selected_bound_reduce_parameter_source_for_call() -> Morphism:
     return reduce(
         lambda left, right: left
@@ -480,6 +521,15 @@ def selected_and_source_for_call() -> Morphism:
 
 def selected_or_source_for_call() -> Morphism:
     _selected = False or source_for_bool()
+    return identity(cycles(1))
+
+
+def selected_none_boolean_operand_source_for() -> Morphism:
+    selected = None
+    selected = selected and True
+    if selected is None:
+        for _ in range(1):
+            return identity(cycles(4))
     return identity(cycles(1))
 
 
@@ -698,6 +748,12 @@ def test_selected_suite_rebinding_selects_a_later_source_for(
     _assert_source_for_rejected(compiler, selected_rebound_nested_if_source_for)
 
 
+def test_selected_destructuring_rebinds_each_target_name(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(compiler, selected_destructured_rebound_source_for)
+
+
 def test_named_expression_rebinding_updates_a_later_call_result(
     compiler: Compiler,
 ) -> None:
@@ -834,6 +890,7 @@ def test_selected_outer_source_for_precedes_repeat_morphism_lowering(
     "entry",
     [
         unused_lambda_source_for_call,
+        unused_generator_expression_source_for_call,
         empty_comprehension_source_for_call,
         filtered_comprehension_source_for_call,
         filtered_bound_intrinsic_comprehension_source_for_call,
@@ -846,6 +903,16 @@ def test_deferred_expressions_do_not_select_source_for_calls(
     compiled = compiler.compile(entry)
 
     assert compiled.logical_duration_cycles == 1
+
+
+def test_generator_creation_evaluates_its_outer_iterable(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        generator_with_selected_outer_iterable_source_for_call,
+        source_with_for=source_for_items,
+    )
 
 
 def test_evaluated_comprehension_selects_source_for_calls(
@@ -1147,6 +1214,26 @@ def test_consumed_conditional_reduce_lambda_selects_source_for_calls(
     )
 
 
+def test_consumed_boolean_reduce_lambda_selects_source_for_calls(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        selected_boolean_reduce_lambda_source_for_call,
+        source_with_for=source_for_helper,
+    )
+
+
+def test_reduce_consumes_generator_elements(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(
+        compiler,
+        consumed_generator_source_for_call,
+        source_with_for=source_for_helper,
+    )
+
+
 def test_consumed_reduce_binds_lambda_parameters_for_selected_paths(
     compiler: Compiler,
 ) -> None:
@@ -1215,6 +1302,12 @@ def test_consumed_boolean_operands_select_source_for_calls(
         entry,
         source_with_for=source_for_bool,
     )
+
+
+def test_boolean_expression_preserves_the_selected_operand(
+    compiler: Compiler,
+) -> None:
+    _assert_source_for_rejected(compiler, selected_none_boolean_operand_source_for)
 
 
 def test_short_circuited_comparison_operand_does_not_select_source_for_calls(

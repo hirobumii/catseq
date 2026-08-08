@@ -211,6 +211,8 @@ pub struct SourceHirNode {
     #[serde(default)]
     comprehension_filter_counts: Vec<u32>,
     #[serde(default)]
+    generator_expression: bool,
+    #[serde(default)]
     call_positional_count: u32,
     #[serde(default)]
     call_keyword_names: Vec<String>,
@@ -262,6 +264,10 @@ impl SourceHirNode {
 
     pub fn comprehension_filter_counts(&self) -> &[u32] {
         &self.comprehension_filter_counts
+    }
+
+    pub const fn is_generator_expression(&self) -> bool {
+        self.generator_expression
     }
 
     pub const fn call_positional_count(&self) -> u32 {
@@ -1118,6 +1124,7 @@ pub(crate) fn lower_definition_hir(
                     lambda_parameter_names: expression_lambda_parameter_names(expression),
                     comprehension_element_count,
                     comprehension_filter_counts,
+                    generator_expression: matches!(&expression.node, ExprKind::GeneratorExp { .. }),
                     call_positional_count: call_shape(expression, context.erased_state_names).0,
                     call_keyword_names: call_shape(expression, context.erased_state_names).1,
                     control_body_count: 0,
@@ -1156,6 +1163,7 @@ pub(crate) fn lower_definition_hir(
                     lambda_parameter_names: Vec::new(),
                     comprehension_element_count: 0,
                     comprehension_filter_counts: Vec::new(),
+                    generator_expression: false,
                     call_positional_count: 0,
                     call_keyword_names: Vec::new(),
                     control_body_count,

@@ -1119,7 +1119,7 @@ fn lower_comprehension(
     let mut result = Vec::with_capacity(items.len());
     for item in items {
         let mut bindings = HashMap::new();
-        bind_comprehension_target(*target, item, hir, &mut bindings, node)?;
+        bind_unpacking_target(*target, item, hir, &mut bindings, node)?;
         let mut accepted = true;
         for filter in filters {
             match eval_compile_expression(*filter, hir, values, &bindings, value_builder)? {
@@ -1255,7 +1255,7 @@ fn eval_compile_expression(
     Ok(lowered)
 }
 
-fn bind_comprehension_target(
+fn bind_unpacking_target(
     target: u32,
     value: LoweredValue,
     hir: &TypedSourceHir,
@@ -1267,33 +1267,27 @@ fn bind_comprehension_target(
         SourceHirKind::Name => {
             let name = node
                 .symbol()
-                .ok_or_else(|| lowering_error(owner, "comprehension target has no name"))?;
+                .ok_or_else(|| lowering_error(owner, "unpacking target has no name"))?;
             bindings.insert(name.to_owned(), value);
             Ok(())
         }
         SourceHirKind::Aggregate => {
             let LoweredValue::Aggregate(values) = value else {
-                return Err(lowering_error(
-                    owner,
-                    "cannot unpack a non-aggregate comprehension item",
-                ));
+                return Err(lowering_error(owner, "cannot unpack a non-aggregate value"));
             };
             let children = node_children(node, hir);
             if children.len() != values.len() {
                 return Err(lowering_error(
                     owner,
-                    "comprehension target and item have different arity",
+                    "unpacking target and value have different arity",
                 ));
             }
             for (child, value) in children.iter().zip(values) {
-                bind_comprehension_target(*child, value, hir, bindings, owner)?;
+                bind_unpacking_target(*child, value, hir, bindings, owner)?;
             }
             Ok(())
         }
-        _ => Err(lowering_error(
-            owner,
-            "unsupported native comprehension target",
-        )),
+        _ => Err(lowering_error(owner, "unsupported native unpacking target")),
     }
 }
 
@@ -2964,12 +2958,7 @@ impl<'a> SelectedPathScanner<'a> {
             Ok(None) | Err(_) => return Ok(()),
         };
         for target in &children[..children.len().saturating_sub(1)] {
-            let target_node = &hir.nodes()[*target as usize];
-            if target_node.kind() == &SourceHirKind::Name
-                && let Some(symbol) = target_node.symbol()
-            {
-                bindings.insert(symbol.to_owned(), value.clone());
-            }
+            bind_unpacking_target(*target, value.clone(), hir, bindings, node)?;
         }
         Ok(())
     }
@@ -3085,6 +3074,9 @@ impl<'a> SelectedPathScanner<'a> {
             return self.scan_if(node_id, &mut selected_bindings);
         }
         if node.kind() == &SourceHirKind::Comprehension {
+            if node.is_generator_expression() {
+                return self.scan_generator_creation(node, &children, bindings);
+            }
             return self.scan_comprehension(node_id, node, &children, bindings);
         }
         if node.kind() == &SourceHirKind::Call
@@ -3143,6 +3135,25 @@ impl<'a> SelectedPathScanner<'a> {
             return Ok(SelectedPathScan::Return);
         }
         Ok(SelectedPathScan::Normal)
+    }
+
+    fn scan_generator_creation(
+        &mut self,
+        node: &SourceHirNode,
+        children: &[u32],
+        bindings: &mut HashMap<String, LoweredValue>,
+    ) -> Result<SelectedPathScan, MorphismLoweringError> {
+        if node.comprehension_filter_counts().is_empty() {
+            return Err(lowering_error(node, "invalid generator-expression shape"));
+        }
+        let iterable_index = node.comprehension_element_count() as usize + 1;
+        let Some(iterable) = children.get(iterable_index) else {
+            return Err(lowering_error(
+                node,
+                "invalid generator-expression iterable shape",
+            ));
+        };
+        self.scan_node(*iterable, bindings)
     }
 
     fn scan_comprehension(
@@ -3235,7 +3246,7 @@ impl<'a> SelectedPathScanner<'a> {
         };
         for item in items {
             let mut bindings = outer_bindings.clone();
-            bind_comprehension_target(clause.target, item, self.hir, &mut bindings, context.node)?;
+            bind_unpacking_target(clause.target, item, self.hir, &mut bindings, context.node)?;
             let mut accepted = true;
             for filter in &clause.filters {
                 match self.scan_node(*filter, &mut bindings)? {
@@ -3308,14 +3319,24 @@ impl<'a> SelectedPathScanner<'a> {
                 .resolved_definition()
                 .map(|definition| (callable, definition.to_owned()))
         });
+        let node = &self.hir.nodes()[node_id as usize];
+        let aggregate_node = call_argument_node(node, children, 1, "iterable");
         for child in children {
-            match self.scan_node(*child, bindings)? {
+            let child_node = &self.hir.nodes()[*child as usize];
+            let scan = if Some(*child) == aggregate_node
+                && child_node.kind() == &SourceHirKind::Comprehension
+                && child_node.is_generator_expression()
+            {
+                let generator_children = node_children(child_node, self.hir).to_vec();
+                self.scan_comprehension(*child, child_node, &generator_children, bindings)?
+            } else {
+                self.scan_node(*child, bindings)?
+            };
+            match scan {
                 SelectedPathScan::Normal => {}
                 completion => return Ok(completion),
             }
         }
-        let node = &self.hir.nodes()[node_id as usize];
-        let aggregate_node = call_argument_node(node, children, 1, "iterable");
         let initializer_node = call_argument_node(node, children, 2, "initial");
         let aggregate = match aggregate_node {
             Some(aggregate) => self.compile_value(aggregate, bindings)?,
@@ -3431,6 +3452,27 @@ impl<'a> SelectedPathScanner<'a> {
                 current = selected;
                 continue;
             }
+            if let Some(operation) = node.boolean_operation() {
+                let children = node_children(node, self.hir);
+                let Some((last, preceding)) = children.split_last() else {
+                    return Ok(None);
+                };
+                let mut selected = *last;
+                for child in preceding {
+                    let Some(truthiness) = self.truthiness(*child, bindings)? else {
+                        return Ok(None);
+                    };
+                    if matches!(
+                        (operation, truthiness),
+                        (BooleanOperation::And, false) | (BooleanOperation::Or, true)
+                    ) {
+                        selected = *child;
+                        break;
+                    }
+                }
+                current = selected;
+                continue;
+            }
             return Ok(Some(current));
         }
         Ok(None)
@@ -3513,28 +3555,40 @@ impl<'a> SelectedPathScanner<'a> {
         let children = node_children(node, self.hir).to_vec();
         if let Some(operation) = node.boolean_operation() {
             let mut result = None;
-            for child in children {
+            let last_index = children.len().saturating_sub(1);
+            for (index, child) in children.into_iter().enumerate() {
                 let (scan, value) = self.selected_expression_child(child, bindings, mode)?;
                 if !matches!(scan, SelectedPathScan::Normal) {
                     return Ok((scan, None));
                 }
-                let Some(value) = value.as_ref().and_then(lowered_truthiness) else {
+                let Some(value) = value else {
                     result = None;
                     if mode == SelectedExpressionMode::CompileValue {
                         break;
                     }
                     continue;
                 };
+                let truthiness = lowered_truthiness(&value);
                 result = Some(value);
+                if index == last_index {
+                    break;
+                }
+                let Some(truthiness) = truthiness else {
+                    result = None;
+                    if mode == SelectedExpressionMode::CompileValue {
+                        break;
+                    }
+                    continue;
+                };
                 if matches!(
-                    (operation, value),
+                    (operation, truthiness),
                     (BooleanOperation::And, false) | (BooleanOperation::Or, true)
                 ) {
                     break;
                 }
             }
             let value = (mode == SelectedExpressionMode::CompileValue)
-                .then(|| result.map(|value| LoweredValue::Scalar(ScalarValue::Bool(value))))
+                .then_some(result)
                 .flatten();
             return Ok((SelectedPathScan::Normal, value));
         }

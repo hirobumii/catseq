@@ -3,8 +3,12 @@
 # ISSUE: #55
 # ENTRY: sequence
 # EXPECT: accept
-# CONTRACT: A reusable Morphism Template remains composable before channel binding.
-# CONTRACT: Chaining set_state and linear_ramp derives required boundary facts locally.
+# CONTRACT: linear_ramp produces a Morphism with one free RWG Resource Slot.
+# CONTRACT: Free-slot Morphisms remain composable before Resource Slot Binding.
+# CONTRACT: Binding rwg_a preserves the Morphism sort and substitutes its slot.
+# CONTRACT: The compiler infers the composite Boundary Contract from the definition body.
+# CONTRACT: Serial binds linear_ramp's input snapshot from set_state's output record.
+# CONTRACT: Chaining set_state and linear_ramp derives the new boundary facts locally.
 # CONTRACT: No ambient whole-machine history is passed through the Python function.
 
 from catseq import kernel

@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0054
 ---
 
 # Thread state implicitly through Morphisms

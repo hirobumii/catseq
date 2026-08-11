@@ -8,10 +8,11 @@ The canonical Rust arena has two composition kinds: variadic Serial and
 variadic Parallel. Atomic operations, template instantiations, waits, repeats,
 references, and other non-composition operations remain leaf or control nodes.
 
-Serial stores an ordered child list and one boundary policy between every pair
-of adjacent children. A boundary policy preserves the existing `>>` automatic
-state inference or `@` strict state matching semantics. Parallel stores an
-ordered child list and applies Parallel Alignment across all children at once.
+Serial stores an ordered child list. Every adjacent pair uses the same Boundary
+Contract composition defined by ADR 0055: successor Boundary Binders are
+instantiated and the complete records must then match. The earlier per-boundary
+`Auto`/`Strict` policy is superseded. Parallel stores an ordered child list
+and applies Parallel Alignment across all children at once.
 
 The arena stores child references in a flat edge table addressed by a range
 from the node rather than allocating a Python object or independent vector for

@@ -9,9 +9,14 @@ parsing or executing their Python implementations. The registry has three
 closed lowering forms: declarative Atomic Schemas, precompiled native Morphism
 Templates, and a small set of compiler Special Forms.
 
+Each registered Channel Kind owns one canonical versioned Boundary Schema.
+Every Atomic Schema for that Channel Kind declares complete input and output
+patterns over the shared schema; neither an individual operation nor a target
+backend may define an incompatible private boundary record.
+
 An Atomic Schema declares its stable symbol and ID, type signature, Channel
 Kind, parameter roles and constraints, Availability and Dependency Role rules,
-Morphism Effect, Timing Contract, target lowering operation, and semantic
+Boundary Contract, Timing Contract, target lowering operation, and semantic
 version. Ordinary composite hardware APIs such as pulse and ramp builders are
 precompiled from these primitives into the same native template arena used by
 source definitions; invocation creates an Instantiate node instead of running a

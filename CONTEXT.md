@@ -228,14 +228,17 @@ implemented natively rather than obtained by parsing or executing Python.
 _Avoid_: Built-in Python module, runtime extension module
 
 **Intrinsic Registry**:
-The versioned native definitions exported by Intrinsic Modules: Atomic Schemas,
-precompiled Morphism Templates, constants, scalar operations, and compiler
-Special Forms.
+The versioned native definitions exported by Intrinsic Modules: Channel Kind
+definitions and Boundary Schemas, Atomic Schemas, precompiled Morphism
+Definitions, constants, scalar operations, and compiler Special Forms.
 _Avoid_: Imported Python library, arbitrary Rust callback table
 
 **Atomic Schema**:
-The declarative signature, parameter constraints, hardware effect, timing
-contract, and target lowering identity for one primitive Atomic Operation.
+The versioned declaration of the signature, parameter constraints, complete
+input and output patterns and Boundary Binders over one Channel Kind's Boundary
+Schema, timing contract, and target lowering identity for one primitive Atomic
+Operation. It may contain a finite set of input-disjoint Boundary Transition
+Clauses.
 _Avoid_: Python AtomicMorphism object, opaque code generator
 
 **Compiler Special Form**:
@@ -362,13 +365,13 @@ each shorter branch holds its final state until that boundary.
 _Avoid_: Max-only parallelism, unaligned parallel branches
 
 **Serial**:
-An ordered Morphism composition whose adjacent boundaries independently use
-automatic or strict state matching.
-_Avoid_: Sequence node, chain node
+The sole ordered Morphism composition, spelled `>>`, that instantiates successor
+Boundary Binders and then completely matches adjacent Boundary records.
+_Avoid_: `@`, Auto Serial, Strict Serial, Sequence node, chain node
 
 **Parallel**:
 A Morphism composition whose branches share their start and aligned end
-boundaries and whose channel effects must be compatible.
+boundaries and whose Resource Supports must be pairwise disjoint.
 _Avoid_: Concurrent list, max-duration group
 
 **Loop Region**:
@@ -384,26 +387,92 @@ lowering.
 _Avoid_: Repeated Serial children, opaque loop black box
 
 **Morphism**:
-A channel-bound sequencing state transformer. It may contain Link Values; its
-incoming hardware state is supplied implicitly by Serial composition rather
-than carried as a source-language value.
-_Avoid_: Sequence object, Lane collection
+A sequencing value indexed by a finite Resource Context and a typed Boundary
+Contract. Resource Slot Binding substitutes logical resources without changing
+the Morphism sort; the value may contain Link Values.
+_Avoid_: Morphism Template, Morphism Family, Sequence object, Lane collection
 
-**Morphism Template**:
-A reusable Morphism definition with free channel slots. Its Python API spelling
-is `MorphismDef`; binding its slots produces a Morphism template instance rather
-than executing a Python generator. State remains an implicit Morphism effect.
-_Avoid_: Python generator, deferred callable
+**Morphism Definition**:
+A restricted source declaration whose application produces a Morphism, possibly
+with free Resource Slots. It is a declaration, not a second Morphism value
+type; the current `MorphismDef` and `MorphismTemplate` spellings are legacy API
+names rather than domain types.
+_Avoid_: Morphism Template, Morphism Family, Python generator, deferred callable
+
+**Resource Context**:
+The finite typed set of formal Resource Slots referenced by a Morphism. A
+Morphism is resource-closed when this context is empty.
+_Avoid_: State Environment, runtime environment, physical hardware map
+
+**Resource Slot Binding**:
+The substitution of each formal Resource Slot in a Morphism with one compatible
+logical Channel or resource identity. It preserves the Morphism sort and is
+distinct from target lowering's logical-to-physical resource mapping.
+_Avoid_: Morphism instantiation type, State transition, physical Board binding
+
+**Boundary Contract**:
+The complete typed entry and exit records for every Resource Slot a Morphism
+uses. Each record contains only compiler-relevant facts, may reference immutable
+Value Expressions, and explicitly carries through facts that remain unchanged.
+_Avoid_: State Environment, whole-machine snapshot, hidden backend state
+
+**Boundary Schema**:
+The canonical versioned type of a Channel Kind's complete compiler-relevant
+boundary record. Every Atomic Schema for that Channel Kind uses this shared
+type for its input and output patterns.
+_Avoid_: Atomic-specific record, target-backend state enum, physical state model
+
+**Boundary Binder**:
+A schema-internal symbolic name bound to a field of an Atomic Operation's input
+Boundary Schema pattern so its output record or Value Expressions can reference
+the predecessor-provided value.
+_Avoid_: Source variable, Device Value, runtime parameter, backend state lookup
+
+**Boundary Transition Clause**:
+One complete input-pattern and output-record rule for a legal case of an Atomic
+Operation. An Atomic Schema's clauses have disjoint input patterns and are
+the cases of one deterministic, piecewise partial Boundary Transformer. A
+context-open Morphism preserves that transformer, and Serial composes it with
+adjacent transformers. This is static Morphism semantics, not runtime Control.
+_Avoid_: Hardware branch, ordered fallback, partial boundary record
+
+**Boundary Transformer**:
+The deterministic partial function from complete input Boundary records to
+complete output Boundary records and value derivations denoted by a Morphism.
+Mutually exclusive Boundary Transition Clauses define its pieces; it is a
+semantic contract, not a runtime node or a set of competing choices.
+_Avoid_: Candidate clause set, Control Choice, backend state transition
+
+**Context-open Morphism**:
+A Morphism with at least one mandatory Boundary Contract requirement not yet
+connected to an explicit predecessor provision inside the composed expression.
+_Avoid_: OpenMorphism type, resource-open Morphism, invalid Morphism
+
+**Context-closed Morphism**:
+A Morphism whose mandatory Boundary Contract requirements are all connected to
+explicit predecessor provisions inside the composed expression, leaving an
+empty external `Requires` set.
+_Avoid_: Resource-closed Morphism, fully lowered program, state-complete Morphism
+
+**Selected Compile Entry**:
+The reusable Kernel Function chosen as the standalone root of one compilation.
+Its resulting Morphism must be both resource-closed and context-closed before
+target lowering. Reusable definitions and Kernel Functions that are only called
+as helpers may remain context-open; their requirements propagate to their
+caller. The Compile Environment does not satisfy mutable Boundary requirements.
+_Avoid_: Ambient root state, session-provided Boundary record, every Kernel
+Function must be closed
 
 **Morphism Effect**:
-The symbolic state and timing transformation of a Morphism from its implicit
-incoming State Environment to its outgoing State Environment.
-_Avoid_: End-state dictionary, Lane summary
+The explicit temporal, resource, value, protocol, and Boundary Contract summary
+derived from a Morphism. It is not an ambient hardware-state transformation.
+_Avoid_: End-state dictionary, State Environment, Lane summary
 
-**State Environment**:
-The compiler's channel-to-state relation at one Morphism boundary. It is
-threaded through Serial composition and is not a source-language mapping value.
-_Avoid_: StateMap, explicit start-state argument
+**State Refinement**:
+Optional hardware knowledge that can enrich analysis or diagnostics but cannot
+change Morphism legality, emitted payloads, timing, resources, values, or
+mandatory failure behavior.
+_Avoid_: Boundary Contract, required protocol fact, lowering input
 
 **Phase Frame**:
 The logical reference phase of one coherent drive group. A frame may govern
@@ -429,7 +498,8 @@ _Avoid_: Phase Frame Definition, method-body inference
 
 **Channel Kind**:
 A stable compiler identity for one hardware channel family, such as TTL, RWG,
-or RSP. New hardware families may register new identities.
+or RSP, together with its canonical Boundary Schema. New hardware families may
+register new identities.
 _Avoid_: Python channel class, board type
 
 **State Type**:

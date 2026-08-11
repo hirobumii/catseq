@@ -21,4 +21,4 @@ def sequence() -> Morphism:
         initialize(80.0)
         >> linear_ramp([correction_waveform], 10 * us)
     )
-    return {rwg_a: invalid_ramp}
+    return identity(0) >> {rwg_a: invalid_ramp}

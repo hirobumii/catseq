@@ -9,7 +9,7 @@
 
 from catseq import kernel
 from catseq.hardware.rwg import initialize, linear_ramp
-from catseq.morphism import Morphism
+from catseq.morphism import Morphism, identity
 from catseq.time_utils import us
 
 from support.hardware_map import correction_waveform, rwg_a

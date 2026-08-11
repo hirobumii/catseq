@@ -171,7 +171,7 @@ join belong to different Epochs.
 | Kernel calls | `kernel_calls_kernel.py` | scalar and Morphism-producing direct callees |
 | scalar control | `device_scalar_if_elif.py`, `device_scalar_early_return.py`, `device_scalar_bounded_while.py`, `device_pure_compute_loop.py`, `device_mandelbrot.py` | Device ComputeCFG versus temporal Control; nested numeric workload |
 | Compile topology | `compile_known_if.py`, `compile_known_if_false.py`, `compile_known_for_range.py` | selected finite topology, no runtime Choice |
-| Morphism algebra | `morphism_multichannel_parallel.py`, `morphism_cursor_anchors.py`, `morphism_template_linear_ramp.py`, `morphism_power.py` | parallel resources, cursor/frontier, reusable templates, power |
+| Morphism algebra | `morphism_multichannel_parallel.py`, `morphism_cursor_anchors.py`, `morphism_resource_binding_linear_ramp.py`, `morphism_power.py` | parallel resources, cursor/frontier, resource-indexed Morphisms, power |
 | static multi-board | `morphism_multiboard_parallel.py` | unified source and automatic board partitioning |
 | Device SSA | `device_measurement_feedback.py`, `control_value_output.py` | measurement, readiness, predicate, continuation, value-bearing Control result |
 | Branch/Switch | `device_measurement_feedback.py`, `control_switch.py` | explicit finite runtime topology and whole-region join |
@@ -191,6 +191,7 @@ join belong to different Epochs.
 | call graph | `reject_undecorated_helper.py`, `reject_indirect_kernel_call.py`, `reject_device_function_dispatch.py`, `reject_kernel_closure.py`, `reject_recursive_kernel.py` | host/dynamic/recursive call authority |
 | topology/value type | `reject_device_topology_if.py`, `reject_ignored_morphism_result.py`, `reject_temporal_early_return.py`, `reject_device_float.py` | implicit `Phi<Morphism>`, lost topology, abrupt temporal return, unsupported realtime float |
 | resources | `reject_same_channel_parallel.py` | overlapping exclusive channel claims |
+| Boundary contracts | `reject_linear_ramp_without_active_snapshot.py` | initialization does not provide the active snapshot required by a ramp |
 | readiness | `reject_use_before_ready.py` | source construction order used instead of temporal dominance |
 | joins | `reject_branch_arm_wait_as_join.py`, `reject_dynamic_control_parallel.py`, `reject_implicit_epoch_join.py`, `reject_continuation_after_terminal.py` | hidden completion/barrier/Epoch or absent continuation |
 | repetition | `reject_unbounded_control_loop.py`, `reject_device_morphism_power.py` | unbounded runtime topology or Device MorphismPower |

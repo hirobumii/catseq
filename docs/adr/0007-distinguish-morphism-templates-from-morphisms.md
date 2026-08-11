@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0053
 ---
 
 # Distinguish Morphism Templates from Morphisms

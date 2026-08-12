@@ -114,6 +114,7 @@ name = "catseq-python"
 version = "0.4.2"
 dependencies = [
  "catseq-compiler",
+ "catseq-frontend",
  "catseq-runtime",
  "pyo3",
  "serde",

@@ -9,6 +9,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
+mod kernel_collector;
 mod runtime;
 
 #[pyclass(name = "CompiledSequence", module = "catseq._native", frozen)]
@@ -161,6 +162,14 @@ impl PyCompiler {
             opaque_callables,
         })
     }
+
+    fn _collect_kernel_definitions(
+        &self,
+        py: Python<'_>,
+        experiment: &Bound<'_, PyAny>,
+    ) -> PyResult<kernel_collector::PyKernelDefinitionCollection> {
+        kernel_collector::collect_kernel_definitions(py, experiment)
+    }
 }
 
 fn json_to_python<T: serde::Serialize + ?Sized>(py: Python<'_>, value: &T) -> PyResult<Py<PyAny>> {
@@ -210,6 +219,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(run_cli, module)?)?;
     module.add_class::<PyCompiler>()?;
     module.add_class::<PyCompiledSequence>()?;
+    module.add_class::<kernel_collector::PyKernelDefinitionCollection>()?;
     runtime::register(module)?;
     Ok(())
 }

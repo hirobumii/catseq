@@ -57,6 +57,7 @@ ignore_missing_imports = true
 
 [dependency-groups]
 dev = [
+    "maturin>=1.14,<2",
     "pytest-mock>=3.14.1",
 ]
 

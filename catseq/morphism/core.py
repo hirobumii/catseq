@@ -10,7 +10,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Never, ParamSpec, TypeVar, overload
+from functools import wraps
+import sys
+from types import FunctionType, ModuleType
+from typing import TYPE_CHECKING, Literal, Never, ParamSpec, TypeVar, cast, overload
 
 from ..types.common import Channel
 
@@ -30,6 +33,26 @@ class CompilerDefinition:
 
     kind: Literal["atomic_morphism", "morphism_template"]
     symbol: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _RegisteredDefinition:
+    """ARTIQ-style import-time registration for one exact definition."""
+
+    role: Literal["kernel", "atomic_morphism", "morphism_template"]
+    symbol: str | None
+    original: FunctionType
+    wrapper: FunctionType
+    module: ModuleType
+
+    def facts(self) -> tuple[object, ...]:
+        """Project this registration into the private native bridge schema."""
+
+        return self.original, self.wrapper, self.role, self.symbol, self.module
+
+
+_DEFINITION_REGISTRY: dict[FunctionType, _RegisteredDefinition] = {}
+_REGISTERED_DEFINITIONS: list[_RegisteredDefinition] = []
 
 
 def compiler_only(symbol: str) -> Never:
@@ -114,6 +137,90 @@ _R = TypeVar("_R")
 _F = TypeVar("_F", bound=Callable[..., object])
 
 
+def _registered_definition(value: object) -> _RegisteredDefinition | None:
+    """Return registry authority only for an exact registered function."""
+
+    if type(value) is not FunctionType:
+        return None
+    return _DEFINITION_REGISTRY.get(value)
+
+
+def _registered_definition_facts(value: object) -> tuple[object, ...] | None:
+    """Project one registry entry into exact built-ins for the native collector."""
+
+    registered = _registered_definition(value)
+    if registered is None:
+        return None
+    return registered.facts()
+
+
+def _registered_definition_catalog() -> tuple[tuple[object, ...], ...]:
+    """Return the current import-time catalog for the native analyzer."""
+
+    return tuple(registered.facts() for registered in _REGISTERED_DEFINITIONS)
+
+
+def _register_definition(
+    definition: _F,
+    *,
+    role: Literal["kernel", "atomic_morphism", "morphism_template"],
+    symbol: str | None = None,
+) -> _F:
+    if type(definition) is not FunctionType:
+        raise TypeError("CatSeq definition decorators require an exact Python function")
+    if _registered_definition(definition) is not None:
+        raise TypeError("CatSeq definition is already registered with another role")
+
+    original = definition
+    module = sys.modules.get(original.__module__)
+    if type(module) is not ModuleType:
+        raise TypeError("CatSeq definitions must belong to an imported Python module")
+    wrapper: FunctionType
+    if role == "kernel":
+
+        @wraps(original)
+        def reject_execution(*args: object, **kwargs: object) -> Never:
+            del args, kwargs
+            raise CompilerOnlyError(
+                f"{original.__qualname__} is a compiler-only CatSeq Kernel; "
+                "pass its BaseExp owner to Compiler instead of calling it"
+            )
+
+        wrapper = cast(FunctionType, reject_execution)
+    else:
+        wrapper = original
+
+    if role == "atomic_morphism":
+        setattr(
+            wrapper,
+            "__catseq_definition__",
+            CompilerDefinition(kind="atomic_morphism", symbol=symbol),
+        )
+    elif role == "morphism_template":
+        setattr(
+            wrapper,
+            "__catseq_definition__",
+            CompilerDefinition(kind="morphism_template"),
+        )
+    registration = _RegisteredDefinition(
+        role=role,
+        symbol=symbol,
+        original=original,
+        wrapper=wrapper,
+        module=module,
+    )
+    _DEFINITION_REGISTRY[original] = registration
+    _DEFINITION_REGISTRY[wrapper] = registration
+    _REGISTERED_DEFINITIONS.append(registration)
+    return wrapper  # type: ignore[return-value]
+
+
+def kernel(definition: _F) -> _F:
+    """Register one internal compiler-only Kernel definition."""
+
+    return _register_definition(definition, role="kernel")
+
+
 def morphism_template(definition: _F) -> _F:
     """Mark a restricted Python function as a composable Morphism Template.
 
@@ -122,24 +229,18 @@ def morphism_template(definition: _F) -> _F:
     runtime Morphism arena.
     """
 
-    setattr(
-        definition,
-        "__catseq_definition__",
-        CompilerDefinition(kind="morphism_template"),
-    )
-    return definition
+    return _register_definition(definition, role="morphism_template")
 
 
 def atomic_morphism(symbol: str) -> Callable[[_F], _F]:
     """Declare a leaf operation implemented by the native Atomic Registry."""
 
     def decorate(definition: _F) -> _F:
-        setattr(
+        return _register_definition(
             definition,
-            "__catseq_definition__",
-            CompilerDefinition(kind="atomic_morphism", symbol=symbol),
+            role="atomic_morphism",
+            symbol=symbol,
         )
-        return definition
 
     return decorate
 

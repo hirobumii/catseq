@@ -392,6 +392,57 @@ Contract. Resource Slot Binding substitutes logical resources without changing
 the Morphism sort; the value may contain Link Values.
 _Avoid_: Morphism Template, Morphism Family, Sequence object, Lane collection
 
+**Control**:
+The compiler effect carrier that composes typed results, schedulable
+computation, and static structured traversal around Morphism Islands. It is not
+a Morphism or a Device-time topology value.
+_Avoid_: Control Morphism, runtime topology value, implicit statement stream
+
+**Lift**:
+The compiler-owned embedding of one Morphism Island into Control. It has no
+source constructor, and adjacent Lifts normalize to one maximal island.
+_Avoid_: Source lift, implicit control branch
+
+**Morphism Island**:
+A maximal consecutive pure Morphism subprogram within Control, uninterrupted by
+a Control boundary and embedded by one Lift.
+_Avoid_: Atomic Lift, Control sequence
+
+**Then**:
+The ordered normal-continuation composition of Control computations. Its
+exposed result is the right computation's result; earlier SSA values remain
+available only through explicit value edges.
+_Avoid_: Bind, value accumulator, sticky result
+
+**Control Return**:
+The empty-temporal Control computation that explicitly designates one typed
+value as the result of a normalized Control computation.
+_Avoid_: Python return statement, implicit last value
+
+**Normal Continuation**:
+The successor of a Control computation reached only when that computation
+completes normally. A computation with no normal exit cannot be followed by
+ordinary Then.
+_Avoid_: Fallthrough after failure, implicit recovery edge
+
+**Fail**:
+A Control computation with one explicit failure exit and no Normal
+Continuation or result value. Its result type is determined by context rather
+than by a source-visible bottom type.
+_Avoid_: Exception fallback, generic terminal hierarchy
+
+**Schedulable Work**:
+A compiler-placed unit with explicit data dependencies, release, deadline,
+cost, and resource claims. It does not displace the Logical Timestamp and is
+not ordered merely by Python statement order.
+_Avoid_: Wait, zero-duration Morphism, implicit statement step
+
+**Origin Map**:
+The separate mapping from normalized compiler nodes and relationships to all
+source locations that contributed to them. Source locations guide diagnostics
+but do not change normalized program equality or semantic summaries.
+_Avoid_: Node-owned source span, source position in semantic identity
+
 **Morphism Definition**:
 A restricted source declaration whose application produces a Morphism, possibly
 with free Resource Slots. It is a declaration, not a second Morphism value

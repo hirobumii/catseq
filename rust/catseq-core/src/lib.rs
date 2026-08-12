@@ -1,6 +1,7 @@
 //! Backend-independent CatSeq definitions, arenas, and compiler passes.
 
 pub mod arena;
+pub mod control;
 pub mod definitions;
 pub mod exact_decimal;
 pub mod morphism_arena;

@@ -18,7 +18,7 @@ struct CollectedDefinition {
 )]
 pub(crate) struct PyKernelDefinitionCollection {
     owner: Py<PyAny>,
-    entry_name: String,
+    entry: CollectedDefinition,
     definitions: Vec<CollectedDefinition>,
 }
 
@@ -31,7 +31,17 @@ impl PyKernelDefinitionCollection {
 
     #[getter]
     fn _entry_name(&self) -> &str {
-        &self.entry_name
+        &self.entry.name
+    }
+
+    #[getter]
+    fn _entry_original(&self, py: Python<'_>) -> Py<PyAny> {
+        self.entry._original.clone_ref(py)
+    }
+
+    #[getter]
+    fn _entry_wrapper(&self, py: Python<'_>) -> Py<PyAny> {
+        self.entry._wrapper.clone_ref(py)
     }
 
     #[getter]
@@ -92,7 +102,7 @@ pub(crate) fn collect_kernel_definitions(
             "BaseExp.build_sequence must have the Kernel role",
         ));
     }
-    let entry_name = root_facts.name()?;
+    let entry = root_facts.collect()?;
 
     let catalog = core.getattr("_registered_definition_catalog")?.call0()?;
     let catalog = catalog.downcast_exact::<PyTuple>()?;
@@ -100,20 +110,13 @@ pub(crate) fn collect_kernel_definitions(
         .iter()
         .map(|facts| {
             let facts = parse_facts(&facts)?;
-            Ok(CollectedDefinition {
-                name: facts.name()?,
-                role: public_role(&facts.role)?.to_owned(),
-                symbol: facts.symbol,
-                _original: facts.original.unbind().into(),
-                _wrapper: facts.wrapper.unbind().into(),
-                _module: facts.module.unbind(),
-            })
+            facts.collect()
         })
         .collect::<PyResult<Vec<_>>>()?;
 
     Ok(PyKernelDefinitionCollection {
         owner: experiment.clone().unbind(),
-        entry_name,
+        entry,
         definitions,
     })
 }
@@ -131,6 +134,17 @@ impl RegistrationFacts<'_> {
         let module = self.module.name()?;
         let qualified_name: String = self.original.getattr("__qualname__")?.extract()?;
         Ok(format!("{module}.{qualified_name}"))
+    }
+
+    fn collect(self) -> PyResult<CollectedDefinition> {
+        Ok(CollectedDefinition {
+            name: self.name()?,
+            role: public_role(&self.role)?.to_owned(),
+            symbol: self.symbol,
+            _original: self.original.unbind().into(),
+            _wrapper: self.wrapper.unbind().into(),
+            _module: self.module.unbind(),
+        })
     }
 }
 

@@ -12,6 +12,7 @@ from catseq.compiler import Compiler
 from catseq.experiment.base_exp import BaseExp
 from catseq.experiment.params import ExpParam, ExpParams
 from catseq.morphism import (
+    CompilerDefinition,
     CompilerOnlyError,
     Morphism,
     atomic_morphism,
@@ -87,6 +88,7 @@ def test_kernel_registration_is_private_inert_and_exact_object_authoritative() -
     assert registered.original is getattr(_kernel_helper, "__wrapped__")
     assert registered.wrapper is _kernel_helper
     assert _registered_definition(_kernel_alias) is registered
+    assert not hasattr(_kernel_helper, "__catseq_definition__")
 
     def fake() -> None:
         pass
@@ -94,7 +96,7 @@ def test_kernel_registration_is_private_inert_and_exact_object_authoritative() -
     setattr(
         fake,
         "__catseq_definition__",
-        getattr(_kernel_helper, "__catseq_definition__"),
+        CompilerDefinition(kind="morphism_template"),
     )
     assert _registered_definition(fake) is None
 
@@ -117,6 +119,10 @@ def test_collector_keeps_entry_owner_and_registered_definition_catalog(
 
     assert collection._entry_name == f"{__name__}._Experiment.build_sequence"
     assert collection._entry_owner is experiment
+    assert collection._entry_original is getattr(
+        _Experiment.build_sequence, "__wrapped__"
+    )
+    assert collection._entry_wrapper is _Experiment.build_sequence
     names_to_roles = dict(
         zip(collection._definition_names, collection._definition_roles, strict=True)
     )
@@ -142,7 +148,7 @@ def test_collector_requires_actual_base_exp_and_registered_entry(
     setattr(
         _UndecoratedExperiment.build_sequence,
         "__catseq_definition__",
-        getattr(_kernel_helper, "__catseq_definition__"),
+        CompilerDefinition(kind="morphism_template"),
     )
 
     with pytest.raises(TypeError, match="registered.*@kernel"):

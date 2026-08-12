@@ -31,7 +31,7 @@ class CompilerOnlyError(RuntimeError):
 class CompilerDefinition:
     """Import-time metadata describing how ``catseqc`` treats a definition."""
 
-    kind: Literal["kernel", "atomic_morphism", "morphism_template"]
+    kind: Literal["atomic_morphism", "morphism_template"]
     symbol: str | None = None
 
 
@@ -190,8 +190,18 @@ def _register_definition(
     else:
         wrapper = original
 
-    metadata = CompilerDefinition(kind=role, symbol=symbol)
-    setattr(wrapper, "__catseq_definition__", metadata)
+    if role == "atomic_morphism":
+        setattr(
+            wrapper,
+            "__catseq_definition__",
+            CompilerDefinition(kind="atomic_morphism", symbol=symbol),
+        )
+    elif role == "morphism_template":
+        setattr(
+            wrapper,
+            "__catseq_definition__",
+            CompilerDefinition(kind="morphism_template"),
+        )
     registration = _RegisteredDefinition(
         role=role,
         symbol=symbol,

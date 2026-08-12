@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
-use nac3ast::{Location, Stmt, StmtKind};
+use nac3ast::{ExcepthandlerKind, Location, Stmt, StmtKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RegisteredDefinitionRole {
@@ -138,7 +138,8 @@ impl RegisteredKernelModules {
         let module = self
             .modules
             .iter()
-            .find(|module| module.id == definition.module_id)?;
+            .find(|module| module.id == definition.module_id)
+            .expect("registered definitions always refer to retained modules");
         Some(&module.indexed_definitions[definition.ast_definition_index].statement)
     }
 }
@@ -156,13 +157,17 @@ pub enum RegistrationError {
     },
     DefinitionNotFound {
         definition: String,
+        module: String,
         file_name: String,
         source_start_line: usize,
+        source_start_column: usize,
     },
     DefinitionAmbiguous {
         definition: String,
+        module: String,
         file_name: String,
         source_start_line: usize,
+        source_start_column: usize,
     },
     EntryNotRegistered {
         definition_id: usize,
@@ -189,19 +194,23 @@ impl Display for RegistrationError {
             ),
             Self::DefinitionNotFound {
                 definition,
+                module,
                 file_name,
                 source_start_line,
+                source_start_column,
             } => write!(
                 formatter,
-                "registered definition {definition} has no matching source definition at {file_name}:{source_start_line}:1"
+                "registered definition {definition} in module {module} has no matching source definition at {file_name}:{source_start_line}:{source_start_column}"
             ),
             Self::DefinitionAmbiguous {
                 definition,
+                module,
                 file_name,
                 source_start_line,
+                source_start_column,
             } => write!(
                 formatter,
-                "registered definition {definition} has multiple matching source definitions at {file_name}:{source_start_line}:1"
+                "registered definition {definition} in module {module} has multiple matching source definitions at {file_name}:{source_start_line}:{source_start_column}"
             ),
             Self::EntryNotRegistered { definition_id } => write!(
                 formatter,
@@ -255,32 +264,7 @@ pub fn register_kernel_modules(
                 definition: definition.qualified_name.clone(),
                 module_id: definition.module_id,
             })?;
-        let matches = module
-            .indexed_definitions
-            .iter()
-            .enumerate()
-            .filter(|(_, candidate)| {
-                candidate.qualified_name == definition.qualified_name
-                    && candidate.source_start_line == definition.source_start_line
-            })
-            .collect::<Vec<_>>();
-        let (ast_definition_index, indexed) = match matches.as_slice() {
-            [] => {
-                return Err(RegistrationError::DefinitionNotFound {
-                    definition: definition.qualified_name,
-                    file_name: module.file_name.clone(),
-                    source_start_line: definition.source_start_line,
-                });
-            }
-            [(index, indexed)] => (*index, *indexed),
-            _ => {
-                return Err(RegistrationError::DefinitionAmbiguous {
-                    definition: definition.qualified_name,
-                    file_name: module.file_name.clone(),
-                    source_start_line: definition.source_start_line,
-                });
-            }
-        };
+        let (ast_definition_index, indexed) = associate_definition(module, &definition)?;
         definitions.push(RegisteredDefinition {
             id: definition.id,
             module_id: definition.module_id,
@@ -306,6 +290,49 @@ pub fn register_kernel_modules(
         definitions,
         entry_definition_id: input.entry_definition_id,
     })
+}
+
+fn associate_definition<'a>(
+    module: &'a RegisteredModule,
+    definition: &DefinitionRegistrationInput,
+) -> Result<(usize, &'a IndexedDefinition), RegistrationError> {
+    let mut matches = module
+        .indexed_definitions
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| {
+            candidate.qualified_name == definition.qualified_name
+                && candidate.source_start_line == definition.source_start_line
+        });
+    let source_start_column = module
+        .source
+        .lines()
+        .nth(definition.source_start_line.saturating_sub(1))
+        .and_then(|line| {
+            line.char_indices()
+                .find(|(_, character)| !character.is_whitespace())
+                .map(|(column, _)| column + 1)
+        })
+        .unwrap_or(1);
+    let Some(first) = matches.next() else {
+        return Err(RegistrationError::DefinitionNotFound {
+            definition: definition.qualified_name.clone(),
+            module: module.import_name.clone(),
+            file_name: module.file_name.clone(),
+            source_start_line: definition.source_start_line,
+            source_start_column,
+        });
+    };
+    if matches.next().is_some() {
+        return Err(RegistrationError::DefinitionAmbiguous {
+            definition: definition.qualified_name.clone(),
+            module: module.import_name.clone(),
+            file_name: module.file_name.clone(),
+            source_start_line: definition.source_start_line,
+            source_start_column,
+        });
+    }
+    Ok(first)
 }
 
 fn index_definitions(
@@ -345,7 +372,81 @@ fn index_definitions(
                 index_definitions(body, lexical_path, indexed);
                 lexical_path.pop();
             }
+            StmtKind::For { body, orelse, .. }
+            | StmtKind::AsyncFor { body, orelse, .. }
+            | StmtKind::While { body, orelse, .. }
+            | StmtKind::If { body, orelse, .. } => {
+                index_definitions(body, lexical_path, indexed);
+                index_definitions(orelse, lexical_path, indexed);
+            }
+            StmtKind::With { body, .. } | StmtKind::AsyncWith { body, .. } => {
+                index_definitions(body, lexical_path, indexed);
+            }
+            StmtKind::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+                ..
+            } => {
+                index_definitions(body, lexical_path, indexed);
+                for handler in handlers {
+                    let ExcepthandlerKind::ExceptHandler { body, .. } = &handler.node;
+                    index_definitions(body, lexical_path, indexed);
+                }
+                index_definitions(orelse, lexical_path, indexed);
+                index_definitions(finalbody, lexical_path, indexed);
+            }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ambiguous_association_fails_with_source_provenance() {
+        let source = Arc::<str>::from("class Owner:\n    def helper(self):\n        return None\n");
+        let suite = nac3parser::parser::parse_program(
+            &source,
+            nac3ast::FileName::from("/project/helpers.py".to_owned()),
+        )
+        .expect("test source should parse");
+        let mut indexed_definitions = Vec::new();
+        index_definitions(&suite, &mut Vec::new(), &mut indexed_definitions);
+        let indexed = indexed_definitions
+            .pop()
+            .expect("class method should be indexed");
+        let module = RegisteredModule {
+            id: 0,
+            import_name: "helpers".to_owned(),
+            file_name: "/project/helpers.py".to_owned(),
+            source,
+            suite,
+            indexed_definitions: vec![indexed.clone(), indexed],
+        };
+        let definition = DefinitionRegistrationInput {
+            id: 0,
+            module_id: 0,
+            qualified_name: "Owner.helper".to_owned(),
+            source_start_line: 2,
+            role: RegisteredDefinitionRole::Kernel,
+            atomic_symbol: None,
+        };
+
+        assert!(matches!(
+            associate_definition(&module, &definition),
+            Err(RegistrationError::DefinitionAmbiguous {
+                definition,
+                module,
+                file_name,
+                source_start_line: 2,
+                source_start_column: 5,
+            }) if definition == "Owner.helper"
+                && module == "helpers"
+                && file_name == "/project/helpers.py"
+        ));
     }
 }

@@ -86,9 +86,10 @@ fn associates_nested_registered_definition_by_cpython_qualified_name() {
         "    return None\n",
         "\n",
         "def host_factory():\n",
-        "    @kernel\n",
-        "    def nested():\n",
-        "        return None\n",
+        "    with registration_scope:\n",
+        "        @kernel\n",
+        "        def nested():\n",
+        "            return None\n",
         "    return nested\n",
     ));
     let registered = register_kernel_modules(RegistrationInput {
@@ -111,7 +112,7 @@ fn associates_nested_registered_definition_by_cpython_qualified_name() {
                 id: 1,
                 module_id: 0,
                 qualified_name: "host_factory.<locals>.nested".to_owned(),
-                source_start_line: 6,
+                source_start_line: 7,
                 role: RegisteredDefinitionRole::Kernel,
                 atomic_symbol: None,
             },
@@ -124,5 +125,5 @@ fn associates_nested_registered_definition_by_cpython_qualified_name() {
         .definition(1)
         .expect("nested definition remains registered for later source analysis");
     assert_eq!(nested.qualified_name(), "host_factory.<locals>.nested");
-    assert_eq!(nested.location().row, 6);
+    assert_eq!(nested.location().row, 7);
 }

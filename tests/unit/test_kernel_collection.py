@@ -228,6 +228,35 @@ def test_registered_modules_associate_the_exact_entry_with_experiment_source(
     assert _BODY_CALLS == 0
 
 
+def test_registered_modules_associate_local_definition_inside_host_control_suite(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(CompilerOnlyError, match="compiler-only"):
+
+        @kernel
+        def control_nested_helper() -> Morphism:
+            raise AssertionError("registered Kernel bodies must not execute")
+
+        control_nested_helper()
+
+    experiment = _Experiment(
+        compiler=_compiler(tmp_path),
+        runtime=object(),
+        h5_writer=cast(Any, object()),
+    )
+
+    registered = experiment.compiler._native._register_kernel_modules(experiment)
+
+    assert any(
+        name.endswith(
+            "test_registered_modules_associate_local_definition_inside_host_control_suite."
+            "<locals>.control_nested_helper"
+        )
+        for name in registered._definition_names
+    )
+    assert _BODY_CALLS == 0
+
+
 def test_registered_modules_retain_exact_definitions_from_multiple_modules(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -425,8 +454,8 @@ def test_definition_association_failure_reports_original_source_line(
         with pytest.raises(
             RuntimeError,
             match=(
-                rf"registered definition association_failure_helper.*"
-                rf"<{module_name}>:{source_line}:1"
+                rf"registered definition association_failure_helper in module "
+                rf"{module_name}.*at <{module_name}>:{source_line}:1"
             ),
         ):
             experiment.compiler._native._register_kernel_modules(experiment)

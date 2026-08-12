@@ -45,6 +45,11 @@ class _RegisteredDefinition:
     wrapper: FunctionType
     module: ModuleType
 
+    def facts(self) -> tuple[object, ...]:
+        """Project this registration into the private native bridge schema."""
+
+        return self.original, self.wrapper, self.role, self.symbol, self.module
+
 
 _DEFINITION_REGISTRY: dict[FunctionType, _RegisteredDefinition] = {}
 _REGISTERED_DEFINITIONS: list[_RegisteredDefinition] = []
@@ -146,28 +151,13 @@ def _registered_definition_facts(value: object) -> tuple[object, ...] | None:
     registered = _registered_definition(value)
     if registered is None:
         return None
-    return (
-        registered.original,
-        registered.wrapper,
-        registered.role,
-        registered.symbol,
-        registered.module,
-    )
+    return registered.facts()
 
 
 def _registered_definition_catalog() -> tuple[tuple[object, ...], ...]:
     """Return the current import-time catalog for the native analyzer."""
 
-    return tuple(
-        (
-            registered.original,
-            registered.wrapper,
-            registered.role,
-            registered.symbol,
-            registered.module,
-        )
-        for registered in _REGISTERED_DEFINITIONS
-    )
+    return tuple(registered.facts() for registered in _REGISTERED_DEFINITIONS)
 
 
 def _register_definition(

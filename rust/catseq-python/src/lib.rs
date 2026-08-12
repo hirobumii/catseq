@@ -10,6 +10,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 mod kernel_collector;
+mod kernel_registration;
 mod runtime;
 
 #[pyclass(name = "CompiledSequence", module = "catseq._native", frozen)]
@@ -170,6 +171,15 @@ impl PyCompiler {
     ) -> PyResult<kernel_collector::PyKernelDefinitionCollection> {
         kernel_collector::collect_kernel_definitions(py, experiment)
     }
+
+    fn _register_kernel_modules(
+        &self,
+        py: Python<'_>,
+        experiment: &Bound<'_, PyAny>,
+    ) -> PyResult<kernel_registration::PyRegisteredKernelModules> {
+        let collection = kernel_collector::collect_kernel_definitions(py, experiment)?;
+        kernel_registration::register_collected_kernel_modules(py, collection)
+    }
 }
 
 fn json_to_python<T: serde::Serialize + ?Sized>(py: Python<'_>, value: &T) -> PyResult<Py<PyAny>> {
@@ -220,6 +230,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyCompiler>()?;
     module.add_class::<PyCompiledSequence>()?;
     module.add_class::<kernel_collector::PyKernelDefinitionCollection>()?;
+    module.add_class::<kernel_registration::PyRegisteredKernelModules>()?;
     runtime::register(module)?;
     Ok(())
 }

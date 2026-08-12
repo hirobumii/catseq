@@ -2,13 +2,30 @@ use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyFunction, PyModule, PyTuple};
 
-struct CollectedDefinition {
-    name: String,
-    role: String,
-    symbol: Option<String>,
-    _original: Py<PyAny>,
-    _wrapper: Py<PyAny>,
-    _module: Py<PyModule>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CollectedDefinitionRole {
+    Kernel,
+    MorphismDefinition,
+    Atomic,
+}
+
+impl CollectedDefinitionRole {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Kernel => "kernel",
+            Self::MorphismDefinition => "morphism_definition",
+            Self::Atomic => "atomic",
+        }
+    }
+}
+
+pub(crate) struct CollectedDefinition {
+    pub(crate) name: String,
+    pub(crate) role: CollectedDefinitionRole,
+    pub(crate) symbol: Option<String>,
+    pub(crate) original: Py<PyAny>,
+    pub(crate) wrapper: Py<PyAny>,
+    pub(crate) module: Py<PyModule>,
 }
 
 #[pyclass(
@@ -17,9 +34,9 @@ struct CollectedDefinition {
     frozen
 )]
 pub(crate) struct PyKernelDefinitionCollection {
-    owner: Py<PyAny>,
-    entry: CollectedDefinition,
-    definitions: Vec<CollectedDefinition>,
+    pub(crate) owner: Py<PyAny>,
+    pub(crate) entry: CollectedDefinition,
+    pub(crate) definitions: Vec<CollectedDefinition>,
 }
 
 #[pymethods]
@@ -36,12 +53,12 @@ impl PyKernelDefinitionCollection {
 
     #[getter]
     fn _entry_original(&self, py: Python<'_>) -> Py<PyAny> {
-        self.entry._original.clone_ref(py)
+        self.entry.original.clone_ref(py)
     }
 
     #[getter]
     fn _entry_wrapper(&self, py: Python<'_>) -> Py<PyAny> {
-        self.entry._wrapper.clone_ref(py)
+        self.entry.wrapper.clone_ref(py)
     }
 
     #[getter]
@@ -56,7 +73,7 @@ impl PyKernelDefinitionCollection {
     fn _definition_roles(&self) -> Vec<String> {
         self.definitions
             .iter()
-            .map(|definition| definition.role.clone())
+            .map(|definition| definition.role.as_str().to_owned())
             .collect()
     }
 
@@ -97,7 +114,7 @@ pub(crate) fn collect_kernel_definitions(
         ));
     }
     let root_facts = parse_facts(&root_facts)?;
-    if root_facts.role != "kernel" {
+    if root_facts.role != CollectedDefinitionRole::Kernel {
         return Err(PyTypeError::new_err(
             "BaseExp.build_sequence must have the Kernel role",
         ));
@@ -124,7 +141,7 @@ pub(crate) fn collect_kernel_definitions(
 struct RegistrationFacts<'py> {
     original: Bound<'py, PyFunction>,
     wrapper: Bound<'py, PyFunction>,
-    role: String,
+    role: CollectedDefinitionRole,
     symbol: Option<String>,
     module: Bound<'py, PyModule>,
 }
@@ -139,11 +156,11 @@ impl RegistrationFacts<'_> {
     fn collect(self) -> PyResult<CollectedDefinition> {
         Ok(CollectedDefinition {
             name: self.name()?,
-            role: public_role(&self.role)?.to_owned(),
+            role: self.role,
             symbol: self.symbol,
-            _original: self.original.unbind().into(),
-            _wrapper: self.wrapper.unbind().into(),
-            _module: self.module.unbind(),
+            original: self.original.unbind().into(),
+            wrapper: self.wrapper.unbind().into(),
+            module: self.module.unbind(),
         })
     }
 }
@@ -153,17 +170,17 @@ fn parse_facts<'py>(value: &Bound<'py, PyAny>) -> PyResult<RegistrationFacts<'py
     Ok(RegistrationFacts {
         original: facts.get_item(0)?.downcast_exact::<PyFunction>()?.clone(),
         wrapper: facts.get_item(1)?.downcast_exact::<PyFunction>()?.clone(),
-        role: facts.get_item(2)?.extract()?,
+        role: definition_role(facts.get_item(2)?.extract()?)?,
         symbol: facts.get_item(3)?.extract()?,
         module: facts.get_item(4)?.downcast_exact::<PyModule>()?.clone(),
     })
 }
 
-fn public_role(role: &str) -> PyResult<&'static str> {
+fn definition_role(role: &str) -> PyResult<CollectedDefinitionRole> {
     match role {
-        "kernel" => Ok("kernel"),
-        "morphism_template" => Ok("morphism_definition"),
-        "atomic_morphism" => Ok("atomic"),
+        "kernel" => Ok(CollectedDefinitionRole::Kernel),
+        "morphism_template" => Ok(CollectedDefinitionRole::MorphismDefinition),
+        "atomic_morphism" => Ok(CollectedDefinitionRole::Atomic),
         _ => Err(PyRuntimeError::new_err("unknown CatSeq definition role")),
     }
 }

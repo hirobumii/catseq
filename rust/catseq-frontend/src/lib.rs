@@ -19,6 +19,7 @@ mod intrinsics;
 mod morphism_lowering;
 mod names;
 mod native_records;
+mod registered_modules;
 mod session;
 mod source_hir;
 mod typed;
@@ -43,6 +44,11 @@ pub use morphism_lowering::{
     specialize_typed_report_to_native_arenas_with_entry_arguments,
 };
 pub use names::{PathRoot, ResolvedPath, ScanSlotUse};
+pub use registered_modules::{
+    DefinitionRegistrationInput, ModuleRegistrationInput, RegisteredDefinition,
+    RegisteredDefinitionRole, RegisteredKernelModules, RegisteredModule, RegistrationError,
+    RegistrationInput, register_kernel_modules,
+};
 pub use session::{
     CacheStatus, CompiledSourceSequence, SourceCompileError, SourceCompileOutcome,
     SourceCompilerSession,

@@ -256,8 +256,50 @@ _Avoid_: Unsupported Source Module, implicit Python fallback
 **Typed Source HIR**:
 Restricted-source HIR whose names resolve to stable definitions and whose
 reachable expressions have CatSeq compiler types. It is the semantic boundary
-between Python-shaped source and Morphism arena lowering.
+between Python-shaped Kernel/Morphism source and Morphism arena lowering.
+Compute bodies remain outside it; it contains only references to validated
+Compute interfaces and calls.
 _Avoid_: Annotated AST, runtime-typed HIR
+
+**Compute Definition**:
+A pure Device-time scalar program compiled by the pinned CatSeq NAC3 fork. A
+Compute Definition is either a named Compute Function or an outlined anonymous
+Compute Region; it is neither a Morphism nor Control.
+_Avoid_: Kernel helper, Morphism-producing function, Host RPC
+
+**Compute Function**:
+A reusable named Compute Definition declared by an exactly registered
+`@compute` function identity. An undecorated Python helper remains a Host RPC
+and is never inferred to be a Compute Function.
+_Avoid_: Compute Region, ordinary Python helper
+
+**Compute Region**:
+An anonymous Compute Definition completely outlined from inline pure
+Device-time scalar source in a Kernel Function. Its live-ins and live-outs form
+its signature; executable scalar CFG/SSA does not remain in Kernel HIR.
+_Avoid_: Native Python topology control, partial outlining
+
+**Compute Source Unit**:
+The immutable request-local NAC3 input for one Compute Definition, taken from
+the exact frozen module snapshot for a Compute Function or produced by complete
+Compute Region outlining. It preserves original Source Anchors and is never
+reconstructed from an ambient path.
+_Avoid_: Path to reload, Compute body in Typed Source HIR
+
+**Compute Unit Store**:
+The compiler-session-owned sibling of Typed Source HIR that retains the frozen
+Compute source units and the exact NAC3 typed compilation units produced by
+validation for the same request. Downstream Compute code generation reuses
+those units without reparsing or retyping; Typed Source HIR refers to their
+definitions only by stable identity.
+_Avoid_: Compute bodies embedded in Typed Source HIR, path-based source reload
+
+**Validated Compute Interface**:
+The CatSeq-visible result produced only after the pinned NAC3 fork has accepted
+the complete reachable Compute closure. It contains stable definition identity,
+typed ABI signature and hash, and source provenance, but no Compute body,
+CFG/SSA, LLVM IR, or Wasm.
+_Avoid_: Unchecked decorator metadata, NAC3 body IR
 
 **Source HIR Segment**:
 The immutable flat node and edge ranges for one definition revision in the

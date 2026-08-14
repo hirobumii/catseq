@@ -31,19 +31,29 @@ silently inserting a runtime barrier would change program semantics.
 
 ## Language boundary represented by the programs
 
-### Kernel Functions and native Python control
+### Kernel Functions, Compute, and native Python control
 
-`@kernel` is the one source entry/call marker.  Direct callees are statically
-resolved.  Pure scalar arithmetic, bounded scalar loops, and supported native
-`if/elif` remain NAC3 ComputeCFG/SSA, including Device-valued predicates.  They
-become schedulable work and do not advance the logical cursor.
+`@kernel` marks compiler-only entry and topology-construction functions.
+Direct callees are statically resolved.  One pure Compute semantic domain has
+two source forms:
 
-RTMQ Device ComputeCFG has no floating-point type or instructions. Realtime
-numeric code therefore uses integers, target nominal words, or an explicit
-fixed-point convention such as Q16.16. Source `float` remains legal only for
-Compile/Link-known configuration that target lowering completely quantizes
-before Device execution; an internal `float @ Device` fact or Device-time float
-operation is rejected. Availability never creates a second Python type family.
+- a reusable named ComputeFunction declared with `@compute`; and
+- an anonymous ComputeRegion completely outlined from inline pure Device
+  scalar source inside `@kernel`.
+
+Straight-line arithmetic, supported native `if/elif`, and statically bounded
+scalar loops may appear inline, but no executable Device CFG/SSA remains in
+Kernel IR.  CatSeq records opaque typed Compute calls and schedulable work;
+the pinned CatSeq NAC3 fork owns Compute body typing, CFG/SSA, and later
+LLVM/Wasm lowering.  Neither Compute source form advances the logical cursor.
+
+ComputeRegion and ComputeFunction bodies have no floating-point types or
+instructions. Realtime numeric code therefore uses integers, target nominal
+words, or an explicit fixed-point type. Source `float` may exist only outside
+Compute, and only when the frontend resolves it to an accepted non-float
+Compile/Link value before it enters a ComputeRegion, ComputeFunction call, or
+Compute ABI. An internal `float @ Device` fact or Device-time float operation is
+rejected. Availability never creates a second Python type family.
 
 Native Python control may affect Morphism topology only when its controlling
 value is Compile-known.  A Link/Device value that selects topology must use an
@@ -53,7 +63,7 @@ dispatch, host helpers, and runtime recursion fail closed.
 Python annotations describe ordinary semantic types, not availability wrappers:
 
 ```python
-@kernel
+@compute
 def classify(count: int, threshold: int) -> int:
     ...
 ```
@@ -61,10 +71,20 @@ def classify(count: int, threshold: int) -> int:
 Availability is a compiler fact propagated from producers and bindings, not a
 second source type. If `count` comes from measurement and `threshold` is a
 default entry argument, the HIR facts are `count: int @ Device`, `threshold:
-int @ Compile`, and `result: int @ Device`. The same helper called with two
-constants has a Compile result. Link fixtures declare entry parameters through
-`LINK-BINDING` contract metadata while the Python annotation remains `bool`,
-`int`, or another ordinary base type.
+int @ Compile`, and `result: int @ Device`. The same ComputeFunction called with
+two constants has a Compile result. Link fixtures declare entry parameters
+through `LINK-BINDING` contract metadata while the Python annotation remains
+`bool`, `int`, or another ordinary base type.
+
+### Typed Source HIR
+
+`source_hir_loop_free.py` and `source_hir_compute_reference.py` use the real
+`BaseExp.build_sequence(ExpParams)` entry shape.  They define the first #52
+source-analysis contracts: exact registered-object authority, entry-rooted
+reachability, admitted request reads, typed call/read edges, and an opaque
+Compute reference.  Successful HIR is Python-free and target-independent;
+failure publishes no partial report.  ValueExpr, Morphism/Control graphs,
+DeviceValue SSA, target planning, and backend artifacts remain downstream.
 
 ### Morphism
 
@@ -167,9 +187,10 @@ join belong to different Epochs.
 
 | Area | Programs | Boundary shown |
 | --- | --- | --- |
+| Typed Source HIR | `source_hir_loop_free.py`, `source_hir_compute_reference.py` | exact BaseExp root, reachable definitions and reads, opaque Compute reference |
 | public Kernel entry | `kernel_identity.py` | compiler-only body and channel-bound result |
-| Kernel calls | `kernel_calls_kernel.py` | scalar and Morphism-producing direct callees |
-| scalar control | `device_scalar_if_elif.py`, `device_scalar_early_return.py`, `device_scalar_bounded_while.py`, `device_pure_compute_loop.py`, `device_mandelbrot.py` | Device ComputeCFG versus temporal Control; nested numeric workload |
+| Kernel calls | `kernel_calls_kernel.py` | Compile-known scalar and Morphism-producing direct callees |
+| Compute | `device_scalar_if_elif.py`, `device_scalar_early_return.py`, `device_scalar_bounded_while.py`, `device_pure_compute_loop.py`, `device_mandelbrot.py` | explicit ComputeFunctions, automatic ComputeRegions, and temporal Control separation |
 | Compile topology | `compile_known_if.py`, `compile_known_if_false.py`, `compile_known_for_range.py` | selected finite topology, no runtime Choice |
 | Morphism algebra | `morphism_multichannel_parallel.py`, `morphism_cursor_anchors.py`, `morphism_resource_binding_linear_ramp.py`, `morphism_power.py` | parallel resources, cursor/frontier, resource-indexed Morphisms, power |
 | static multi-board | `morphism_multiboard_parallel.py` | unified source and automatic board partitioning |
@@ -188,8 +209,8 @@ join belong to different Epochs.
 
 | Area | Programs | Rejected behavior |
 | --- | --- | --- |
-| call graph | `reject_undecorated_helper.py`, `reject_indirect_kernel_call.py`, `reject_device_function_dispatch.py`, `reject_kernel_closure.py`, `reject_recursive_kernel.py` | host/dynamic/recursive call authority |
-| topology/value type | `reject_device_topology_if.py`, `reject_ignored_morphism_result.py`, `reject_temporal_early_return.py`, `reject_device_float.py` | implicit `Phi<Morphism>`, lost topology, abrupt temporal return, unsupported realtime float |
+| call graph | `reject_unimplemented_host_rpc.py`, `reject_indirect_kernel_call.py`, `reject_device_function_dispatch.py`, `reject_kernel_closure.py`, `reject_recursive_kernel.py` | host/dynamic/recursive call authority |
+| topology/value type | `reject_device_topology_if.py`, `reject_ignored_morphism_result.py`, `reject_temporal_early_return.py`, `reject_device_float.py`, `reject_inline_device_float.py` | implicit `Phi<Morphism>`, lost topology, abrupt temporal return, unsupported realtime float |
 | resources | `reject_same_channel_parallel.py` | overlapping exclusive channel claims |
 | Boundary contracts | `reject_linear_ramp_without_active_snapshot.py` | initialization does not provide the active snapshot required by a ramp |
 | readiness | `reject_use_before_ready.py` | source construction order used instead of temporal dominance |
@@ -248,7 +269,7 @@ uv run python frontend_demo/check_demos.py \
 ```
 
 Do not use `--offline` or `uv run --with`.  Whole-directory mypy is also
-expected to fail until the proposed `catseq.kernel`, Control,
+expected to fail until the proposed `catseq.kernel`, `catseq.compute`, Control,
 measurement, scheduling, and rendezvous surfaces exist; type-check the two
 runner files independently during this design stage.
 
@@ -259,6 +280,7 @@ particular, review may change:
 
 - the public name replacing or retaining `morphism_template`;
 - the exact typed syntax for `loop_value`, carry edges, and exhaustion;
+- the concrete spelling and exact constant constructors for `fixed32[F]`;
 - the concrete Link-value declaration spelling;
 - the prepared-RWG handle returned by schedulable `rwg.load`;
 - the exact `DataCacheView` and `hardware.data_cache.store` binding spellings;

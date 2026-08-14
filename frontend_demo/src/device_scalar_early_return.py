@@ -3,10 +3,10 @@
 # ISSUE: #65
 # ENTRY: sequence
 # EXPECT: accept
-# CONTRACT: Pure scalar early return remains inside the supported NAC3 ComputeCFG.
+# CONTRACT: Pure scalar early return remains inside one explicit ComputeFunction body.
 # CONTRACT: Returning a scalar does not create an abrupt temporal Control exit.
 
-from catseq import control, kernel
+from catseq import compute, control, kernel
 from catseq.control import Control
 from catseq.hardware.ttl import pulse
 from catseq.morphism import identity
@@ -16,7 +16,7 @@ from support.detectors import detector0
 from support.hardware_map import correction_a, readout_a
 
 
-@kernel
+@compute
 def classify(count: int, low: int, high: int) -> int:
     if count < low:
         return -1

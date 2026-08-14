@@ -3,7 +3,7 @@
 # ISSUE: #65
 # ENTRY: sequence
 # EXPECT: accept
-# CONTRACT: Pure scalar and Morphism-producing kernels may be called directly.
+# CONTRACT: Compile-known scalar and Morphism-producing Kernel Functions may be called directly.
 # CONTRACT: Every callee is statically resolved and contributes one correlated summary.
 
 from catseq import kernel

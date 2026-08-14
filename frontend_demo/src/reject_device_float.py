@@ -1,12 +1,12 @@
 # CATSEQ-DEMO: 1
 # STATUS: proposed
-# ISSUE: #54
+# ISSUE: #80
 # ENTRY: sequence
 # EXPECT: reject
-# CONTRACT: RTMQ Device ComputeCFG has no floating-point values or operations.
-# DIAGNOSTIC: Device-time float is unsupported; use fixed-point integer arithmetic
+# CONTRACT: ComputeRegion and ComputeFunction bodies have no floating-point values or operations.
+# DIAGNOSTIC: Device-time float is unsupported; use integer or first-class fixed-point arithmetic
 
-from catseq import control, kernel
+from catseq import compute, control, kernel
 from catseq.control import Control
 from catseq.morphism import identity
 from catseq.time_utils import us
@@ -14,7 +14,7 @@ from catseq.time_utils import us
 from support.detectors import detector0
 
 
-@kernel
+@compute
 def normalize(count: int) -> float:
     return float(count) / 100.0
 

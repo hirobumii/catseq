@@ -1,10 +1,11 @@
 # CATSEQ-DEMO: 1
 # STATUS: proposed
-# ISSUE: #60
+# ISSUE: #80
 # ENTRY: sequence
-# EXPECT: accept
-# CONTRACT: A statically bounded scalar-only while inside @kernel is completely outlined as a ComputeRegion.
-# CONTRACT: Its arithmetic cost is schedulable work, not logical cursor displacement.
+# EXPECT: reject
+# CONTRACT: Automatic ComputeRegion outlining rejects a Device float result before Kernel elaboration.
+# CONTRACT: Integer true division is rejected because the pinned NAC3 semantics produce float.
+# DIAGNOSTIC: Device-time float is unsupported; use integer or first-class fixed-point arithmetic
 
 from catseq import control, kernel
 from catseq.control import Control
@@ -17,17 +18,13 @@ from support.hardware_map import correction_a
 
 
 @kernel
-def sequence(threshold: int = 20) -> Control:
+def sequence() -> Control:
     capture, count = detector0.measure(10 * us)
-    normalized = count
-    steps = 0
-    while normalized > 255 and steps < 8:
-        normalized = normalized // 2
-        steps = steps + 1
+    normalized = count / 100
     decision = control.branch(
-        normalized >= threshold,
+        normalized > 0,
         when_true=identity(0) >> {correction_a: pulse(1 * us)},
         when_false=identity(0),
-        join=control.fixed_end(2 * us),
+        join=control.fixed_end(1 * us),
     )
     return capture >> decision

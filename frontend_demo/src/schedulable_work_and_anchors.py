@@ -7,7 +7,7 @@
 # CONTRACT: Only Identity displacements and timed hardware events place rigid anchors.
 # CONTRACT: Work on two boards is placed from dependencies, deadlines, WCET, and resources.
 
-from catseq import hardware, kernel
+from catseq import compute, hardware, kernel
 from catseq.control import Control
 from catseq.morphism import identity
 from catseq.time_utils import us
@@ -21,7 +21,7 @@ from support.hardware_map import (
 )
 
 
-@kernel
+@compute
 def realtime_phase_word(count: int) -> int:
     if count > 20:
         return 1 << 30

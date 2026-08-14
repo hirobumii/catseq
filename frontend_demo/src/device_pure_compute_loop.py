@@ -1,12 +1,12 @@
 # CATSEQ-DEMO: 1
 # STATUS: proposed
-# ISSUE: #63
+# ISSUE: #60
 # ENTRY: sequence
 # EXPECT: accept
-# CONTRACT: A bounded loop that computes only scalar values remains NAC3 ComputeCFG.
+# CONTRACT: A reusable bounded scalar loop is declared as an explicit ComputeFunction.
 # CONTRACT: It creates neither MorphismPower nor temporal ControlLoop topology.
 
-from catseq import control, kernel
+from catseq import compute, control, kernel
 from catseq.control import Control
 from catseq.hardware.ttl import pulse
 from catseq.morphism import identity
@@ -16,7 +16,7 @@ from support.detectors import detector0
 from support.hardware_map import correction_a
 
 
-@kernel
+@compute
 def filter_count(count: int) -> int:
     filtered = count
     for _ in range(4):

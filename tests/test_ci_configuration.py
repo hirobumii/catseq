@@ -52,9 +52,16 @@ def test_ci_exposes_the_llvm_tools_required_to_build_nac3_irrt() -> None:
     linux_step = platform_job.split(
         "      - name: Install LLVM 22 development libraries", 1
     )[1].split("\n      - name:", 1)[0]
+    assert "clang-22 llvm-22-dev" in linux_step
     assert '"$RUNNER_TEMP/clang-irrt"' in linux_step
     assert '"$RUNNER_TEMP/llvm-as-irrt"' in linux_step
     assert 'echo "$RUNNER_TEMP" >> "$GITHUB_PATH"' in linux_step
+
+    windows_install_step = platform_job.split(
+        "      - name: Install LLVM 22 development libraries", 2
+    )[2].split("\n      - name:", 1)[0]
+    assert "LLVM-22.1.6-win64.exe" in windows_install_step
+    assert ".tar.xz" not in windows_install_step
 
     windows_step = platform_job.split(
         "      - name: Configure LLVM 22 for Rust", 1
@@ -67,6 +74,7 @@ def test_ci_exposes_the_llvm_tools_required_to_build_nac3_irrt() -> None:
     python_llvm_step = python_job.split(
         "      - name: Install LLVM 22 development libraries", 1
     )[1].split("\n      - name:", 1)[0]
+    assert "clang-22 llvm-22-dev" in python_llvm_step
     assert '"$RUNNER_TEMP/clang-irrt"' in python_llvm_step
     assert '"$RUNNER_TEMP/llvm-as-irrt"' in python_llvm_step
     assert 'echo "$RUNNER_TEMP" >> "$GITHUB_PATH"' in python_llvm_step

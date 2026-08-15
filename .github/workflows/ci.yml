@@ -101,7 +101,7 @@ jobs:
           echo 'deb https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main' \
             | sudo tee /etc/apt/sources.list.d/llvm-22.list
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends llvm-22-dev libzstd-dev
+          sudo apt-get install --yes --no-install-recommends clang-22 llvm-22-dev libzstd-dev
           ln -s /usr/lib/llvm-22/bin/clang "$RUNNER_TEMP/clang-irrt"
           ln -s /usr/lib/llvm-22/bin/llvm-as "$RUNNER_TEMP/llvm-as-irrt"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
@@ -113,7 +113,7 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
           directory: ${{ runner.temp }}/llvm-22
-          force-url: https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.6/clang%2Bllvm-22.1.6-x86_64-pc-windows-msvc.tar.xz
+          force-url: https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.6/LLVM-22.1.6-win64.exe
 
       - name: Configure LLVM 22 for Rust
         if: runner.os == 'Windows'
@@ -258,7 +258,7 @@ jobs:
           echo 'deb https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main' \
             | sudo tee /etc/apt/sources.list.d/llvm-22.list
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends llvm-22-dev libzstd-dev
+          sudo apt-get install --yes --no-install-recommends clang-22 llvm-22-dev libzstd-dev
           ln -s /usr/lib/llvm-22/bin/clang "$RUNNER_TEMP/clang-irrt"
           ln -s /usr/lib/llvm-22/bin/llvm-as "$RUNNER_TEMP/llvm-as-irrt"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"

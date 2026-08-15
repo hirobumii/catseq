@@ -767,6 +767,123 @@ fn accepts_only_statically_bounded_initial_compute_loops() {
 }
 
 #[test]
+fn rejects_nested_for_target_rebinding_static_while_counter() {
+    let registered = registered_compute_module(concat!(
+        "@kernel\n",
+        "def entry():\n",
+        "    pass\n",
+        "\n",
+        "@compute\n",
+        "def twice(value: int) -> int:\n",
+        "    return value * 2\n",
+        "\n",
+        "@compute\n",
+        "def normalize(value: int) -> int:\n",
+        "    iteration = 0\n",
+        "    while iteration < 4:\n",
+        "        for iteration in range(1):\n",
+        "            pass\n",
+        "        iteration += 1\n",
+        "    return value\n",
+    ));
+
+    let error = validate_compute_roots(&registered, &[12])
+        .expect_err("a nested for target must not rebind the static while counter");
+    assert!(
+        error
+            .to_string()
+            .contains("unconditional monotonic counter update")
+    );
+    assert!(error.to_string().contains("/project/experiment.py:12:"));
+}
+
+#[test]
+fn rejects_nested_loop_else_control_that_skips_static_while_update() {
+    let nested_for_registered = registered_compute_module(concat!(
+        "@kernel\n",
+        "def entry():\n",
+        "    pass\n",
+        "\n",
+        "@compute\n",
+        "def twice(value: int) -> int:\n",
+        "    return value * 2\n",
+        "\n",
+        "@compute\n",
+        "def normalize(value: int) -> int:\n",
+        "    iteration = 0\n",
+        "    while iteration < 4:\n",
+        "        for _ in range(0):\n",
+        "            pass\n",
+        "        else:\n",
+        "            continue\n",
+        "        iteration += 1\n",
+        "    return value\n",
+    ));
+    let error = validate_compute_roots(&nested_for_registered, &[12])
+        .expect_err("a nested for else must not continue past the outer while update");
+    assert!(
+        error
+            .to_string()
+            .contains("unconditional monotonic counter update")
+    );
+
+    let nested_while_registered = registered_compute_module(concat!(
+        "@kernel\n",
+        "def entry():\n",
+        "    pass\n",
+        "\n",
+        "@compute\n",
+        "def twice(value: int) -> int:\n",
+        "    return value * 2\n",
+        "\n",
+        "@compute\n",
+        "def normalize(value: int) -> int:\n",
+        "    iteration = 0\n",
+        "    while iteration < 4:\n",
+        "        inner = 0\n",
+        "        while inner < 0:\n",
+        "            inner += 1\n",
+        "        else:\n",
+        "            continue\n",
+        "        iteration += 1\n",
+        "    return value\n",
+    ));
+    let error = validate_compute_roots(&nested_while_registered, &[12])
+        .expect_err("a nested while else must not continue past the outer while update");
+    assert!(
+        error
+            .to_string()
+            .contains("unconditional monotonic counter update")
+    );
+}
+
+#[test]
+fn accepts_nested_for_body_control_that_cannot_skip_static_while_update() {
+    let registered = registered_compute_module(concat!(
+        "@kernel\n",
+        "def entry():\n",
+        "    pass\n",
+        "\n",
+        "@compute\n",
+        "def twice(value: int) -> int:\n",
+        "    return value * 2\n",
+        "\n",
+        "@compute\n",
+        "def normalize(value: int) -> int:\n",
+        "    iteration = 0\n",
+        "    while iteration < 4:\n",
+        "        for _ in range(1):\n",
+        "            continue\n",
+        "        iteration += 1\n",
+        "    return value\n",
+    ));
+
+    let validation = validate_compute_roots(&registered, &[12])
+        .expect("control confined to a nested loop body cannot skip the outer while update");
+    assert_eq!(validation.interfaces().len(), 1);
+}
+
+#[test]
 fn rejects_zero_step_static_range() {
     let registered = registered_compute_module(concat!(
         "@kernel\n",

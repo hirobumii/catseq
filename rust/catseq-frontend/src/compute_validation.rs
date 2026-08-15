@@ -742,7 +742,9 @@ fn contains_current_loop_control(statement: &Stmt) -> bool {
         StmtKind::If { body, orelse, .. } => {
             body.iter().chain(orelse).any(contains_current_loop_control)
         }
-        StmtKind::For { .. } | StmtKind::While { .. } => false,
+        StmtKind::For { orelse, .. } | StmtKind::While { orelse, .. } => {
+            orelse.iter().any(contains_current_loop_control)
+        }
         _ => false,
     }
 }
@@ -755,12 +757,22 @@ fn statement_assigns_name(statement: &Stmt, name: &str) -> bool {
         StmtKind::AnnAssign { target, .. } | StmtKind::AugAssign { target, .. } => {
             target_is_name(target, name)
         }
-        StmtKind::If { body, orelse, .. }
-        | StmtKind::While { body, orelse, .. }
-        | StmtKind::For { body, orelse, .. } => body
+        StmtKind::If { body, orelse, .. } | StmtKind::While { body, orelse, .. } => body
             .iter()
             .chain(orelse)
             .any(|child| statement_assigns_name(child, name)),
+        StmtKind::For {
+            target,
+            body,
+            orelse,
+            ..
+        } => {
+            target_is_name(target, name)
+                || body
+                    .iter()
+                    .chain(orelse)
+                    .any(|child| statement_assigns_name(child, name))
+        }
         _ => false,
     }
 }

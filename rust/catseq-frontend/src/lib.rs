@@ -13,6 +13,7 @@ use std::ops::Range;
 use tree_sitter::{Node, Parser, Point, Tree};
 
 mod arena_lowering;
+mod compute_validation;
 mod hir;
 mod incremental;
 mod intrinsics;
@@ -26,6 +27,11 @@ mod typed;
 mod validate;
 
 pub use arena_lowering::{ArenaLoweringError, SourceArenaProgram, lower_sequence_hir};
+pub use compute_validation::{
+    ComputeSourceProvenance, ComputeType, ComputeTypedUnit, ComputeUnitStore, ComputeValidation,
+    ComputeValidationError, FrozenComputeSourceUnit, ValidatedComputeInterface,
+    validate_compute_roots,
+};
 pub use hir::{
     BinaryOperator, CompositionKind, ExpressionId, HirExpression, HirKind, KeywordArgument,
     Literal, LoweringError, SequenceHir, SourceSpan, UnaryOperator,
@@ -45,9 +51,10 @@ pub use morphism_lowering::{
 };
 pub use names::{PathRoot, ResolvedPath, ScanSlotUse};
 pub use registered_modules::{
-    DefinitionRegistrationInput, ModuleRegistrationInput, RegisteredDefinition,
-    RegisteredDefinitionRole, RegisteredKernelModules, RegisteredModule, RegistrationError,
-    RegistrationInput, register_kernel_modules,
+    BuiltinNameBindingInput, DefinitionNameBindingInput, DefinitionRegistrationInput,
+    ModuleRegistrationInput, RegisteredBuiltin, RegisteredDefinition, RegisteredDefinitionRole,
+    RegisteredKernelModules, RegisteredModule, RegistrationError, RegistrationInput,
+    register_kernel_modules,
 };
 pub use session::{
     CacheStatus, CompiledSourceSequence, SourceCompileError, SourceCompileOutcome,

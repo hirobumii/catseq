@@ -15,6 +15,7 @@ from .morphism import (
     MorphismTemplate,
     atomic_morphism,
     arena_build,
+    compute,
     identity,
     morphism_template,
     repeat_morphism,
@@ -32,6 +33,8 @@ from .time_utils import (
     us_to_cycles,
 )
 from .types import Board, Channel, ChannelType, State
+
+int32 = int
 
 __version__ = "0.4.2"
 
@@ -53,10 +56,12 @@ __all__ = [
     "State",
     "atomic_morphism",
     "arena_build",
+    "compute",
     "cycles",
     "cycles_to_time",
     "cycles_to_us",
     "identity",
+    "int32",
     "ms",
     "morphism_template",
     "ns",

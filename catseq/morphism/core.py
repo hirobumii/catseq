@@ -39,7 +39,7 @@ class CompilerDefinition:
 class _RegisteredDefinition:
     """ARTIQ-style import-time registration for one exact definition."""
 
-    role: Literal["kernel", "atomic_morphism", "morphism_template"]
+    role: Literal["kernel", "compute", "atomic_morphism", "morphism_template"]
     symbol: str | None
     original: FunctionType
     wrapper: FunctionType
@@ -163,7 +163,7 @@ def _registered_definition_catalog() -> tuple[tuple[object, ...], ...]:
 def _register_definition(
     definition: _F,
     *,
-    role: Literal["kernel", "atomic_morphism", "morphism_template"],
+    role: Literal["kernel", "compute", "atomic_morphism", "morphism_template"],
     symbol: str | None = None,
 ) -> _F:
     if type(definition) is not FunctionType:
@@ -175,15 +175,23 @@ def _register_definition(
     module = sys.modules.get(original.__module__)
     if type(module) is not ModuleType:
         raise TypeError("CatSeq definitions must belong to an imported Python module")
+    if original.__globals__ is not module.__dict__:
+        raise TypeError("CatSeq definitions must use their owning module globals")
     wrapper: FunctionType
-    if role == "kernel":
+    if role in ("kernel", "compute"):
+        definition_kind = "Kernel" if role == "kernel" else "Compute Function"
+        execution_remedy = (
+            "pass its BaseExp owner to Compiler"
+            if role == "kernel"
+            else "reference it from registered @kernel or @compute source"
+        )
 
         @wraps(original)
         def reject_execution(*args: object, **kwargs: object) -> Never:
             del args, kwargs
             raise CompilerOnlyError(
-                f"{original.__qualname__} is a compiler-only CatSeq Kernel; "
-                "pass its BaseExp owner to Compiler instead of calling it"
+                f"{original.__qualname__} is a compiler-only CatSeq {definition_kind}; "
+                f"{execution_remedy} instead of calling it in CPython"
             )
 
         wrapper = cast(FunctionType, reject_execution)
@@ -219,6 +227,12 @@ def kernel(definition: _F) -> _F:
     """Register one internal compiler-only Kernel definition."""
 
     return _register_definition(definition, role="kernel")
+
+
+def compute(definition: _F) -> _F:
+    """Register one pure compiler-only Device-time Compute Function."""
+
+    return _register_definition(definition, role="compute")
 
 
 def morphism_template(definition: _F) -> _F:

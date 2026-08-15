@@ -13,6 +13,10 @@ fn registers_exact_definitions_from_one_parsed_module() {
         "def helper(width: int):\n",
         "    return width\n",
         "\n",
+        "@compute\n",
+        "def normalize(width: int):\n",
+        "    return width + 1\n",
+        "\n",
         "class Experiment:\n",
         "    @kernel\n",
         "    def build_sequence(self, params):\n",
@@ -35,14 +39,24 @@ fn registers_exact_definitions_from_one_parsed_module() {
                 atomic_symbol: None,
             },
             DefinitionRegistrationInput {
+                id: 13,
+                module_id: 7,
+                qualified_name: "normalize".to_owned(),
+                source_start_line: 5,
+                role: RegisteredDefinitionRole::Compute,
+                atomic_symbol: None,
+            },
+            DefinitionRegistrationInput {
                 id: 12,
                 module_id: 7,
                 qualified_name: "Experiment.build_sequence".to_owned(),
-                source_start_line: 6,
+                source_start_line: 10,
                 role: RegisteredDefinitionRole::Kernel,
                 atomic_symbol: None,
             },
         ],
+        definition_name_bindings: Vec::new(),
+        builtin_name_bindings: Vec::new(),
         entry_definition_id: 12,
     })
     .expect("registered source should parse and associate");
@@ -56,7 +70,13 @@ fn registers_exact_definitions_from_one_parsed_module() {
         "/project/experiment.py"
     );
     assert_eq!(registered.modules()[0].source().as_ref(), source.as_ref());
-    assert_eq!(registered.definitions().len(), 2);
+    assert_eq!(registered.definitions().len(), 3);
+
+    let compute = registered
+        .definition(13)
+        .expect("Compute definition should remain addressable");
+    assert_eq!(compute.qualified_name(), "normalize");
+    assert_eq!(compute.role(), RegisteredDefinitionRole::Compute);
 
     let entry = registered
         .definition(12)
@@ -67,7 +87,7 @@ fn registers_exact_definitions_from_one_parsed_module() {
         entry.location().file.0.to_string(),
         "/project/experiment.py"
     );
-    assert_eq!(entry.location().row, 6);
+    assert_eq!(entry.location().row, 10);
     assert_eq!(entry.location().column, 5);
     assert!(matches!(
         registered
@@ -117,6 +137,8 @@ fn associates_nested_registered_definition_by_cpython_qualified_name() {
                 atomic_symbol: None,
             },
         ],
+        definition_name_bindings: Vec::new(),
+        builtin_name_bindings: Vec::new(),
         entry_definition_id: 0,
     })
     .expect("registration associates source but does not validate closure semantics");
@@ -126,4 +148,43 @@ fn associates_nested_registered_definition_by_cpython_qualified_name() {
         .expect("nested definition remains registered for later source analysis");
     assert_eq!(nested.qualified_name(), "host_factory.<locals>.nested");
     assert_eq!(nested.location().row, 7);
+}
+
+#[test]
+fn rejects_distinct_definition_identities_for_one_source_definition() {
+    let source = Arc::<str>::from(concat!(
+        "@compute\n",
+        "def normalize(value: int) -> int:\n",
+        "    return value + 1\n",
+    ));
+    let error = register_kernel_modules(RegistrationInput {
+        modules: vec![ModuleRegistrationInput {
+            id: 0,
+            import_name: "reloaded".to_owned(),
+            file_name: "/project/reloaded.py".to_owned(),
+            source,
+        }],
+        definitions: [0, 1]
+            .into_iter()
+            .map(|id| DefinitionRegistrationInput {
+                id,
+                module_id: 0,
+                qualified_name: "normalize".to_owned(),
+                source_start_line: 1,
+                role: RegisteredDefinitionRole::Compute,
+                atomic_symbol: None,
+            })
+            .collect(),
+        definition_name_bindings: Vec::new(),
+        builtin_name_bindings: Vec::new(),
+        entry_definition_id: 0,
+    })
+    .expect_err("an in-place reload must not associate two identities with one frozen AST");
+
+    assert!(
+        error
+            .to_string()
+            .contains("refer to the same source definition at /project/reloaded.py:1:1"),
+        "{error}"
+    );
 }

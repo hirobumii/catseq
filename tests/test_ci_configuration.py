@@ -78,6 +78,32 @@ def test_ci_enforces_typing_and_executes_the_marked_readme_quickstart() -> None:
 
     assert "uv run mypy catseq" in workflow
     assert "uv run python tools/run_readme_quickstart.py" in workflow
+    python_job = workflow.split("\n  python-package:", 1)[1].split(
+        "\n  release:", 1
+    )[0]
+    assert "      - name: Install LLVM 22 development libraries" in python_job
+
+
+def test_ci_exposes_the_llvm_tools_required_to_build_nac3_irrt() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    platform_job, python_and_release_jobs = workflow.split("\n  python-package:", 1)
+
+    linux_step = platform_job.split(
+        "      - name: Install LLVM 22 development libraries", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert "clang-22 llvm-22-dev" in linux_step
+    assert '"$RUNNER_TEMP/clang-irrt"' in linux_step
+    assert '"$RUNNER_TEMP/llvm-as-irrt"' in linux_step
+    assert 'echo "$RUNNER_TEMP" >> "$GITHUB_PATH"' in linux_step
+
+    python_job = python_and_release_jobs.split("\n  release:", 1)[0]
+    python_llvm_step = python_job.split(
+        "      - name: Install LLVM 22 development libraries", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert "clang-22 llvm-22-dev" in python_llvm_step
+    assert '"$RUNNER_TEMP/clang-irrt"' in python_llvm_step
+    assert '"$RUNNER_TEMP/llvm-as-irrt"' in python_llvm_step
+    assert 'echo "$RUNNER_TEMP" >> "$GITHUB_PATH"' in python_llvm_step
 
 
 def test_fork_pull_requests_keep_public_rust_checks_without_private_secrets() -> None:
@@ -100,6 +126,21 @@ def test_fork_pull_requests_keep_public_rust_checks_without_private_secrets() ->
             "\n      - name:", 1
         )[0]
         assert fork_guard in step, step_name
+
+    public_steps = (
+        "Install LLVM 22 development libraries",
+        "Check Rust formatting",
+        "Lint the Rust workspace",
+        "Test the Rust workspace",
+        "Build catseqc in release mode",
+        "Package the Linux compiler",
+        "Upload the platform artifacts",
+    )
+    for step_name in public_steps:
+        step = platform_job.split(f"      - name: {step_name}", 1)[1].split(
+            "\n      - name:", 1
+        )[0]
+        assert fork_guard not in step, step_name
 
     python_job = workflow.split("\n  python-package:", 1)[1].split(
         "\n  release:", 1

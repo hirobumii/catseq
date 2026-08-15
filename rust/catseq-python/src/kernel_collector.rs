@@ -5,6 +5,7 @@ use pyo3::types::{PyFunction, PyModule, PyTuple};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CollectedDefinitionRole {
     Kernel,
+    Compute,
     MorphismDefinition,
     Atomic,
 }
@@ -13,6 +14,7 @@ impl CollectedDefinitionRole {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Kernel => "kernel",
+            Self::Compute => "compute",
             Self::MorphismDefinition => "morphism_definition",
             Self::Atomic => "atomic",
         }
@@ -179,6 +181,7 @@ fn parse_facts<'py>(value: &Bound<'py, PyAny>) -> PyResult<RegistrationFacts<'py
 fn definition_role(role: &str) -> PyResult<CollectedDefinitionRole> {
     match role {
         "kernel" => Ok(CollectedDefinitionRole::Kernel),
+        "compute" => Ok(CollectedDefinitionRole::Compute),
         "morphism_template" => Ok(CollectedDefinitionRole::MorphismDefinition),
         "atomic_morphism" => Ok(CollectedDefinitionRole::Atomic),
         _ => Err(PyRuntimeError::new_err("unknown CatSeq definition role")),

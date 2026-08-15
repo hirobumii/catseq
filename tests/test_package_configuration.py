@@ -19,6 +19,21 @@ def test_platform_wheel_exposes_the_native_api_and_cli_without_duplicate_binary(
     assert project["project"]["scripts"]["catseqc"] == "catseq._native:run_cli"
 
 
+def test_compute_frontend_pins_one_nac3_fork_revision() -> None:
+    workspace = tomllib.loads((ROOT / "rust/Cargo.toml").read_text())
+    dependencies = workspace["workspace"]["dependencies"]
+    nac3_dependencies = [
+        dependencies[name] for name in ("nac3ast", "nac3parser", "nac3core")
+    ]
+
+    assert {dependency["git"] for dependency in nac3_dependencies} == {
+        "https://github.com/hirobumii/nac3.git"
+    }
+    assert {dependency["rev"] for dependency in nac3_dependencies} == {
+        "dbf7d72e0ec4b232e8b5e2258ae4d5b6ec9b5f8e"
+    }
+
+
 def test_native_stub_matches_the_complete_public_pyo3_surface() -> None:
     stub = ast.parse((ROOT / "catseq/_native.pyi").read_text())
     stub_functions = {

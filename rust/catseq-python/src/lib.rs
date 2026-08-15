@@ -231,6 +231,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyCompiledSequence>()?;
     module.add_class::<kernel_collector::PyKernelDefinitionCollection>()?;
     module.add_class::<kernel_registration::PyRegisteredKernelModules>()?;
+    module.add_class::<kernel_registration::PyComputeValidation>()?;
     runtime::register(module)?;
     Ok(())
 }

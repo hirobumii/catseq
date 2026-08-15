@@ -24,13 +24,22 @@ extension, and the `catseqc` console command. A standalone Linux x86_64
 `catseqc` archive is also published for non-Python automation. The supported
 release interpreter is Python 3.12.
 
-For development from a checkout:
+Source builds require the `clang-22`, `llvm-22-dev`, and `libzstd-dev` packages
+and the tool names expected by NAC3's IRRT build. For the Ubuntu package layout
+used by CI, prepare those aliases in the shell that runs the build, then sync
+the checkout:
 
 ```bash
+CATSEQ_LLVM_TOOLS="$(mktemp -d)"
+ln -s /usr/lib/llvm-22/bin/clang "$CATSEQ_LLVM_TOOLS/clang-irrt"
+ln -s /usr/lib/llvm-22/bin/llvm-as "$CATSEQ_LLVM_TOOLS/llvm-as-irrt"
+export PATH="$CATSEQ_LLVM_TOOLS:$PATH"
+export LLVM_SYS_221_PREFIX=/usr/lib/llvm-22
 uv sync --locked --all-extras --dev --python 3.12
 ```
 
-No platform setup script is required.
+The pinned CatSeq NAC3 fork is public. Release wheels carry the compiled
+extension and require no local LLVM installation.
 
 ## Compile a TTL sequence
 

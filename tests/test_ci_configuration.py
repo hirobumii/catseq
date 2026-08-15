@@ -96,19 +96,6 @@ def test_ci_exposes_the_llvm_tools_required_to_build_nac3_irrt() -> None:
     assert '"$RUNNER_TEMP/llvm-as-irrt"' in linux_step
     assert 'echo "$RUNNER_TEMP" >> "$GITHUB_PATH"' in linux_step
 
-    windows_install_step = platform_job.split(
-        "      - name: Install LLVM 22 development libraries", 2
-    )[2].split("\n      - name:", 1)[0]
-    assert "LLVM-22.1.6-win64.exe" in windows_install_step
-    assert ".tar.xz" not in windows_install_step
-
-    windows_step = platform_job.split(
-        "      - name: Configure LLVM 22 for Rust", 1
-    )[1].split("\n      - name:", 1)[0]
-    assert '"clang-irrt.exe"' in windows_step
-    assert '"llvm-as-irrt.exe"' in windows_step
-    assert "$env:GITHUB_PATH" in windows_step
-
     python_job = python_and_release_jobs.split("\n  release:", 1)[0]
     python_llvm_step = python_job.split(
         "      - name: Install LLVM 22 development libraries", 1
@@ -147,7 +134,6 @@ def test_fork_pull_requests_keep_public_rust_checks_without_private_secrets() ->
         "Test the Rust workspace",
         "Build catseqc in release mode",
         "Package the Linux compiler",
-        "Package the Windows compiler",
         "Upload the platform artifacts",
     )
     for step_name in public_steps:

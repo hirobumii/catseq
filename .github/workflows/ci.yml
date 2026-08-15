@@ -23,7 +23,6 @@ env:
   PYTHON_VERSION: "3.12"
   RUST_TOOLCHAIN: "1.88.0"
   UV_VERSION: "0.11.8"
-  LLVM_VERSION: "22.1.6"
 
 jobs:
   platform:
@@ -70,7 +69,6 @@ jobs:
           rustup default ${{ env.RUST_TOOLCHAIN }}
 
       - name: Install LLVM 22 development libraries
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           sudo curl --fail --silent --show-error --location \
@@ -84,24 +82,6 @@ jobs:
           ln -s /usr/lib/llvm-22/bin/llvm-as "$RUNNER_TEMP/llvm-as-irrt"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
           echo 'LLVM_SYS_221_PREFIX=/usr/lib/llvm-22' >> "$GITHUB_ENV"
-
-      - name: Install LLVM 22 development libraries
-        if: runner.os == 'Windows'
-        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-        with:
-          version: ${{ env.LLVM_VERSION }}
-          directory: ${{ runner.temp }}/llvm-22
-          force-url: https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.6/LLVM-22.1.6-win64.exe
-
-      - name: Configure LLVM 22 for Rust
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $llvmBin = Join-Path $env:LLVM_PATH "bin"
-          Copy-Item (Join-Path $llvmBin "clang.exe") (Join-Path $llvmBin "clang-irrt.exe")
-          Copy-Item (Join-Path $llvmBin "llvm-as.exe") (Join-Path $llvmBin "llvm-as-irrt.exe")
-          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Append
-          "LLVM_SYS_221_PREFIX=$env:LLVM_PATH" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

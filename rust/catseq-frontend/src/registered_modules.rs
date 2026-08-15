@@ -1,5 +1,6 @@
 //! Request-local registration of exact Python definitions with parsed NAC3 source.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
@@ -9,6 +10,7 @@ use nac3ast::{ExcepthandlerKind, Location, Stmt, StmtKind};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RegisteredDefinitionRole {
     Kernel,
+    Compute,
     MorphismDefinition,
     Atomic,
 }
@@ -32,9 +34,32 @@ pub struct DefinitionRegistrationInput {
 }
 
 #[derive(Clone, Debug)]
+pub struct DefinitionNameBindingInput {
+    pub module_id: usize,
+    pub name: String,
+    pub definition_id: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuiltinNameBindingInput {
+    pub definition_id: usize,
+    pub name: String,
+    pub builtin: RegisteredBuiltin,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegisteredBuiltin {
+    Int32,
+    Bool,
+    Range,
+}
+
+#[derive(Clone, Debug)]
 pub struct RegistrationInput {
     pub modules: Vec<ModuleRegistrationInput>,
     pub definitions: Vec<DefinitionRegistrationInput>,
+    pub definition_name_bindings: Vec<DefinitionNameBindingInput>,
+    pub builtin_name_bindings: Vec<BuiltinNameBindingInput>,
     pub entry_definition_id: usize,
 }
 
@@ -111,6 +136,8 @@ impl RegisteredDefinition {
 pub struct RegisteredKernelModules {
     modules: Vec<RegisteredModule>,
     definitions: Vec<RegisteredDefinition>,
+    definition_name_bindings: BTreeMap<(usize, String), usize>,
+    builtin_name_bindings: BTreeMap<(usize, String), RegisteredBuiltin>,
     entry_definition_id: usize,
 }
 
@@ -142,6 +169,36 @@ impl RegisteredKernelModules {
             .expect("registered definitions always refer to retained modules");
         Some(&module.indexed_definitions[definition.ast_definition_index].statement)
     }
+
+    pub(crate) fn definition_name_bindings(&self) -> impl Iterator<Item = (usize, &str, usize)> {
+        self.definition_name_bindings
+            .iter()
+            .map(|((module_id, name), definition_id)| (*module_id, name.as_str(), *definition_id))
+    }
+
+    pub(crate) fn resolve_definition_name(&self, module_id: usize, name: &str) -> Option<usize> {
+        self.definition_name_bindings
+            .get(&(module_id, name.to_owned()))
+            .copied()
+    }
+
+    pub(crate) fn builtin_name_bindings(
+        &self,
+    ) -> impl Iterator<Item = (usize, &str, RegisteredBuiltin)> {
+        self.builtin_name_bindings
+            .iter()
+            .map(|((definition_id, name), builtin)| (*definition_id, name.as_str(), *builtin))
+    }
+
+    pub(crate) fn builtin_name_binding(
+        &self,
+        definition_id: usize,
+        name: &str,
+    ) -> Option<RegisteredBuiltin> {
+        self.builtin_name_bindings
+            .get(&(definition_id, name.to_owned()))
+            .copied()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -169,7 +226,35 @@ pub enum RegistrationError {
         source_start_line: usize,
         source_start_column: usize,
     },
+    DefinitionIdentityCollision {
+        definition: String,
+        previous_definition: String,
+        module: String,
+        file_name: String,
+        source_start_line: usize,
+        source_start_column: usize,
+    },
     EntryNotRegistered {
+        definition_id: usize,
+    },
+    NameBindingModuleMissing {
+        name: String,
+        module_id: usize,
+    },
+    NameBindingDefinitionMissing {
+        name: String,
+        definition_id: usize,
+    },
+    NameBindingAmbiguous {
+        name: String,
+        module_id: usize,
+    },
+    BuiltinBindingDefinitionMissing {
+        name: String,
+        definition_id: usize,
+    },
+    BuiltinBindingAmbiguous {
+        name: String,
         definition_id: usize,
     },
 }
@@ -212,9 +297,49 @@ impl Display for RegistrationError {
                 formatter,
                 "registered definition {definition} in module {module} has multiple matching source definitions at {file_name}:{source_start_line}:{source_start_column}"
             ),
+            Self::DefinitionIdentityCollision {
+                definition,
+                previous_definition,
+                module,
+                file_name,
+                source_start_line,
+                source_start_column,
+            } => write!(
+                formatter,
+                "registered definitions {previous_definition} and {definition} in module {module} refer to the same source definition at {file_name}:{source_start_line}:{source_start_column}"
+            ),
             Self::EntryNotRegistered { definition_id } => write!(
                 formatter,
                 "registered Kernel entry id {definition_id} is absent from the definition catalog"
+            ),
+            Self::NameBindingModuleMissing { name, module_id } => write!(
+                formatter,
+                "registered name binding {name} refers to missing module id {module_id}"
+            ),
+            Self::NameBindingDefinitionMissing {
+                name,
+                definition_id,
+            } => write!(
+                formatter,
+                "registered name binding {name} refers to missing definition id {definition_id}"
+            ),
+            Self::NameBindingAmbiguous { name, module_id } => write!(
+                formatter,
+                "registered name binding {name} is ambiguous in module id {module_id}"
+            ),
+            Self::BuiltinBindingDefinitionMissing {
+                name,
+                definition_id,
+            } => write!(
+                formatter,
+                "builtin binding {name} refers to missing definition id {definition_id}"
+            ),
+            Self::BuiltinBindingAmbiguous {
+                name,
+                definition_id,
+            } => write!(
+                formatter,
+                "builtin binding {name} is ambiguous for definition id {definition_id}"
             ),
         }
     }
@@ -232,8 +357,15 @@ struct IndexedDefinition {
 pub fn register_kernel_modules(
     input: RegistrationInput,
 ) -> Result<RegisteredKernelModules, RegistrationError> {
-    let mut modules = Vec::with_capacity(input.modules.len());
-    for module in input.modules {
+    let RegistrationInput {
+        modules: module_inputs,
+        definitions: definition_inputs,
+        definition_name_bindings: name_binding_inputs,
+        builtin_name_bindings: builtin_binding_inputs,
+        entry_definition_id,
+    } = input;
+    let mut modules = Vec::with_capacity(module_inputs.len());
+    for module in module_inputs {
         let suite = nac3parser::parser::parse_program(
             &module.source,
             nac3ast::FileName::from(module.file_name.clone()),
@@ -255,8 +387,8 @@ pub fn register_kernel_modules(
         });
     }
 
-    let mut definitions = Vec::with_capacity(input.definitions.len());
-    for definition in input.definitions {
+    let mut definitions = Vec::<RegisteredDefinition>::with_capacity(definition_inputs.len());
+    for definition in definition_inputs {
         let module = modules
             .iter()
             .find(|module| module.id == definition.module_id)
@@ -264,7 +396,21 @@ pub fn register_kernel_modules(
                 definition: definition.qualified_name.clone(),
                 module_id: definition.module_id,
             })?;
-        let (ast_definition_index, indexed) = associate_definition(module, &definition)?;
+        let (ast_definition_index, indexed, source_start_column) =
+            associate_definition(module, &definition)?;
+        if let Some(previous) = definitions.iter().find(|previous| {
+            previous.module_id == definition.module_id
+                && previous.ast_definition_index == ast_definition_index
+        }) {
+            return Err(RegistrationError::DefinitionIdentityCollision {
+                definition: definition.qualified_name,
+                previous_definition: previous.qualified_name.clone(),
+                module: module.import_name.clone(),
+                file_name: module.file_name.clone(),
+                source_start_line: definition.source_start_line,
+                source_start_column,
+            });
+        }
         definitions.push(RegisteredDefinition {
             id: definition.id,
             module_id: definition.module_id,
@@ -278,24 +424,76 @@ pub fn register_kernel_modules(
 
     if !definitions
         .iter()
-        .any(|definition| definition.id == input.entry_definition_id)
+        .any(|definition| definition.id == entry_definition_id)
     {
         return Err(RegistrationError::EntryNotRegistered {
-            definition_id: input.entry_definition_id,
+            definition_id: entry_definition_id,
         });
+    }
+
+    let mut definition_name_bindings = BTreeMap::new();
+    for binding in name_binding_inputs {
+        if !modules.iter().any(|module| module.id == binding.module_id) {
+            return Err(RegistrationError::NameBindingModuleMissing {
+                name: binding.name,
+                module_id: binding.module_id,
+            });
+        }
+        if !definitions
+            .iter()
+            .any(|definition| definition.id == binding.definition_id)
+        {
+            return Err(RegistrationError::NameBindingDefinitionMissing {
+                name: binding.name,
+                definition_id: binding.definition_id,
+            });
+        }
+        let key = (binding.module_id, binding.name.clone());
+        if let Some(previous) = definition_name_bindings.insert(key, binding.definition_id)
+            && previous != binding.definition_id
+        {
+            return Err(RegistrationError::NameBindingAmbiguous {
+                name: binding.name,
+                module_id: binding.module_id,
+            });
+        }
+    }
+
+    let mut builtin_name_bindings = BTreeMap::new();
+    for binding in builtin_binding_inputs {
+        if !definitions
+            .iter()
+            .any(|definition| definition.id == binding.definition_id)
+        {
+            return Err(RegistrationError::BuiltinBindingDefinitionMissing {
+                name: binding.name,
+                definition_id: binding.definition_id,
+            });
+        }
+        let key = (binding.definition_id, binding.name.clone());
+        if let Some(previous) = builtin_name_bindings.insert(key, binding.builtin)
+            && previous != binding.builtin
+        {
+            return Err(RegistrationError::BuiltinBindingAmbiguous {
+                name: binding.name,
+                definition_id: binding.definition_id,
+            });
+        }
     }
 
     Ok(RegisteredKernelModules {
         modules,
         definitions,
-        entry_definition_id: input.entry_definition_id,
+        definition_name_bindings,
+        builtin_name_bindings,
+        entry_definition_id,
     })
 }
 
 fn associate_definition<'a>(
     module: &'a RegisteredModule,
     definition: &DefinitionRegistrationInput,
-) -> Result<(usize, &'a IndexedDefinition), RegistrationError> {
+) -> Result<(usize, &'a IndexedDefinition, usize), RegistrationError> {
     let mut matches = module
         .indexed_definitions
         .iter()
@@ -332,7 +530,7 @@ fn associate_definition<'a>(
             source_start_column,
         });
     }
-    Ok(first)
+    Ok((first.0, first.1, source_start_column))
 }
 
 fn index_definitions(

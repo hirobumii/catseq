@@ -29,7 +29,10 @@ For development from a checkout:
 uv sync --locked --all-extras --dev --python 3.12
 ```
 
-No platform setup script is required.
+Source builds require LLVM 22 development libraries. Set
+`LLVM_SYS_221_PREFIX` when `llvm-config` for LLVM 22 is not already on the build
+path. The pinned CatSeq NAC3 fork is public. Release wheels carry the compiled
+extension and require no local LLVM installation.
 
 ## Compile a TTL sequence
 

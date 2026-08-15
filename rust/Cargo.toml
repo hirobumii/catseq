@@ -16,14 +16,17 @@ edition = "2024"
 rust-version = "1.88"
 
 [workspace.dependencies]
+anyhow = "1.0"
 catseq-compiler = { path = "catseq-compiler" }
 catseq-core = { path = "catseq-core" }
 catseq-frontend = { path = "catseq-frontend" }
 catseq-runtime = { path = "catseq-runtime" }
 catseq-rtmq = { path = "catseq-rtmq" }
 libc = "0.2"
-nac3ast = { git = "https://git.m-labs.hk/M-Labs/nac3.git", rev = "332e4212f3adfcb0e4c051f00164676363457771" }
-nac3parser = { git = "https://git.m-labs.hk/M-Labs/nac3.git", rev = "332e4212f3adfcb0e4c051f00164676363457771" }
+nac3ast = { git = "https://github.com/hirobumii/nac3.git", rev = "dbf7d72e0ec4b232e8b5e2258ae4d5b6ec9b5f8e" }
+nac3core = { git = "https://github.com/hirobumii/nac3.git", rev = "dbf7d72e0ec4b232e8b5e2258ae4d5b6ec9b5f8e" }
+nac3parser = { git = "https://github.com/hirobumii/nac3.git", rev = "dbf7d72e0ec4b232e8b5e2258ae4d5b6ec9b5f8e" }
+parking_lot = "0.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha3 = "0.10"

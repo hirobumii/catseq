@@ -15,6 +15,11 @@ For a source checkout, use uv:
 uv sync --locked --all-extras --dev --python 3.12
 ```
 
+Building from source also requires LLVM 22 development libraries. Set
+`LLVM_SYS_221_PREFIX` if that LLVM installation is not on the build path. The
+pinned CatSeq NAC3 fork is public. Installing a release wheel requires no local
+LLVM installation.
+
 ## Compile a sequence
 
 Save this complete compile-only example as `quickstart_ttl.py`:

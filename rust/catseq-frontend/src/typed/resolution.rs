@@ -248,8 +248,8 @@ fn remove_function_header_import_bindings(
         .iter()
         .chain(&arguments.args)
         .chain(&arguments.kwonlyargs)
-        .chain(arguments.vararg.iter().map(Box::as_ref))
-        .chain(arguments.kwarg.iter().map(Box::as_ref))
+        .chain(arguments.vararg.iter())
+        .chain(arguments.kwarg.iter())
     {
         if let Some(annotation) = &argument.node.annotation {
             remove_expression_import_bindings(imports, annotation);

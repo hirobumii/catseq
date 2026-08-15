@@ -37,10 +37,6 @@ jobs:
             os: ubuntu-24.04
             artifact: catseqc-linux-x86_64
             target: x86_64-unknown-linux-gnu
-          - name: Windows x86_64
-            os: windows-2025
-            artifact: catseqc-windows-x86_64
-            target: x86_64-pc-windows-msvc
 
     steps:
       - name: Check out CatSeq
@@ -54,7 +50,7 @@ jobs:
           enable-cache: true
 
       - name: Configure private Git credentials
-        if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && runner.os != 'Windows'
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         shell: bash
         env:
           GITEA_USERNAME: ${{ secrets.GITEA_USERNAME }}
@@ -67,24 +63,6 @@ jobs:
           umask 077
           printf 'machine git.opticaltweezer.eu.org\nlogin %s\npassword %s\n' \
             "$GITEA_USERNAME" "$GITEA_TOKEN" > "$HOME/.netrc"
-
-      - name: Configure private Git credentials
-        if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && runner.os == 'Windows'
-        shell: pwsh
-        env:
-          GITEA_USERNAME: ${{ secrets.GITEA_USERNAME }}
-          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
-        run: |
-          if (-not $env:GITEA_USERNAME -or -not $env:GITEA_TOKEN) {
-            Write-Error "Gitea credentials are not configured"
-          }
-          $netrc = Join-Path $HOME "_netrc"
-          @"
-          machine git.opticaltweezer.eu.org
-          login $env:GITEA_USERNAME
-          password $env:GITEA_TOKEN
-          "@ | Set-Content -Path $netrc
-          "NETRC=$netrc" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Install the pinned Rust toolchain
         run: |
@@ -132,32 +110,30 @@ jobs:
           shared-key: ${{ matrix.target }}
 
       - name: Sync the fixed Python environment
-        if: runner.os == 'Linux' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: uv sync --locked --all-extras --dev
 
       - name: Check Python code
-        if: runner.os == 'Linux' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: uv run ruff check catseq tests tools benchmarks
 
       - name: Run Python tests
-        if: runner.os == 'Linux' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: uv run pytest -q
 
       - name: Run Python type checks
-        if: runner.os == 'Linux' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: uv run mypy catseq
 
       - name: Execute the README quickstart
-        if: runner.os == 'Linux' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: uv run python tools/run_readme_quickstart.py
 
       - name: Check Rust formatting
-        if: runner.os == 'Linux'
         working-directory: rust
         run: cargo fmt --all -- --check
 
       - name: Lint the Rust workspace
-        if: runner.os == 'Linux'
         working-directory: rust
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
@@ -169,25 +145,7 @@ jobs:
         working-directory: rust
         run: cargo build --locked --release --bin catseqc
 
-      - name: Build the Windows wheel
-        if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && runner.os == 'Windows'
-        run: uv build --wheel
-
-      - name: Install the Windows wheel into a clean environment
-        if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $venv = Join-Path $env:RUNNER_TEMP "catseq-wheel-test"
-          uv venv --python $env:PYTHON_VERSION $venv
-          $python = Join-Path $venv "Scripts/python.exe"
-          $compiler = Join-Path $venv "Scripts/catseqc.exe"
-          $wheel = (Get-ChildItem "dist/*.whl").FullName
-          uv pip install --python $python $wheel
-          & $python tests/wheel_smoke.py
-          & $compiler --version
-
       - name: Package the Linux compiler
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           mkdir -p "dist/catseqc-${{ matrix.target }}"
@@ -195,23 +153,11 @@ jobs:
           tar -C dist -czf "dist/catseqc-${{ matrix.target }}.tar.gz" \
             "catseqc-${{ matrix.target }}"
 
-      - name: Package the Windows compiler
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $package = "dist/catseqc-${{ matrix.target }}"
-          New-Item -ItemType Directory -Force -Path $package | Out-Null
-          Copy-Item "rust/target/release/catseqc.exe" "$package/catseqc.exe"
-          Compress-Archive -Path $package -DestinationPath "$package.zip"
-
       - name: Upload the platform artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/*.whl
+          path: dist/*.tar.gz
           if-no-files-found: error
 
   python-package:

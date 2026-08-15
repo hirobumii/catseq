@@ -29,9 +29,48 @@ def test_ci_rust_toolchain_supports_the_workspace_and_installs_check_tools() -> 
     )[1].split("\n      - name:", 1)[0]
     assert "--component rustfmt" in install_step
     assert "--component clippy" in install_step
-    assert "\\\n" not in install_step, (
-        "the platform matrix uses both Bash and PowerShell; keep rustup cross-shell"
+
+
+def test_ci_and_release_target_only_linux_x86_64() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    platform_job, python_and_release_jobs = workflow.split("\n  python-package:", 1)
+    python_job, release_job = python_and_release_jobs.split("\n  release:", 1)
+
+    assert re.findall(r"^\s+os: (\S+)$", platform_job, re.MULTILINE) == [
+        "ubuntu-24.04"
+    ]
+    assert re.findall(r"^\s+target: (\S+)$", platform_job, re.MULTILINE) == [
+        "x86_64-unknown-linux-gnu"
+    ]
+    assert re.findall(r"^\s+artifact: (\S+)$", platform_job, re.MULTILINE) == [
+        "catseqc-linux-x86_64"
+    ]
+    assert "    runs-on: ${{ matrix.os }}" in platform_job
+    assert "    runs-on: ubuntu-24.04" in python_job
+    assert "    runs-on: ubuntu-24.04" in release_job
+
+    windows_paths = (
+        "windows-2025",
+        "x86_64-pc-windows-msvc",
+        "catseqc-windows-x86_64",
+        "runner.os == 'Windows'",
+        "LLVM-22.1.6-win64",
+        "Build the Windows wheel",
+        "Install the Windows wheel into a clean environment",
+        "Package the Windows compiler",
     )
+    for windows_path in windows_paths:
+        assert windows_path not in workflow
+
+
+def test_installation_docs_state_the_linux_x86_64_support_boundary() -> None:
+    support_boundary = (
+        "Current CI, release artifacts, and physical deployment support "
+        "Linux x86_64 only."
+    )
+
+    assert support_boundary in (ROOT / "README.md").read_text()
+    assert support_boundary in (ROOT / "docs/user/01_quickstart.md").read_text()
 
 
 def test_ci_enforces_typing_and_executes_the_marked_readme_quickstart() -> None:
@@ -94,8 +133,6 @@ def test_fork_pull_requests_keep_public_rust_checks_without_private_secrets() ->
         "Run Python tests",
         "Run Python type checks",
         "Execute the README quickstart",
-        "Build the Windows wheel",
-        "Install the Windows wheel into a clean environment",
     )
     for step_name in private_steps:
         step = platform_job.split(f"      - name: {step_name}", 1)[1].split(

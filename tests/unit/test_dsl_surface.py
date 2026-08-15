@@ -1,5 +1,6 @@
 from importlib import import_module
 from inspect import signature
+from typing import Any, cast
 
 import pytest
 
@@ -13,7 +14,6 @@ from catseq.morphism import (
     MorphismDef,
     MorphismTemplate,
     atomic_morphism,
-    arena_build,
     identity,
     morphism_template,
 )
@@ -24,7 +24,7 @@ from catseq.types import StaticWaveform
 def test_identity_is_a_compiler_only_source_intrinsic() -> None:
     with pytest.raises(
         CompilerOnlyError,
-        match="compile_entry",
+        match="registered source",
     ):
         identity(1.0)
 
@@ -32,7 +32,7 @@ def test_identity_is_a_compiler_only_source_intrinsic() -> None:
 def test_replace_is_a_compiler_only_native_record_intrinsic() -> None:
     waveform = StaticWaveform(freq=1.0, amp=0.2)
 
-    with pytest.raises(CompilerOnlyError, match="compile_entry"):
+    with pytest.raises(CompilerOnlyError, match="registered source"):
         replace(waveform, freq=2.0)
 
 
@@ -56,26 +56,19 @@ def test_atomic_compatibility_module_is_not_available() -> None:
 
 
 def test_hardware_operations_are_compiler_only_source_intrinsics() -> None:
-    with pytest.raises(CompilerOnlyError, match="compile_entry"):
+    with pytest.raises(CompilerOnlyError, match="registered source"):
         pulse(1.0)
-    with pytest.raises(CompilerOnlyError, match="compile_entry"):
+    with pytest.raises(CompilerOnlyError, match="registered source"):
         pid_relink()
 
 
 def test_morphism_is_a_nominal_source_type_not_a_runtime_ir() -> None:
-    with pytest.raises(CompilerOnlyError, match="compile_entry"):
+    with pytest.raises(CompilerOnlyError, match="registered source"):
         Morphism()
 
 
 def test_morphismdef_is_the_source_spelling_of_morphismtemplate() -> None:
     assert MorphismDef is MorphismTemplate
-
-
-def test_arena_build_is_an_import_time_noop() -> None:
-    def sequence() -> Morphism:
-        raise AssertionError("the decorator must not execute the source body")
-
-    assert arena_build(sequence) is sequence
 
 
 def test_user_morphism_template_keeps_its_python_function_and_compiler_kind() -> None:
@@ -95,6 +88,18 @@ def test_atomic_morphism_declaration_records_its_stable_symbol() -> None:
 
     assert atomic.__catseq_definition__.kind == "atomic_morphism"
     assert atomic.__catseq_definition__.symbol == "example.atomic"
+
+
+def test_atomic_morphism_requires_a_non_empty_exact_string_symbol() -> None:
+    class Symbol(str):
+        pass
+
+    with pytest.raises(TypeError, match="exact string"):
+        atomic_morphism(cast(Any, None))
+    with pytest.raises(TypeError, match="exact string"):
+        atomic_morphism(cast(Any, Symbol("example.atomic")))
+    with pytest.raises(ValueError, match="must not be empty"):
+        atomic_morphism("")
 
 
 def test_hardware_api_distinguishes_composite_templates_from_atomic_leaves() -> None:

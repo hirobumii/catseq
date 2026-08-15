@@ -312,7 +312,7 @@ impl PyEthernetRuntimeBackend {
     ) -> PyResult<Py<PyAny>> {
         if clock_hz == 0 {
             return Err(PyValueError::new_err(
-                "CompiledSequence clock_hz must be greater than zero",
+                "assembled-program clock_hz must be greater than zero",
             ));
         }
         if program.inner.reply_node() != self.reply_node

@@ -1,9 +1,10 @@
 # CatSeq experiment-control clean-port plan
 
-Document class: active migration plan
+Document class: historical migration plan
 
-Status: CatSeq phases 1-5, rb1-next migration, and the TTL tracer bullet are
-verified; CatSeq publication and full RB1 hardware acceptance remain
+Status: the experiment-control port described here is historical. Its assumed
+`Compiler`/`CompiledSequence` integration was superseded by Issue #52 and is no
+longer an active implementation plan.
 
 Target namespace: `catseq.experiment`
 

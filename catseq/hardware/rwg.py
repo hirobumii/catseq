@@ -1,8 +1,8 @@
 """RWG compiler intrinsics.
 
-This module is the typed Python surface of the RWG source language.  ``catseqc``
-recognizes these calls and lowers them through the target profile; importing the
-module on the host does not construct morphisms or calculate waveforms.
+This module is the typed Python surface of the RWG source language. The native
+frontend recognizes these calls for later target lowering; importing the module
+on the host does not construct morphisms or calculate waveforms.
 """
 
 from collections.abc import Sequence
@@ -39,7 +39,7 @@ def _waveforms(
     """Resolve target descriptions to the waveform parameters consumed by load.
 
     ``ramp_waveforms`` makes an endpoint's dependency on the preceding ramp
-    explicit in source HIR. The native compiler derives the concrete values.
+    explicit in source HIR. Later target lowering derives the concrete values.
     """
     compiler_only("catseq.rwg.waveforms")
 

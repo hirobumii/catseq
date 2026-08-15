@@ -1,12 +1,7 @@
-"""CatSeq restricted-source DSL and native compiler adapter."""
+"""CatSeq restricted-source DSL and native runtime adapter."""
 
 from ._native_record import replace
-from .compiler import Compiler, CompiledSequence
-from .compilation import (
-    CatSeqCompileError,
-    CatSeqRuntimeError,
-    EthernetRuntime,
-)
+from .compilation import CatSeqRuntimeError
 from .morphism import (
     CompilerDefinition,
     CompilerOnlyError,
@@ -14,7 +9,6 @@ from .morphism import (
     MorphismDef,
     MorphismTemplate,
     atomic_morphism,
-    arena_build,
     compute,
     identity,
     morphism_template,
@@ -40,22 +34,17 @@ __version__ = "0.4.2"
 
 __all__ = [
     "Board",
-    "CatSeqCompileError",
     "CatSeqRuntimeError",
     "Channel",
     "ChannelType",
-    "CompiledSequence",
-    "Compiler",
     "CompilerDefinition",
     "CompilerOnlyError",
-    "EthernetRuntime",
     "Duration",
     "Morphism",
     "MorphismDef",
     "MorphismTemplate",
     "State",
     "atomic_morphism",
-    "arena_build",
     "compute",
     "cycles",
     "cycles_to_time",

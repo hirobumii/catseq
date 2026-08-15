@@ -1,9 +1,10 @@
 # CatSeq compilation and execution API redesign
 
-Document class: current design
+Document class: historical design record
 
-Status: 0.4.0 compiler/runtime and `catseq.experiment` integration implemented;
-full Rydberg hardware acceptance remains pending
+Status: superseded by Issue #52. The `Compiler`, `CompiledSequence`, and
+`EthernetRuntime` workflow below was removed with the legacy path/name compiler
+and is retained only as migration history.
 
 ## Goal
 

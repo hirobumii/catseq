@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from functools import wraps
 import sys
 from types import FunctionType, ModuleType
-from typing import TYPE_CHECKING, Literal, Never, ParamSpec, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Literal, Never, TypeVar, cast, overload
 
 from ..types.common import Channel
 
@@ -29,7 +29,7 @@ class CompilerOnlyError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class CompilerDefinition:
-    """Import-time metadata describing how ``catseqc`` treats a definition."""
+    """Import-time metadata consumed by the registered-source frontend."""
 
     kind: Literal["atomic_morphism", "morphism_template"]
     symbol: str | None = None
@@ -56,11 +56,11 @@ _REGISTERED_DEFINITIONS: list[_RegisteredDefinition] = []
 
 
 def compiler_only(symbol: str) -> Never:
-    """Reject execution of a source intrinsic outside ``compile_entry``."""
+    """Reject execution of a source intrinsic by CPython."""
 
     raise CompilerOnlyError(
-        f"{symbol} is a CatSeq compiler intrinsic; pass the containing "
-        "sequence method to compile_entry() instead of executing it with CPython"
+        f"{symbol} is a CatSeq compiler intrinsic; analyze the containing "
+        "registered source instead of executing it with CPython"
     )
 
 
@@ -132,8 +132,6 @@ class Morphism:
         compiler_only("Morphism parallel composition")
 
 
-_P = ParamSpec("_P")
-_R = TypeVar("_R")
 _F = TypeVar("_F", bound=Callable[..., object])
 
 
@@ -181,7 +179,7 @@ def _register_definition(
     if role in ("kernel", "compute"):
         definition_kind = "Kernel" if role == "kernel" else "Compute Function"
         execution_remedy = (
-            "pass its BaseExp owner to Compiler"
+            "analyze its BaseExp owner through the registered frontend"
             if role == "kernel"
             else "reference it from registered @kernel or @compute source"
         )
@@ -249,6 +247,11 @@ def morphism_template(definition: _F) -> _F:
 def atomic_morphism(symbol: str) -> Callable[[_F], _F]:
     """Declare a leaf operation implemented by the native Atomic Registry."""
 
+    if type(symbol) is not str:
+        raise TypeError("atomic_morphism symbol must be an exact string")
+    if not symbol:
+        raise ValueError("atomic_morphism symbol must not be empty")
+
     def decorate(definition: _F) -> _F:
         return _register_definition(
             definition,
@@ -257,12 +260,6 @@ def atomic_morphism(symbol: str) -> Callable[[_F], _F]:
         )
 
     return decorate
-
-
-def arena_build(builder: Callable[_P, _R]) -> Callable[_P, _R]:
-    """Retain the legacy decorator spelling as an import-time no-op."""
-
-    return builder
 
 
 def identity(duration: Duration) -> Morphism:

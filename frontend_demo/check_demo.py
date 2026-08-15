@@ -6,11 +6,8 @@ from __future__ import annotations
 import argparse
 import ast
 from dataclasses import dataclass
-import os
 from pathlib import Path
 import re
-import shutil
-import subprocess
 import sys
 
 
@@ -134,69 +131,23 @@ def parse_contract(path: Path) -> DemoContract:
     )
 
 
-def _catseqc_path(explicit: Path | None) -> str:
-    if explicit is not None:
-        return str(explicit)
-    configured = os.environ.get("CATSEQC")
-    if configured:
-        return configured
-    discovered = shutil.which("catseqc")
-    if discovered is None:
-        raise ContractError("catseqc is required for a required frontend demo")
-    return discovered
-
-
 def check_contract(
     contract: DemoContract,
     *,
     strict: bool,
-    catseqc: Path | None,
 ) -> tuple[bool, str]:
-    """Validate a proposal or execute a required case through ``catseqc``."""
+    """Validate a proposed contract without importing compiler-only source."""
 
     if contract.status == "proposed":
         if strict:
             return False, "proposed contract has not been implemented"
         return True, "proposed contract is well formed"
 
-    compiler = _catseqc_path(catseqc)
-    source_root = contract.path.parent.parent
-    try:
-        result = subprocess.run(
-            [
-                compiler,
-                "check",
-                str(contract.path),
-                "--source-root",
-                str(source_root),
-                "--entry",
-                contract.entry,
-                "--format",
-                "json",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except subprocess.TimeoutExpired:
-        return False, "catseqc timed out after 60 seconds"
-    output = f"{result.stdout}\n{result.stderr}"
-    if contract.expectation == "accept":
-        if result.returncode != 0:
-            return False, f"catseqc rejected the case:\n{output.strip()}"
-        return (
-            False,
-            "source was accepted, but no public CanonicalProgram observation "
-            "is wired; keep accepted semantic demos proposed",
-        )
-
-    if result.returncode == 0:
-        return False, "catseqc accepted a case that must be rejected"
-    missing = [item for item in contract.diagnostics if item not in output]
-    if missing:
-        return False, f"missing diagnostic substrings: {missing!r}"
-    return True, "rejected with the required diagnostic"
+    return (
+        False,
+        "required contracts need the future public registered-source analysis "
+        "adapter; keep this contract proposed until that adapter exists",
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -206,11 +157,6 @@ def _parser() -> argparse.ArgumentParser:
         "--strict",
         action="store_true",
         help="treat every proposed contract as an unimplemented failure",
-    )
-    parser.add_argument(
-        "--catseqc",
-        type=Path,
-        help="catseqc executable used for required contracts",
     )
     return parser
 
@@ -222,7 +168,6 @@ def main(argv: list[str] | None = None) -> int:
         passed, detail = check_contract(
             contract,
             strict=args.strict,
-            catseqc=args.catseqc,
         )
     except (ContractError, OSError) as error:
         print(f"FAIL {args.source}: {error}", file=sys.stderr)

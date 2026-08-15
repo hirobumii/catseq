@@ -1,47 +1,54 @@
 # 5. API 参考 (API Reference)
 
-CatSeq 0.4 的接口分为时序编译/执行与宿主实验控制两层。实验控制代码不会被
-CatSeq 编译器编译；每个 scan point 只有 `build_sequence` 和对应的不可变
-`ExpParams` 会进入编译器。
+CatSeq 当前正在迁移新的 registered-source frontend。这里区分“现有公开接口”与
+“尚未公开的内部前端”，避免把已经删除的 0.4 编译路径误当成可用 API。
 
-## 时序编译与执行
+## 当前实现边界
 
-- `catseq.Compiler`：持有 source root、通道、opaque call、target profile 与
-  incremental cache，并通过 `compile(entry, *arguments)` 返回
-  `CompiledSequence`。
-- `catseq.CompiledSequence`：Rust 持有的不可变编译结果，包含 OASM Call Plan、
-  逻辑时长、目标时钟、诊断与 incremental evidence。
-- `catseq.EthernetRuntime`：持有物理网卡与机箱路由，通过 `run(compiled)` 执行
-  一个 `CompiledSequence`。
+内部前端从真实 `BaseExp` 对象和对应 `ExpParams` 开始，按注册对象 identity
+收集入口与可达定义，调用固定版本的 NAC3 验证 `@compute`，并生成
+target-independent、Python-free 的 Typed Source HIR、Compute identity 和源码位置。
 
-### 时间 API
+这个适配层目前是私有迁移接口。CatSeq 当前没有公开的端到端
+`Compiler`、`CompiledSequence`、`EthernetRuntime`、`catseqc` 或 standalone
+compiler。后续分析、Canonical Program、target lowering、linking 与高层执行接口
+完成前，不提供旧路径 fallback。
 
-- `catseq.time_utils.Duration`：编译器识别的硬件 duration 注解。用户模板中把
-  传给 `pulse`、`hold`、`rf_pulse` 或 `linear_ramp` 的参数标为该类型。
-- `s`、`ms`、`us`、`ns`：source-language SI 单位。编译器按照选中 target 的
-  `clock_hz` 换算，并要求结果是精确的有符号 Cycle Delta。
-- `cycles(count)`：编译器专用构造器，显式声明整数 `count` 已经是目标周期
-  数；它不能作为普通 CPython 宿主函数执行。
-- `time_to_cycles(..., clock_hz=...)`、`us_to_cycles(..., clock_hz=...)`、
-  `cycles_to_time(..., clock_hz=...)` 和 `cycles_to_us(..., clock_hz=...)`：宿主侧
-  换算函数，必须显式传入正整数时钟。它们不使用全局默认时钟，也不会隐式舍入。
+## Restricted-source DSL
 
-传给 `identity` 或 `hold` 的负 `Duration` 使逻辑时间游标在当前 Epoch 内回移；
-内置 pulse/ramp 的宽度仍须非负。回移不能越过 Epoch 起点；包含回移的循环会先
-展开再调度。编码后的 OASM 时间戳仍为非负 Cycle Count。
+包级公开接口保留用于描述源码的类型和装饰器，包括：
 
-无单位数字不会隐式转换成 `Duration`。通过局部变量、模块常量或函数参数传递
-也不会改变这条规则；如果 duration 是 target-relative 周期数，必须在 source
-中写成 `cycles(...)`。
+- `Morphism`、`MorphismTemplate`、`MorphismDef`；
+- `atomic_morphism`、`morphism_template`、`identity`、`repeat_morphism`；
+- `compute`；
+- `Board`、`Channel`、`ChannelType`；
+- `Duration`、`s`、`ms`、`us`、`ns`、`cycles(...)`。
+
+这些 compiler-only 定义由原生前端解释。把它们当普通 CPython 函数执行会快速
+失败，而不会运行另一套兼容语义。
+
+## 低层 RTMQ runtime
+
+`catseq.compilation.runtime` 保留独立的 assembled-program 执行接口：
+
+- `AssembledOASMBoard`；
+- `AssembledOASMProgram`；
+- `BoardEndpoint`；
+- `LinuxRawEthernetRuntimeConfig`；
+- `execute_oasm_program(program, config)`；
+- `CatSeqRuntimeError`。
+
+它接收已经组装好的 OASM program 和显式物理路由，不接受 CatSeq source 或
+Typed Source HIR，也不承担编译器 fallback。
 
 ## 宿主实验控制
 
-`catseq.experiment` 只用于组织领域，不从包级 `__init__` 批量重导出类型。
-调用方应从定义该概念的模块直接 import：
+`catseq.experiment` 只用于组织宿主侧实验领域，不从包级 `__init__` 批量重导出
+类型。调用方应从定义概念的模块直接 import：
 
 | 模块 | 公开概念 |
 | --- | --- |
-| `catseq.experiment.base_exp` | `BaseExp`，完整实验生命周期 |
+| `catseq.experiment.base_exp` | `BaseExp`，实验生命周期骨架 |
 | `catseq.experiment.base_module` | `BaseModule`、`BaseService` 及其组合字段 |
 | `catseq.experiment.params` | `ExpParam`、`ExpParams`、`ScanPoint` |
 | `catseq.experiment.descartes` | `DescartesGenerator` 的 repeat/scan 遍历 |
@@ -54,9 +61,5 @@ CatSeq 编译器编译；每个 scan point 只有 `build_sequence` 和对应的�
 | `catseq.experiment.h5` | 可选 `catseq[h5]` 依赖提供的 `H5Writer` |
 | `catseq.experiment.run_control` | pause、resume、stop checkpoint |
 
-`BaseExp.run()` 是唯一完整实验编排入口。首个 scan point 同步编译；运行点 N
-时预编译点 N+1，到达 N+1 时若尚未完成则等待。预编译本身不会将点写入
-`ParaDict`，只有 Descartes 真正遍历到该点时才记录 attempted execution。
-
-Compiler、runtime、具体设备、硬件锁、runner identity、MQTT publisher 和部署
-策略由消费项目提供；CatSeq 不负责发现或构造这些平台对象。
+`BaseExp` 仍是宿主编排骨架，但当前仓库没有把它连接到新的公开端到端编译和执行
+路径。消费项目不应注入已经删除的旧 `Compiler` facade。

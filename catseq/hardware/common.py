@@ -1,7 +1,8 @@
 """Compiler intrinsics shared by all hardware targets.
 
-The functions in this module are part of the CatSeq source language.  They are
-parsed by ``catseqc`` and must not be evaluated by the Python host runtime.
+The functions in this module are part of the CatSeq source language. They are
+interpreted by the registered-source frontend and must not be evaluated by the
+Python host runtime.
 """
 
 from ..morphism import MorphismDef

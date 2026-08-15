@@ -158,7 +158,13 @@ impl PyRegisteredKernelModules {
     fn _atomic_symbols(&self) -> Vec<String> {
         self.definitions
             .iter()
-            .filter_map(|definition| definition.symbol.clone())
+            .filter(|definition| definition.role == CollectedDefinitionRole::Atomic)
+            .map(|definition| {
+                definition
+                    .symbol
+                    .clone()
+                    .expect("registered Atomic definitions always retain a symbol")
+            })
             .collect()
     }
 

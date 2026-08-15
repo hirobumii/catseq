@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from importlib.util import find_spec
 from importlib.metadata import version
-import json
-from pathlib import Path
-import tempfile
 
 import catseq
 from catseq import _native
@@ -15,30 +12,29 @@ from catseq.experiment.base_module import BaseModule, BaseService
 from catseq.experiment.descartes import DescartesGenerator
 from catseq.experiment.device import DeviceList
 from catseq.experiment.params import ExpParam, ExpParams, ScanPoint
-from catseq.morphism import Morphism, identity
 from catseq.oasm import black_box
-from catseq.targets import rtmq_v2_profile
-from catseq.time_utils import cycles
 
 
 SYNTHETIC_INTERFACE = "catseq-wheel-smoke-interface-that-does-not-exist"
-SYNTHETIC_DESTINATION = "02:ca:75:ee:00:01"
 SYNTHETIC_DESTINATION_BYTES = [2, 202, 117, 238, 0, 1]
 SYNTHETIC_REPLY = (60_001, 31)
-SYNTHETIC_BOARD_ROUTES = {"rwg0": 60_000}
-
-
-def wheel_public_sequence(count: int = 1) -> Morphism:
-    return identity(cycles(count))
 
 
 assert catseq.__version__ == version("catseq")
-assert callable(_native.compile)
+assert callable(_native._collect_kernel_definitions)
+assert callable(_native._register_kernel_modules)
 assert callable(_native.execute_oasm_program)
 assert black_box.__module__ == "catseq.oasm"
 assert find_spec("catseq.atomic") is None
-assert _native.Compiler.__module__ == "catseq._native"
-assert _native.CompiledSequence.__module__ == "catseq._native"
+assert find_spec("catseq.compiler") is None
+assert not hasattr(catseq, "Compiler")
+assert not hasattr(catseq, "CompiledSequence")
+assert not hasattr(catseq, "EthernetRuntime")
+assert not hasattr(_native, "compile")
+assert not hasattr(_native, "Compiler")
+assert not hasattr(_native, "CompiledSequence")
+assert not hasattr(_native, "run_cli")
+assert _native._FrontendSession.__module__ == "catseq._native"
 assert _native.EthernetRuntimeBackend.__module__ == "catseq._native"
 assert _native.AssembledOASMProgram.__module__ == "catseq._native"
 assert _native.LinuxRawEthernetRuntimeConfig.__module__ == "catseq._native"
@@ -69,48 +65,3 @@ runtime_failure = _native.execute_oasm_program(runtime_program, runtime_config)
 assert isinstance(runtime_failure, _native.OASMRuntimeFailure)
 assert runtime_failure.code == "transport_open_failed"
 assert runtime_failure.board_evidence == {"rwg0": "not_dispatched"}
-
-with tempfile.TemporaryDirectory(prefix="catseq-wheel-smoke-") as temporary:
-    root = Path(temporary)
-    source = root / "sequence.py"
-    source.write_text(
-        "from catseq.morphism import Morphism, identity\n"
-        "from catseq.time_utils import cycles\n\n"
-        "def sequence(count: int = 1) -> Morphism:\n"
-        "    return identity(cycles(count))\n"
-    )
-    request = {
-        "schema_version": 1,
-        "source_path": str(source),
-        "source_root": str(root),
-        "entry": "sequence",
-        "compile_environment": {"schema_version": 1, "channels": {}},
-        "target_profile": rtmq_v2_profile(),
-        "entry_arguments": {"count": 2},
-        "link_bindings": {
-            "schema_version": 1,
-            "runtime_values": {},
-            "environment_values": {},
-        },
-        "cache_dir": str(root / "cache"),
-    }
-    response = json.loads(_native.compile(json.dumps(request).encode()))
-
-    compiler = catseq.Compiler(
-        source_root=Path(__file__).parent,
-        channels={},
-        cache_dir=root / "public-cache",
-    )
-    compiled = compiler.compile(wheel_public_sequence, 3)
-    runtime = catseq.EthernetRuntime(
-        interface=SYNTHETIC_INTERFACE,
-        destination=SYNTHETIC_DESTINATION,
-        reply=SYNTHETIC_REPLY,
-        boards=SYNTHETIC_BOARD_ROUTES,
-    )
-
-assert response["stage"] == "oasm_call_plan"
-assert response["logical_duration_cycles"] == 2
-assert isinstance(compiled, catseq.CompiledSequence)
-assert compiled.logical_duration_cycles == 3
-assert runtime.boards == SYNTHETIC_BOARD_ROUTES

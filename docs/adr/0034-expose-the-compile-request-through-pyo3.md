@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by Issue-52
 ---
 
 # Expose the compile request through PyO3

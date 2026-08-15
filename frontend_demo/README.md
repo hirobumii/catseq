@@ -236,15 +236,17 @@ Every file starts with a compact expectation block:
 it does **not** claim compiler support.  Normal checking validates headers and
 Python syntax without importing a module.  Strict checking remains red.
 
-`required` is used only after the owning issue is selected.  Rejected programs
-then run through public `catseqc check` and must contain every declared
-`DIAGNOSTIC`.  Accepted semantic programs must not be promoted until #33 exposes
-a public target-independent CanonicalProgram serialization/hash that the runner
-can compare.  A successful source check alone is intentionally not accepted as
-proof of topology, normalization, resource, or Epoch semantics.
+`required` is used only after the owning issue is selected and a public
+registered-source analysis adapter can check the declared result.  That adapter
+does not exist during the #52 migration, so required contracts fail rather than
+falling back to the removed compiler.  Accepted semantic programs must not be
+promoted until #33 exposes a public target-independent CanonicalProgram
+serialization/hash that the runner can compare.  A successful source check
+alone is intentionally not accepted as proof of topology, normalization,
+resource, or Epoch semantics.
 
-The runner does not import demos or call a `@kernel` body.  The future
-actual-object `catseqc` route may import a module using normal Python semantics
+The runner does not import demos or call a `@kernel` body.  The future public
+actual-object analysis route may import a module using normal Python semantics
 as specified by #53; demo module top level is therefore limited to declarations
 and inert resource construction.
 
@@ -260,13 +262,9 @@ uv run python frontend_demo/check_demos.py
 uv run python frontend_demo/check_demos.py --strict
 ```
 
-The last command is intentionally red while contracts remain proposed.  Once a
-rejected case becomes required, an explicit compiler can be supplied with:
-
-```console
-uv run python frontend_demo/check_demos.py \
-  --catseqc target/debug/catseqc
-```
+The last command is intentionally red while contracts remain proposed. A
+required contract also remains red until the public registered-source analysis
+adapter is implemented; the runner has no legacy compiler fallback.
 
 Do not use `--offline` or `uv run --with`.  Whole-directory mypy is also
 expected to fail until the proposed `catseq.kernel`, `catseq.compute`, Control,

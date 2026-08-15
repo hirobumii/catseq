@@ -188,3 +188,57 @@ fn rejects_distinct_definition_identities_for_one_source_definition() {
         "{error}"
     );
 }
+
+#[test]
+fn rejects_inconsistent_atomic_symbol_registration() {
+    let source = Arc::<str>::from(concat!(
+        "@definition\n",
+        "def operation():\n",
+        "    return None\n",
+    ));
+
+    for (role, atomic_symbol, expected) in [
+        (
+            RegisteredDefinitionRole::Atomic,
+            None,
+            "Atomic definition operation in module operation must declare a non-empty symbol",
+        ),
+        (
+            RegisteredDefinitionRole::Atomic,
+            Some(String::new()),
+            "Atomic definition operation in module operation must declare a non-empty symbol",
+        ),
+        (
+            RegisteredDefinitionRole::Kernel,
+            Some("unexpected".to_owned()),
+            "Kernel definition operation in module operation must not declare an Atomic symbol",
+        ),
+    ] {
+        let error = register_kernel_modules(RegistrationInput {
+            modules: vec![ModuleRegistrationInput {
+                id: 0,
+                import_name: "operation".to_owned(),
+                file_name: "/project/operation.py".to_owned(),
+                source: Arc::clone(&source),
+            }],
+            definitions: vec![DefinitionRegistrationInput {
+                id: 0,
+                module_id: 0,
+                qualified_name: "operation".to_owned(),
+                source_start_line: 1,
+                role,
+                atomic_symbol,
+            }],
+            definition_name_bindings: Vec::new(),
+            builtin_name_bindings: Vec::new(),
+            entry_definition_id: 0,
+        })
+        .expect_err("role and Atomic symbol must agree");
+
+        assert!(error.to_string().contains(expected), "{error}");
+        assert!(
+            error.to_string().contains("/project/operation.py:1:1"),
+            "{error}"
+        );
+    }
+}

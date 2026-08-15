@@ -6,13 +6,25 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
 use nac3ast::{ExcepthandlerKind, Location, Stmt, StmtKind};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum RegisteredDefinitionRole {
     Kernel,
     Compute,
     MorphismDefinition,
     Atomic,
+}
+
+impl RegisteredDefinitionRole {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Kernel => "kernel",
+            Self::Compute => "compute",
+            Self::MorphismDefinition => "morphism_definition",
+            Self::Atomic => "atomic",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -234,6 +246,14 @@ pub enum RegistrationError {
         source_start_line: usize,
         source_start_column: usize,
     },
+    DefinitionAtomicSymbolInvalid {
+        definition: String,
+        role: RegisteredDefinitionRole,
+        module: String,
+        file_name: String,
+        source_start_line: usize,
+        source_start_column: usize,
+    },
     EntryNotRegistered {
         definition_id: usize,
     },
@@ -308,6 +328,32 @@ impl Display for RegistrationError {
                 formatter,
                 "registered definitions {previous_definition} and {definition} in module {module} refer to the same source definition at {file_name}:{source_start_line}:{source_start_column}"
             ),
+            Self::DefinitionAtomicSymbolInvalid {
+                definition,
+                role,
+                module,
+                file_name,
+                source_start_line,
+                source_start_column,
+            } => {
+                let role_name = match role {
+                    RegisteredDefinitionRole::Kernel => "Kernel",
+                    RegisteredDefinitionRole::Compute => "Compute",
+                    RegisteredDefinitionRole::MorphismDefinition => "Morphism Definition",
+                    RegisteredDefinitionRole::Atomic => "Atomic",
+                };
+                if *role == RegisteredDefinitionRole::Atomic {
+                    write!(
+                        formatter,
+                        "registered {role_name} definition {definition} in module {module} must declare a non-empty symbol at {file_name}:{source_start_line}:{source_start_column}"
+                    )
+                } else {
+                    write!(
+                        formatter,
+                        "registered {role_name} definition {definition} in module {module} must not declare an Atomic symbol at {file_name}:{source_start_line}:{source_start_column}"
+                    )
+                }
+            }
             Self::EntryNotRegistered { definition_id } => write!(
                 formatter,
                 "registered Kernel entry id {definition_id} is absent from the definition catalog"
@@ -398,6 +444,25 @@ pub fn register_kernel_modules(
             })?;
         let (ast_definition_index, indexed, source_start_column) =
             associate_definition(module, &definition)?;
+        let atomic_symbol_is_valid = match definition.role {
+            RegisteredDefinitionRole::Atomic => definition
+                .atomic_symbol
+                .as_deref()
+                .is_some_and(|symbol| !symbol.is_empty()),
+            RegisteredDefinitionRole::Kernel
+            | RegisteredDefinitionRole::Compute
+            | RegisteredDefinitionRole::MorphismDefinition => definition.atomic_symbol.is_none(),
+        };
+        if !atomic_symbol_is_valid {
+            return Err(RegistrationError::DefinitionAtomicSymbolInvalid {
+                definition: definition.qualified_name,
+                role: definition.role,
+                module: module.import_name.clone(),
+                file_name: module.file_name.clone(),
+                source_start_line: definition.source_start_line,
+                source_start_column,
+            });
+        }
         if let Some(previous) = definitions.iter().find(|previous| {
             previous.module_id == definition.module_id
                 && previous.ast_definition_index == ast_definition_index

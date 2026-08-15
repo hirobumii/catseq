@@ -17,11 +17,6 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="treat every proposed contract as an unimplemented failure",
     )
-    parser.add_argument(
-        "--catseqc",
-        type=Path,
-        help="catseqc executable used for required contracts",
-    )
     return parser
 
 
@@ -46,7 +41,6 @@ def main(argv: list[str] | None = None) -> int:
             passed, detail = check_contract(
                 contract,
                 strict=args.strict,
-                catseqc=args.catseqc,
             )
         except (ContractError, OSError) as error:
             passed = False

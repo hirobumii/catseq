@@ -25,9 +25,6 @@ h5 = [
     "numpy>=2.3",
 ]
 
-[project.scripts]
-catseqc = "catseq._native:run_cli"
-
 [tool.maturin]
 manifest-path = "rust/catseq-python/Cargo.toml"
 bindings = "pyo3"

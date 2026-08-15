@@ -1,5 +1,12 @@
 # Upgrading CatSeq
 
+> **Current main-branch migration:** the 0.4 `Compiler`, `CompiledSequence`,
+> `EthernetRuntime`, and `catseqc` interfaces described in the historical
+> release notes below have been removed. The exact registered-source frontend
+> is currently internal, and no public end-to-end replacement is available
+> until downstream frontend, lowering, linking, and execution work is complete.
+> The independent low-level assembled-OASM runtime remains available.
+
 ## 0.4.0 to 0.4.1: make every hardware duration explicit
 
 CatSeq 0.4.1 no longer interprets a bare `int` or `float` passed to a hardware

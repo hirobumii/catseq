@@ -7,7 +7,6 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
-from catseq.compiler import Compiler
 from catseq.morphism import Morphism
 
 from .analyzer import BaseAnalyzer, _sort_analyzer_classes
@@ -39,7 +38,7 @@ class BaseExp(ABC):
     ``ExpParams`` must therefore remain stable for the duration of a run.
     """
 
-    compiler: Compiler = field(kw_only=True, repr=False, metadata={"persist": False})
+    compiler: Any = field(kw_only=True, repr=False, metadata={"persist": False})
     runtime: Any = field(kw_only=True, repr=False, metadata={"persist": False})
     h5_writer: H5Writer = field(
         kw_only=True, repr=False, metadata={"persist": False}

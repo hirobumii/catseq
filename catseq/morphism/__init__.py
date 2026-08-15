@@ -9,6 +9,7 @@ from .core import (
     atomic_morphism,
     compute,
     identity,
+    kernel,
     morphism_template,
     repeat_morphism,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "atomic_morphism",
     "compute",
     "identity",
+    "kernel",
     "morphism_template",
     "repeat_morphism",
 ]

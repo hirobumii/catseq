@@ -231,9 +231,9 @@ class _UndecoratedExperiment(BaseExp):
         raise AssertionError
 
 
-def test_kernel_registration_is_private_inert_and_exact_object_authoritative() -> None:
-    assert not hasattr(catseq, "kernel")
-    assert "kernel" not in catseq.__all__
+def test_kernel_registration_is_public_inert_and_exact_object_authoritative() -> None:
+    assert catseq.kernel is kernel
+    assert "kernel" in catseq.__all__
     assert tuple(signature(_kernel_helper).parameters) == ("width",)
 
     registered = _registered_definition(_kernel_helper)

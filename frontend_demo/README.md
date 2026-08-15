@@ -267,9 +267,9 @@ required contract also remains red until the public registered-source analysis
 adapter is implemented; the runner has no legacy compiler fallback.
 
 Do not use `--offline` or `uv run --with`.  Whole-directory mypy is also
-expected to fail until the proposed `catseq.kernel`, `catseq.compute`, Control,
-measurement, scheduling, and rendezvous surfaces exist; type-check the two
-runner files independently during this design stage.
+expected to fail until the proposed Control, measurement, scheduling, and
+rendezvous surfaces exist; type-check the two runner files independently
+during this design stage.
 
 ## Source spellings still intentionally open for review
 

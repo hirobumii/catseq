@@ -222,7 +222,7 @@ def _register_definition(
 
 
 def kernel(definition: _F) -> _F:
-    """Register one internal compiler-only Kernel definition."""
+    """Register one compiler-only Kernel definition."""
 
     return _register_definition(definition, role="kernel")
 

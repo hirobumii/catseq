@@ -11,6 +11,7 @@ from .morphism import (
     atomic_morphism,
     compute,
     identity,
+    kernel,
     morphism_template,
     repeat_morphism,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "cycles_to_us",
     "identity",
     "int32",
+    "kernel",
     "ms",
     "morphism_template",
     "ns",

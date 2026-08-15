@@ -45,6 +45,33 @@ def test_ci_enforces_typing_and_executes_the_marked_readme_quickstart() -> None:
     assert "      - name: Install LLVM 22 development libraries" in python_job
 
 
+def test_ci_exposes_the_llvm_tools_required_to_build_nac3_irrt() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    platform_job, python_and_release_jobs = workflow.split("\n  python-package:", 1)
+
+    linux_step = platform_job.split(
+        "      - name: Install LLVM 22 development libraries", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert '"$RUNNER_TEMP/clang-irrt"' in linux_step
+    assert '"$RUNNER_TEMP/llvm-as-irrt"' in linux_step
+    assert 'echo "$RUNNER_TEMP" >> "$GITHUB_PATH"' in linux_step
+
+    windows_step = platform_job.split(
+        "      - name: Configure LLVM 22 for Rust", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert '"clang-irrt.exe"' in windows_step
+    assert '"llvm-as-irrt.exe"' in windows_step
+    assert "$env:GITHUB_PATH" in windows_step
+
+    python_job = python_and_release_jobs.split("\n  release:", 1)[0]
+    python_llvm_step = python_job.split(
+        "      - name: Install LLVM 22 development libraries", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert '"$RUNNER_TEMP/clang-irrt"' in python_llvm_step
+    assert '"$RUNNER_TEMP/llvm-as-irrt"' in python_llvm_step
+    assert 'echo "$RUNNER_TEMP" >> "$GITHUB_PATH"' in python_llvm_step
+
+
 def test_fork_pull_requests_keep_public_rust_checks_without_private_secrets() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
     fork_guard = (

@@ -6,7 +6,8 @@ builder and does not compile an already-constructed Python `Morphism`.
 
 ## Install
 
-Install the platform wheel for Python 3.12. The wheel contains both the
+Current CI, release artifacts, and physical deployment support Linux x86_64 only.
+Install the release wheel for Python 3.12. The wheel contains both the
 `catseq` package and the native `catseqc` compiler.
 
 For a source checkout, use uv:

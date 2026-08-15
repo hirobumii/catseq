@@ -18,9 +18,10 @@ over the same Rust compiler core.
 
 ## Installation
 
-Release wheels are platform-specific and include the Python package, its PyO3
-compiler extension, and the `catseqc` console command. Standalone native
-`catseqc` archives are also published for non-Python automation. The supported
+Current CI, release artifacts, and physical deployment support Linux x86_64 only.
+The release wheel includes the Python package, its PyO3 compiler
+extension, and the `catseqc` console command. A standalone Linux x86_64
+`catseqc` archive is also published for non-Python automation. The supported
 release interpreter is Python 3.12.
 
 For development from a checkout:

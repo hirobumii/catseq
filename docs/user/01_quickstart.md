@@ -10,16 +10,22 @@ Current CI, release artifacts, and physical deployment support Linux x86_64 only
 Install the release wheel for Python 3.12. The wheel contains both the
 `catseq` package and the native `catseqc` compiler.
 
-For a source checkout, use uv:
+Building from source requires the `clang-22`, `llvm-22-dev`, and `libzstd-dev`
+packages and the tool names expected by NAC3's IRRT build. For the Ubuntu
+package layout used by CI, prepare those aliases in the shell that runs the
+build, then use uv:
 
 ```bash
+CATSEQ_LLVM_TOOLS="$(mktemp -d)"
+ln -s /usr/lib/llvm-22/bin/clang "$CATSEQ_LLVM_TOOLS/clang-irrt"
+ln -s /usr/lib/llvm-22/bin/llvm-as "$CATSEQ_LLVM_TOOLS/llvm-as-irrt"
+export PATH="$CATSEQ_LLVM_TOOLS:$PATH"
+export LLVM_SYS_221_PREFIX=/usr/lib/llvm-22
 uv sync --locked --all-extras --dev --python 3.12
 ```
 
-Building from source also requires LLVM 22 development libraries. Set
-`LLVM_SYS_221_PREFIX` if that LLVM installation is not on the build path. The
-pinned CatSeq NAC3 fork is public. Installing a release wheel requires no local
-LLVM installation.
+The pinned CatSeq NAC3 fork is public. Installing a release wheel requires no
+local LLVM installation.
 
 ## Compile a sequence
 

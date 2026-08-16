@@ -517,6 +517,19 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
             )
         })?;
         let return_type = self.resolve_value_annotation(&definition, returns)?;
+        let sequencing_role = match definition.role() {
+            RegisteredDefinitionRole::MorphismDefinition => Some("Morphism Definition"),
+            RegisteredDefinitionRole::Atomic => Some("Atomic Morphism"),
+            _ => None,
+        };
+        if let Some(role) = sequencing_role
+            && return_type != ValueType::Morphism
+        {
+            return Err(RegisteredAnalysisError::at(
+                format!("{role} return annotation must be Morphism"),
+                self.anchor(definition.module_id(), returns.location),
+            ));
+        }
         if definition_id == entry_id
             && (parameters.len() != 2
                 || parameters[0].authority() != Some(&ParameterAuthority::EntryOwner)

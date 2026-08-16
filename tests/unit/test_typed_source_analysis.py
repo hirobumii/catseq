@@ -131,6 +131,16 @@ def _registered_morphism(width: int) -> Morphism:
     return _atomic_leaf(width)
 
 
+@morphism
+def _invalid_morphism_result() -> int:
+    return 1
+
+
+@atomic_morphism("invalid_atomic_result")
+def _invalid_atomic_result() -> int:
+    raise AssertionError("an Atomic body must not execute")
+
+
 @dataclass
 class _MorphismDefinitionExperiment(BaseExp):
     width: ClassVar[ExpParam[int]] = ExpParam("width")
@@ -138,6 +148,20 @@ class _MorphismDefinitionExperiment(BaseExp):
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
         return _registered_morphism(params[self.width])
+
+
+@dataclass
+class _InvalidMorphismResultExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return identity(cycles(_invalid_morphism_result()))
+
+
+@dataclass
+class _InvalidAtomicResultExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return identity(cycles(_invalid_atomic_result()))
 
 
 @dataclass
@@ -517,6 +541,38 @@ def test_registered_entry_analysis_retains_morphism_definition_and_atomic_leaf()
     assert atomic[:2] == (f"{__name__}._atomic_leaf", "typed_source_leaf")
     assert atomic[2].endswith("test_typed_source_analysis.py")
     assert atomic[3] > 0
+
+
+@pytest.mark.parametrize(
+    ("experiment_type", "role_name"),
+    [
+        pytest.param(
+            _InvalidMorphismResultExperiment,
+            "Morphism Definition",
+            id="morphism-definition",
+        ),
+        pytest.param(
+            _InvalidAtomicResultExperiment,
+            "Atomic Morphism",
+            id="atomic-morphism",
+        ),
+    ],
+)
+def test_registered_entry_analysis_rejects_non_morphism_sequencing_results(
+    experiment_type: type[BaseExp], role_name: str
+) -> None:
+    experiment = experiment_type(h5_writer=cast(Any, object()))
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"{role_name} return annotation must be Morphism",
+    ) as raised:
+        _native._FrontendSession({})._analyze_registered_kernel(
+            experiment,
+            ExpParams.empty(),
+        )
+
+    assert "test_typed_source_analysis.py:" in str(raised.value)
 
 
 def test_registered_entry_analysis_admits_shipped_morphism_annotations() -> None:

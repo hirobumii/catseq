@@ -30,7 +30,7 @@ impl ParameterAuthority {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub enum ParameterSemantics {
     Value {
         value_type: ValueType,
@@ -39,7 +39,7 @@ pub enum ParameterSemantics {
     SourceAuthority(ParameterAuthority),
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct TypedParameter {
     name: String,
     semantics: ParameterSemantics,
@@ -105,7 +105,7 @@ impl TypedParameter {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct TypeSignature {
     parameters: Vec<TypedParameter>,
     return_type: ValueType,
@@ -128,7 +128,7 @@ impl TypeSignature {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct TypedDefinition {
     definition_id: usize,
     role: RegisteredDefinitionRole,

@@ -238,7 +238,7 @@ impl SourceHirKind {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ComputeCallReference {
     work_id: u32,
     definition_id: usize,
@@ -320,7 +320,7 @@ impl ComputeCallReference {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub enum ResolvedCallTarget {
     Definition {
         definition_id: usize,
@@ -337,7 +337,7 @@ pub enum CallArgumentOrigin {
     Default,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CallArgumentBinding {
     parameter: String,
     value_node: u32,
@@ -366,7 +366,7 @@ impl CallArgumentBinding {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SourceHirNode {
     kind: SourceHirKind,
     symbol: Option<String>,
@@ -434,7 +434,7 @@ pub enum SemanticMeaning {
     SourceBinding(SourceBinding),
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SemanticFact {
     meaning: SemanticMeaning,
     availability: ValueAvailability,
@@ -547,7 +547,7 @@ impl SemanticFact {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct TypedSourceHir {
     definition_id: usize,
     definition: String,
@@ -602,7 +602,7 @@ impl TypedSourceHir {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ExternalRead {
     id: u32,
     name: String,
@@ -656,7 +656,7 @@ impl ExternalRead {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DefinitionCallEdge {
     caller_definition_id: usize,
     callee_definition_id: usize,

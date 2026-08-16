@@ -429,9 +429,14 @@ impl SourceHirNode {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SemanticMeaning {
+    Value(ValueType),
+    SourceBinding(SourceBinding),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SemanticFact {
-    value_type: Option<ValueType>,
-    source_binding: Option<SourceBinding>,
+    meaning: SemanticMeaning,
     availability: ValueAvailability,
     roles: Vec<DependencyRole>,
     topology_effect: TopologyEffect,
@@ -448,8 +453,7 @@ impl SemanticFact {
         topology_effect: TopologyEffect,
     ) -> Self {
         Self {
-            value_type: Some(value_type),
-            source_binding: None,
+            meaning: SemanticMeaning::Value(value_type),
             availability,
             roles: Vec::new(),
             topology_effect,
@@ -462,8 +466,7 @@ impl SemanticFact {
 
     pub(crate) fn binding(binding: SourceBinding) -> Self {
         Self {
-            value_type: None,
-            source_binding: Some(binding),
+            meaning: SemanticMeaning::SourceBinding(binding),
             availability: ValueAvailability::Compile,
             roles: Vec::new(),
             topology_effect: TopologyEffect::Empty,
@@ -475,11 +478,21 @@ impl SemanticFact {
     }
 
     pub const fn value_type(&self) -> Option<&ValueType> {
-        self.value_type.as_ref()
+        match &self.meaning {
+            SemanticMeaning::Value(value_type) => Some(value_type),
+            SemanticMeaning::SourceBinding(_) => None,
+        }
     }
 
     pub const fn source_binding(&self) -> Option<&SourceBinding> {
-        self.source_binding.as_ref()
+        match &self.meaning {
+            SemanticMeaning::Value(_) => None,
+            SemanticMeaning::SourceBinding(binding) => Some(binding),
+        }
+    }
+
+    pub const fn meaning(&self) -> &SemanticMeaning {
+        &self.meaning
     }
 
     pub const fn availability(&self) -> ValueAvailability {

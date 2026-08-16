@@ -24,8 +24,9 @@ pub use registered_modules::{
 pub use source_hir::{
     CallArgumentBinding, CallArgumentOrigin, ComputeCallReference, DefinitionCallEdge,
     DependencyRole, ExternalRead, MorphismComposition, ResolvedCallTarget, SemanticFact,
-    SourceAnchor, SourceBinding, SourceHirKind, SourceHirNode, SourceIntrinsic, SourceLiteral,
-    TopologyEffect, TypedSourceHir, ValueAvailability, ValueType, ValueTypeConstructor,
+    SemanticMeaning, SourceAnchor, SourceBinding, SourceHirKind, SourceHirNode, SourceIntrinsic,
+    SourceLiteral, TopologyEffect, TypedSourceHir, ValueAvailability, ValueType,
+    ValueTypeConstructor,
 };
 pub use typed::{
     ParameterAuthority, ParameterKind, ParameterSemantics, TypeSignature, TypedCheckReport,

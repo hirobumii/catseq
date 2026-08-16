@@ -20,9 +20,10 @@ from catseq.hardware.sync import global_sync
 from catseq.hardware.ttl import pulse, set_high
 from catseq.morphism import (
     CompilerOnlyError,
+    Id,
     Morphism,
+    Wait,
     atomic_morphism,
-    identity,
     morphism,
 )
 from catseq.morphism.core import _registered_definition, compiler_intrinsic
@@ -30,12 +31,20 @@ from catseq.time_utils import Duration
 from catseq.types import StaticWaveform
 
 
-def test_identity_is_a_compiler_only_source_intrinsic() -> None:
+def test_id_and_wait_are_distinct_compiler_only_source_intrinsics() -> None:
+    assert tuple(signature(Id).parameters) == ()
+    assert tuple(signature(Wait).parameters) == ("duration",)
+
     with pytest.raises(
         CompilerOnlyError,
         match="registered source",
     ):
-        identity(1.0)
+        Id()
+    with pytest.raises(
+        CompilerOnlyError,
+        match="registered source",
+    ):
+        Wait(1.0)
 
 
 def test_replace_is_a_compiler_only_native_record_intrinsic() -> None:
@@ -101,12 +110,22 @@ def test_morphism_is_a_nominal_source_type_not_a_runtime_ir() -> None:
 def test_public_dsl_exposes_one_morphism_type() -> None:
     catseq_module = import_module("catseq")
     morphism_module = import_module("catseq.morphism")
+    rwg_module = import_module("catseq.hardware.rwg")
 
     assert catseq_module.Morphism is Morphism
     assert morphism_module.Morphism is Morphism
-    for legacy_name in ("MorphismDef", "MorphismTemplate", "morphism_template"):
+    for module in (catseq_module, morphism_module, rwg_module):
+        assert module.Id is Id
+        assert module.Wait is Wait
+    for legacy_name in (
+        "MorphismDef",
+        "MorphismTemplate",
+        "morphism_template",
+        "identity",
+    ):
         assert not hasattr(catseq_module, legacy_name)
         assert not hasattr(morphism_module, legacy_name)
+        assert not hasattr(rwg_module, legacy_name)
 
 
 def test_user_morphism_definition_keeps_its_python_function_and_compiler_kind() -> None:

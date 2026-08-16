@@ -15,6 +15,16 @@ A restricted `@morphism` source declaration whose application produces a
 Morphism; it is a declaration role, not another value type.
 _Avoid_: Morphism Template
 
+**Id**:
+The zero-duration, resource-neutral Morphism sequencing unit, written `Id()` in
+user source.
+_Avoid_: identity, identity(0)
+
+**Wait**:
+A Morphism that displaces the logical cursor by a `Duration` without expressing
+physical blocking work, written `Wait(duration)` in user source.
+_Avoid_: identity(duration), unitless wait
+
 ## Compute language
 
 **Compute Profile**:

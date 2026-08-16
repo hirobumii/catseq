@@ -89,10 +89,10 @@ DeviceValue SSA, target planning, and backend artifacts remain downstream.
 ### Morphism
 
 Morphism remains the composable timed event/resource algebra.  It can span
-several channels and boards.  `identity(0)` is the zero-duration composition
-identity in the current spelling; nonzero `identity(duration)` moves the
-logical cursor used to place rigid events, including negative rewind.  It is
-not controller blocking work.
+several channels and boards. `Id()` is the zero-duration sequencing unit;
+`Wait(duration)` moves the logical cursor used to place rigid events, including
+negative rewind. `Wait` requires an actual Duration and is not controller
+blocking work.
 
 Compile-known invariant repetition remains MorphismPower.  Whether it becomes
 a hardware loop or an unrolled fragment is a target-lowering decision.  A
@@ -188,7 +188,7 @@ join belong to different Epochs.
 | Area | Programs | Boundary shown |
 | --- | --- | --- |
 | Typed Source HIR | `source_hir_loop_free.py`, `source_hir_compute_reference.py` | exact BaseExp root, reachable definitions and reads, opaque Compute reference |
-| public Kernel entry | `kernel_identity.py` | compiler-only body and channel-bound result |
+| public Kernel entry | `kernel_id.py` | compiler-only body and channel-bound result |
 | Kernel calls | `kernel_calls_kernel.py` | Compile-known scalar and Morphism-producing direct callees |
 | Compute | `device_scalar_if_elif.py`, `device_scalar_early_return.py`, `device_scalar_bounded_while.py`, `device_pure_compute_loop.py`, `device_mandelbrot.py` | explicit ComputeFunctions, automatic ComputeRegions, and temporal Control separation |
 | Compile topology | `compile_known_if.py`, `compile_known_if_false.py`, `compile_known_for_range.py` | selected finite topology, no runtime Choice |

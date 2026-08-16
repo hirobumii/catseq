@@ -584,13 +584,17 @@ impl RegisteredRequestResolver for PythonRegisteredRequestResolver<'_, '_> {
         if value.is(&cycles) {
             return Ok(SourceBinding::Intrinsic(SourceIntrinsic::Cycles));
         }
-        let identity = self
+        let morphism = self
             .py
             .import("catseq.morphism.core")
-            .and_then(|module| module.getattr("identity"))
             .map_err(request_error)?;
-        if value.is(&identity) {
-            return Ok(SourceBinding::Intrinsic(SourceIntrinsic::Identity));
+        let id = morphism.getattr("Id").map_err(request_error)?;
+        if value.is(&id) {
+            return Ok(SourceBinding::Intrinsic(SourceIntrinsic::Id));
+        }
+        let wait = morphism.getattr("Wait").map_err(request_error)?;
+        if value.is(&wait) {
+            return Ok(SourceBinding::Intrinsic(SourceIntrinsic::Wait));
         }
         if value.downcast_exact::<PyFunction>().is_ok() {
             return Ok(SourceBinding::HostRpc {

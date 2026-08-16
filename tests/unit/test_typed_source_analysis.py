@@ -12,21 +12,21 @@ from catseq.hardware.rwg import initialize as rwg_initialize
 from catseq.hardware.sync import global_sync
 from catseq.hardware.ttl import initialize as ttl_initialize
 from catseq.hardware.ttl import pulse as ttl_pulse
-from catseq.morphism import Morphism, atomic_morphism, identity, morphism
+from catseq.morphism import Id, Morphism, Wait, atomic_morphism, morphism
 from catseq.morphism.core import compute, kernel
 from catseq.time_utils import cycles
 
 
 @kernel
 def _make_delay(width: int) -> Morphism:
-    return identity(cycles(width)) >> identity(cycles(2))
+    return Id() >> Wait(cycles(width)) >> Wait(cycles(2))
 
 
 @kernel
 def _unreachable_invalid(flag: bool) -> Morphism:
     if flag:
-        return identity(cycles(1))
-    return identity(cycles(2))
+        return Wait(cycles(1))
+    return Wait(cycles(2))
 
 
 @dataclass
@@ -57,7 +57,7 @@ class _ComputeSourceHirExperiment(BaseExp):
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
         width = _normalize_width(params[self.width])
-        return identity(cycles(width))
+        return Wait(cycles(width))
 
 
 @dataclass
@@ -66,18 +66,18 @@ class _DeduplicatedComputeExperiment(BaseExp):
 
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
-        first = identity(cycles(_normalize_width(params[self.width])))
-        return first >> identity(cycles(_normalize_width_alias(params[self.width])))
+        first = Wait(cycles(_normalize_width(params[self.width])))
+        return first >> Wait(cycles(_normalize_width_alias(params[self.width])))
 
 
 @kernel
 def _first_delay(width: int) -> Morphism:
-    return identity(cycles(width))
+    return Wait(cycles(width))
 
 
 @kernel
 def _second_delay(width: int) -> Morphism:
-    return identity(cycles(width)) >> identity(cycles(1))
+    return Wait(cycles(width)) >> Wait(cycles(1))
 
 
 _selected_delay = _first_delay
@@ -98,7 +98,7 @@ class _MethodExperiment(BaseExp):
 
     @kernel
     def delay(self, width: int) -> Morphism:
-        return identity(cycles(width))
+        return Wait(cycles(width))
 
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
@@ -111,7 +111,7 @@ class _AliasedMethodExperiment(BaseExp):
 
     @kernel
     def delay(self, width: int) -> Morphism:
-        return identity(cycles(width))
+        return Wait(cycles(width))
 
     alias = delay
     delay = object()
@@ -133,7 +133,7 @@ def _registered_morphism(width: int) -> Morphism:
 
 @morphism
 def _signed_literal_delay(integer: int, floating: float) -> Morphism:
-    return identity(cycles(integer))
+    return Wait(cycles(integer))
 
 
 @morphism
@@ -166,14 +166,14 @@ class _SignedLiteralExperiment(BaseExp):
 class _InvalidMorphismResultExperiment(BaseExp):
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
-        return identity(cycles(_invalid_morphism_result()))
+        return Wait(cycles(_invalid_morphism_result()))
 
 
 @dataclass
 class _InvalidAtomicResultExperiment(BaseExp):
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
-        return identity(cycles(_invalid_atomic_result()))
+        return Wait(cycles(_invalid_atomic_result()))
 
 
 @dataclass
@@ -211,8 +211,8 @@ class _UnsupportedStatementExperiment(BaseExp):
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
         if params[self.width] > 0:
-            return identity(cycles(1))
-        return identity(cycles(2))
+            return Wait(cycles(1))
+        return Wait(cycles(2))
 
 
 _host_helper_executed = False
@@ -230,7 +230,7 @@ class _HostRpcExperiment(BaseExp):
 
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
-        return identity(cycles(_host_helper(params[self.width])))
+        return Wait(cycles(_host_helper(params[self.width])))
 
 
 @dataclass
@@ -244,7 +244,7 @@ class _HostMethodRpcExperiment(BaseExp):
 
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
-        return identity(cycles(self.host_helper(params[self.width])))
+        return Wait(cycles(self.host_helper(params[self.width])))
 
 
 @compute
@@ -263,7 +263,7 @@ class _InvalidComputeExperiment(BaseExp):
 
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
-        return identity(cycles(_invalid_compute_root(params[self.width])))
+        return Wait(cycles(_invalid_compute_root(params[self.width])))
 
 
 @dataclass
@@ -272,7 +272,14 @@ class _MissingParamExperiment(BaseExp):
 
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
-        return identity(cycles(params[self.width]))
+        return Wait(cycles(params[self.width]))
+
+
+@dataclass
+class _UnitlessWaitExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return Wait(0)  # type: ignore[arg-type]
 
 
 @dataclass
@@ -300,7 +307,7 @@ class _UnsupportedSubscriptExperiment(BaseExp):
 
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
-        return identity(cycles(params[self.width][0]))
+        return Wait(cycles(params[self.width][0]))
 
 
 @dataclass
@@ -311,7 +318,7 @@ class _ExtraEntryArgumentExperiment(BaseExp):
         params: ExpParams,
         never_bound: int,
     ) -> Morphism:
-        return identity(cycles(never_bound))
+        return Wait(cycles(never_bound))
 
 
 _aliased_width = ExpParam[int]("aliased_width")
@@ -324,8 +331,8 @@ class _AliasedExpParamExperiment(BaseExp):
 
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
-        first = identity(cycles(params[self.width]))
-        return first >> identity(cycles(params[self.width_alias]))
+        first = Wait(cycles(params[self.width]))
+        return first >> Wait(cycles(params[self.width_alias]))
 
 
 @dataclass
@@ -335,7 +342,7 @@ class _ReboundParamsExperiment(BaseExp):
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
         params = 0
-        return identity(cycles(params[self.width]))
+        return Wait(cycles(params[self.width]))
 
 
 @kernel
@@ -349,7 +356,7 @@ class _ForeignSelfExperiment(BaseExp):
 
     @kernel
     def real_delay(self, width: int) -> Morphism:
-        return identity(cycles(width))
+        return Wait(cycles(width))
 
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
@@ -362,7 +369,7 @@ class _UnboundOwnerMethodExperiment(BaseExp):
 
     @kernel
     def delay(self, width: int) -> Morphism:
-        return identity(cycles(width))
+        return Wait(cycles(width))
 
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
@@ -377,12 +384,12 @@ class _StaticEntryExperiment(BaseExp):
     @staticmethod
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
-        return identity(cycles(1))
+        return Wait(cycles(1))
 
 
 @kernel
 def _global_delay_with_unused_class_alias(width: int) -> Morphism:
-    return identity(cycles(width))
+    return Wait(cycles(width))
 
 
 @dataclass
@@ -418,7 +425,10 @@ def test_registered_entry_analysis_publishes_only_reachable_loop_free_source() -
     ]
     assert analysis._call_edges == [(entry_name, helper_name, "kernel")]
     assert analysis._external_reads == [("width", "i32", "compile", 4)]
-    assert analysis._morphism_compositions == [(helper_name, "auto_serial")]
+    assert analysis._morphism_compositions == [
+        (helper_name, "auto_serial"),
+        (helper_name, "auto_serial"),
+    ]
     assert analysis._compute_source_profile_id is None
     assert analysis._compute_unit_count == 0
     assert analysis._compute_source_unit_count == 0
@@ -756,6 +766,19 @@ def test_registered_entry_analysis_rejects_missing_or_unsupported_exp_param(
         frontend._analyze_registered_kernel(experiment, params)
 
     assert expected in str(raised.value)
+    assert "test_typed_source_analysis.py:" in str(raised.value)
+
+
+def test_registered_entry_analysis_rejects_unitless_wait_zero() -> None:
+    with pytest.raises(
+        RuntimeError,
+        match="value type mismatch: expected duration, found i32",
+    ) as raised:
+        _native._FrontendSession({})._analyze_registered_kernel(
+            _UnitlessWaitExperiment(h5_writer=cast(Any, object())),
+            ExpParams.empty(),
+        )
+
     assert "test_typed_source_analysis.py:" in str(raised.value)
 
 

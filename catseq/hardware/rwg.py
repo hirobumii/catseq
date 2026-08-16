@@ -8,9 +8,10 @@ on the host does not construct morphisms or calculate waveforms.
 from collections.abc import Sequence
 
 from ..morphism import (
+    Id,
     Morphism,
+    Wait,
     atomic_morphism,
-    identity,
     morphism,
 )
 from ..morphism.core import compiler_intrinsic, compiler_only
@@ -116,8 +117,9 @@ __all__ = [
     "RWGUninitialized",
     "StaticWaveform",
     "WaveformParams",
+    "Id",
+    "Wait",
     "hold",
-    "identity",
     "initialize",
     "linear_ramp",
     "load",

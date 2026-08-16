@@ -1563,7 +1563,10 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                         ValueType::Duration,
                         TopologyEffect::Empty,
                     ),
-                    SourceIntrinsic::Identity => (
+                    SourceIntrinsic::Id => {
+                        (Vec::new(), ValueType::Morphism, TopologyEffect::Morphism)
+                    }
+                    SourceIntrinsic::Wait => (
                         vec![CallParameter {
                             name: "duration".to_owned(),
                             semantics: CallParameterSemantics::Value {

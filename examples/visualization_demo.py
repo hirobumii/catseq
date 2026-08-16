@@ -6,7 +6,8 @@ Demo script for the new functional visualization interface.
 from catseq.types import Board, Channel, ChannelType
 from catseq.types.rwg import RWGActive, StaticWaveform
 from catseq.hardware import ttl, rwg
-from catseq.morphism import identity
+from catseq.morphism import Wait
+from catseq.time_utils import us
 from catseq.visualization import (
     visualize_morphism,
     plot_timeline,
@@ -93,7 +94,7 @@ def demo_functional_visualization():
     
     # Create extreme time scale differences
     quick_start = ttl.pulse(ttl_ch0, 0.5)    # 0.5μs - very short
-    long_gap = identity(200.0)               # 200μs - long wait  
+    long_gap = Wait(200 * us)               # 200μs - long wait
     quick_end = ttl.pulse(ttl_ch1, 1.0)      # 1μs - short
     
     adaptive_demo = quick_start >> long_gap >> quick_end

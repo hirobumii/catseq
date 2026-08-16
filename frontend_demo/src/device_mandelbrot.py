@@ -13,7 +13,7 @@
 from catseq import compute, control, kernel
 from catseq.control import Control
 from catseq.hardware.ttl import pulse
-from catseq.morphism import identity
+from catseq.morphism import Id
 from catseq.time_utils import ms, us
 from catseq.types import fixed32
 
@@ -76,8 +76,8 @@ def sequence() -> Control:
     checksum = mandelbrot_checksum(seed)
     publish_result = control.branch(
         checksum & 1 == 0,
-        when_true=identity(0) >> {correction_a: pulse(1 * us)},
-        when_false=identity(0),
+        when_true=Id() >> {correction_a: pulse(1 * us)},
+        when_false=Id(),
         join=control.fixed_end(20 * ms),
     )
     return capture >> publish_result

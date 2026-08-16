@@ -270,11 +270,17 @@ def compiler_intrinsic(symbol: str) -> Callable[[_F], _F]:
     return decorate
 
 
-def identity(duration: Duration) -> Morphism:
-    """Declare a logical wait; Rust validates and lowers its duration."""
+def Id() -> Morphism:
+    """Declare the zero-duration Morphism sequencing unit."""
+
+    compiler_only("catseq.morphism.Id")
+
+
+def Wait(duration: Duration) -> Morphism:
+    """Declare a logical cursor displacement with an explicit Duration."""
 
     del duration
-    compiler_only("catseq.morphism.identity")
+    compiler_only("catseq.morphism.Wait")
 
 
 def repeat_morphism(morphism: Morphism, count: int) -> Morphism:

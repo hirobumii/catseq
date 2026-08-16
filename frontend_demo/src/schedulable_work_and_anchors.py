@@ -4,12 +4,12 @@
 # ENTRY: sequence
 # EXPECT: accept
 # CONTRACT: RWG load and realtime scalar compute are schedulable work, not cursor moves.
-# CONTRACT: Only Identity displacements and timed hardware events place rigid anchors.
+# CONTRACT: Only Wait displacements and timed hardware events place rigid anchors.
 # CONTRACT: Work on two boards is placed from dependencies, deadlines, WCET, and resources.
 
 from catseq import compute, hardware, kernel
 from catseq.control import Control
-from catseq.morphism import identity
+from catseq.morphism import Wait
 from catseq.time_utils import us
 
 from support.detectors import detector0
@@ -37,7 +37,7 @@ def sequence() -> Control:
 
     # These are rigid event anchors. The compiler may place both loads and the
     # phase calculation earlier when their release/deadline contracts allow it.
-    play_at_20_us = identity(20 * us) >> {
+    play_at_20_us = Wait(20 * us) >> {
         rwg_a: hardware.rwg.play(loaded_a, phase_word=phase_word),
         rwg_b: hardware.rwg.play(loaded_b),
     }

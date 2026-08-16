@@ -10,7 +10,7 @@
 from catseq import control, kernel
 from catseq.control import Control
 from catseq.hardware.ttl import pulse
-from catseq.morphism import identity
+from catseq.morphism import Id
 from catseq.time_utils import us
 
 from support.detectors import detector0
@@ -23,8 +23,8 @@ def sequence() -> Control:
     normalized = count / 100
     decision = control.branch(
         normalized > 0,
-        when_true=identity(0) >> {correction_a: pulse(1 * us)},
-        when_false=identity(0),
+        when_true=Id() >> {correction_a: pulse(1 * us)},
+        when_false=Id(),
         join=control.fixed_end(1 * us),
     )
     return capture >> decision

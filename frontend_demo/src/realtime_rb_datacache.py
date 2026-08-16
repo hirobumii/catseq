@@ -14,7 +14,7 @@ from catseq import control, hardware, kernel
 from catseq.control import Control
 from catseq.hardware.data_cache import DataCacheView
 from catseq.hardware.rwg import hold, initialize, rf_off, rf_on, set_state
-from catseq.morphism import Morphism, identity
+from catseq.morphism import Morphism, Id
 from catseq.time_utils import ns, us
 from catseq.types import StaticWaveform
 
@@ -80,7 +80,7 @@ def gate_waveform(target: StaticWaveform) -> Morphism:
         >> hold(GATE_DRIVE_TIME)
         >> set_state([IDLE], phase_reset=False)
     )
-    return identity(0) >> {rwg_a: pulse}
+    return Id() >> {rwg_a: pulse}
 
 
 @kernel
@@ -124,8 +124,8 @@ def realtime_rb(gates: DataCacheView[int]) -> Control:
 
 @kernel
 def sequence() -> Control:
-    prepare = identity(0) >> {
+    prepare = Id() >> {
         rwg_a: initialize(5_000.0, hard_init=True) >> set_state([IDLE]) >> rf_on(),
     }
-    shutdown = identity(0) >> {rwg_a: set_state([IDLE]) >> rf_off()}
+    shutdown = Id() >> {rwg_a: set_state([IDLE]) >> rf_off()}
     return prepare >> realtime_rb(rb_sequence) >> shutdown

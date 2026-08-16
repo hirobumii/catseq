@@ -22,7 +22,7 @@ from catseq.morphism import (
     Morphism,
     atomic_morphism,
     compute,
-    identity,
+    Wait,
     morphism,
 )
 from catseq.morphism.core import _registered_definition, kernel
@@ -229,7 +229,7 @@ class _Experiment(BaseExp):
 class _SimpleAnalysisExperiment(BaseExp):
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
-        return identity(cycles(1))
+        return Wait(cycles(1))
 
 
 @dataclass
@@ -510,7 +510,7 @@ def test_compute_validation_freezes_exact_builtin_type_bindings(
         rebound_session._validate_compute_roots((root,))
 
 
-def test_compute_validation_uses_cpython_builtin_identity(
+def test_compute_validation_uses_cpython_builtin_Wait(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -615,7 +615,7 @@ def misplaced(value: int) -> int:
         exec(compile(source, f"<{module_name}>", "exec"), foreign_globals)
 
 
-def test_in_place_reload_cannot_rebind_an_old_compute_identity(
+def test_in_place_reload_cannot_rebind_an_old_compute_Wait(
     tmp_path: Path,
 ) -> None:
     script = """\
@@ -938,12 +938,12 @@ def test_entry_analysis_follows_exact_module_attribute_paths(
 ) -> None:
     reachable_name = "catseq_test_exact_module_path_reachable"
     reachable_source = """\
-from catseq.morphism import Morphism, identity, morphism
+from catseq.morphism import Morphism, Wait, morphism
 from catseq.time_utils import cycles
 
 @morphism
 def alias() -> Morphism:
-    return identity(cycles(1))
+    return Wait(cycles(1))
 """
     reachable_loader = _MutableSourceLoader(reachable_name, reachable_source)
     reachable_module = ModuleType(reachable_name)
@@ -968,14 +968,14 @@ def alias() -> Morphism:
     entry_source = """\
 from catseq.experiment.base_exp import BaseExp
 from catseq.experiment.params import ExpParams
-from catseq.morphism import Morphism, identity
+from catseq.morphism import Morphism, Wait
 from catseq.morphism.core import kernel
 from catseq.time_utils import cycles
 
 class ExactPathExperiment(BaseExp):
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
-        return operations.alias() >> identity(cycles(1))
+        return operations.alias() >> Wait(cycles(1))
 """
     entry_loader = _MutableSourceLoader(entry_name, entry_source)
     entry_module = ModuleType(entry_name)

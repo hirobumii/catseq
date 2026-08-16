@@ -19,7 +19,7 @@ compiler。后续分析、Canonical Program、target lowering、linking 与高�
 包级公开接口保留用于描述源码的类型和装饰器，包括：
 
 - 唯一的时序值类型 `Morphism`；
-- `morphism`、`atomic_morphism`、`identity`、`repeat_morphism`；
+- `morphism`、`atomic_morphism`、`Id`、`Wait`、`repeat_morphism`；
 - `compute`；
 - `Board`、`Channel`、`ChannelType`；
 - `Duration`、`s`、`ms`、`us`、`ns`、`cycles(...)`。

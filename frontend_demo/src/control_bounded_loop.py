@@ -11,7 +11,7 @@
 from catseq import control, kernel
 from catseq.control import Control, LoopResult
 from catseq.hardware.ttl import pulse
-from catseq.morphism import identity
+from catseq.morphism import Id
 from catseq.time_utils import us
 
 from support.detectors import detector0
@@ -33,5 +33,5 @@ def sequence(target_count: int = 20) -> tuple[Control, LoopResult]:
         on_exhausted=control.complete(),
         join=control.fixed_end(60 * us),
     )
-    final_readout = identity(0) >> {readout_a: pulse(5 * us)}
+    final_readout = Id() >> {readout_a: pulse(5 * us)}
     return adaptive_capture >> final_readout, result

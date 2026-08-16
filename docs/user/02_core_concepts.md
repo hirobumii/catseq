@@ -45,7 +45,7 @@ C = A | B
 ```
 
 *   **通道**：用于并联的两个 `Morphism` 必须操作完全不同的通道，否则会报错。
-*   **自动对齐**: 如果 `A` 和 `B` 的时长不同，`catseq` 会自动在较短的那个序列末尾填充一段 `identity` (逻辑等待)，使其时长与较长的序列对齐。这是确保所有并行通道时长严格相等的关键机制。
+*   **自动对齐**: 如果 `A` 和 `B` 的时长不同，`catseq` 会自动在较短的那个序列末尾填充一段 `Wait`（逻辑等待），使其时长与较长的序列对齐。这是确保所有并行通道时长严格相等的关键机制。
 
 ## State: 确保操作的有效性
 
@@ -70,10 +70,10 @@ setup: Duration = cycles(25)
 
 编译器用当前 target profile 的 `clock_hz` 精确换算，并拒绝不能整除为周期数的
 时间。这个类型规则会穿过局部变量、模块全局常量、用户函数参数和 scan binding；
-仅写 `delay: Duration = 0.5` 不会凭空赋予单位。`identity(0)` 是零时长组合元，
-不是硬件 duration 的无单位写法。
+仅写 `delay: Duration = 0.5` 不会凭空赋予单位。`Id()` 是零时长组合元；
+`Wait(duration)` 表示显式的逻辑游标位移，因此 `Wait(0)` 不是合法的无单位写法。
 
-`Duration` 的规范表示是有符号 `Cycle Delta`。传给 `identity` 或 `hold` 的负值
+`Duration` 的规范表示是有符号 `Cycle Delta`。传给 `Wait` 或 `hold` 的负值
 会让当前 Epoch 内的逻辑时间游标回移，而不是生成负的硬件 wait；内置 pulse 和
 ramp 的物理宽度仍须非负。回移越过 Epoch 起点会在编译期报错；包含回移的循环
 会在调度前展开，不会错误编码为原生 hardware loop。最终 OASM 时间戳和

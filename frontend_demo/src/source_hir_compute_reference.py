@@ -12,7 +12,7 @@ from typing import ClassVar
 from catseq import compute, kernel
 from catseq.experiment.base_exp import BaseExp
 from catseq.experiment.params import ExpParam, ExpParams
-from catseq.morphism import Morphism, identity
+from catseq.morphism import Morphism, Wait
 from catseq.time_utils import cycles
 
 
@@ -29,4 +29,4 @@ class ComputeReferenceExperiment(BaseExp):
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
         width = normalize_width(params[self.width])
-        return identity(cycles(width))
+        return Wait(cycles(width))

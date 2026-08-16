@@ -186,14 +186,16 @@ impl TopologyEffect {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SourceIntrinsic {
     Cycles,
-    Identity,
+    Id,
+    Wait,
 }
 
 impl SourceIntrinsic {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Cycles => "cycles",
-            Self::Identity => "identity",
+            Self::Id => "Id",
+            Self::Wait => "Wait",
         }
     }
 }

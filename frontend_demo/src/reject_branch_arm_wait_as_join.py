@@ -9,7 +9,7 @@
 from catseq import control, kernel
 from catseq.control import Control
 from catseq.hardware.ttl import pulse
-from catseq.morphism import identity
+from catseq.morphism import Id, Wait
 from catseq.time_utils import us
 
 from support.detectors import detector0
@@ -21,7 +21,7 @@ def sequence(threshold: int = 20) -> Control:
     capture, count = detector0.measure(10 * us)
     choice = control.branch(
         count >= threshold,
-        when_true=identity(0) >> {correction_a: pulse(1 * us)},
-        when_false=identity(2 * us),
+        when_true=Id() >> {correction_a: pulse(1 * us)},
+        when_false=Wait(2 * us),
     )
     return capture >> choice

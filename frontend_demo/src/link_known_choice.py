@@ -12,7 +12,7 @@
 from catseq import control, kernel
 from catseq.control import Control
 from catseq.hardware.ttl import pulse
-from catseq.morphism import Morphism, identity
+from catseq.morphism import Morphism, Id
 from catseq.time_utils import us
 
 from support.hardware_map import correction_a, correction_b
@@ -20,12 +20,12 @@ from support.hardware_map import correction_a, correction_b
 
 @kernel
 def local_path() -> Morphism:
-    return identity(0) >> {correction_a: pulse(2 * us)}
+    return Id() >> {correction_a: pulse(2 * us)}
 
 
 @kernel
 def remote_path() -> Morphism:
-    return identity(0) >> {correction_b: pulse(2 * us)}
+    return Id() >> {correction_b: pulse(2 * us)}
 
 
 @kernel

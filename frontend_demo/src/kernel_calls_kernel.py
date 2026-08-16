@@ -8,7 +8,7 @@
 
 from catseq import kernel
 from catseq.hardware.ttl import pulse
-from catseq.morphism import Morphism, identity
+from catseq.morphism import Morphism, Id
 from catseq.time_utils import Duration, us
 
 from support.hardware_map import correction_a
@@ -23,7 +23,7 @@ def correction_width(base: Duration, doubled: bool) -> Duration:
 
 @kernel
 def correction(width: Duration) -> Morphism:
-    return identity(0) >> {correction_a: pulse(width)}
+    return Id() >> {correction_a: pulse(width)}
 
 
 @kernel

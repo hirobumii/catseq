@@ -10,7 +10,7 @@
 from catseq import control, kernel
 from catseq.control import Control
 from catseq.hardware.ttl import pulse
-from catseq.morphism import Morphism, identity
+from catseq.morphism import Morphism, Id
 from catseq.time_utils import us
 
 from support.detectors import detector0
@@ -19,12 +19,12 @@ from support.hardware_map import correction_b, readout_a, readout_b
 
 @kernel
 def remote_correction() -> Morphism:
-    return identity(0) >> {correction_b: pulse(2 * us)}
+    return Id() >> {correction_b: pulse(2 * us)}
 
 
 @kernel
 def simultaneous_readout() -> Morphism:
-    return identity(0) >> {
+    return Id() >> {
         readout_a: pulse(5 * us),
         readout_b: pulse(5 * us),
     }
@@ -36,7 +36,7 @@ def sequence(threshold: int = 20) -> Control:
     cross_board_feedback = control.branch(
         count >= threshold,
         when_true=remote_correction(),
-        when_false=identity(0),
+        when_false=Id(),
         join=control.fixed_end(5 * us),
     )
     return capture >> cross_board_feedback >> simultaneous_readout()

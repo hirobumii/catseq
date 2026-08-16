@@ -132,7 +132,8 @@ impl RegisteredRequestResolver for InMemoryResolver {
         }
         Ok(match path {
             "cycles" => SourceBinding::Intrinsic(SourceIntrinsic::Cycles),
-            "identity" => SourceBinding::Intrinsic(SourceIntrinsic::Identity),
+            "Id" => SourceBinding::Intrinsic(SourceIntrinsic::Id),
+            "Wait" => SourceBinding::Intrinsic(SourceIntrinsic::Wait),
             _ => SourceBinding::Unsupported {
                 display_name: path.to_owned(),
             },
@@ -159,7 +160,7 @@ fn analyzes_exact_loop_free_entry_reachability_hir_and_read_edges() {
     let source = concat!(
         "@morphism\n",
         "def pulse(width: int) -> Morphism:\n",
-        "    return identity(cycles(width)) >> identity(cycles(2))\n",
+        "    return Id() >> Wait(cycles(width)) >> Wait(cycles(2))\n",
         "\n",
         "class Experiment:\n",
         "    @kernel\n",
@@ -305,6 +306,38 @@ fn analyzes_exact_loop_free_entry_reachability_hir_and_read_edges() {
         Some(&ValueType::Int32)
     );
     assert_eq!(helper.signature().parameters()[0].authority(), None);
+    let morphism_intrinsics = helper
+        .hir()
+        .facts()
+        .iter()
+        .filter_map(|fact| match fact.resolved_call() {
+            Some(ResolvedCallTarget::Intrinsic(SourceIntrinsic::Id)) => {
+                Some((SourceIntrinsic::Id, fact.call_arguments()))
+            }
+            Some(ResolvedCallTarget::Intrinsic(SourceIntrinsic::Wait)) => {
+                Some((SourceIntrinsic::Wait, fact.call_arguments()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        morphism_intrinsics
+            .iter()
+            .map(|(intrinsic, _)| *intrinsic)
+            .collect::<Vec<_>>(),
+        vec![
+            SourceIntrinsic::Id,
+            SourceIntrinsic::Wait,
+            SourceIntrinsic::Wait
+        ]
+    );
+    assert!(morphism_intrinsics[0].1.is_empty());
+    assert!(morphism_intrinsics[1..].iter().all(|(_, arguments)| {
+        arguments.len() == 1
+            && arguments[0].parameter() == "duration"
+            && helper.hir().facts()[arguments[0].value_node() as usize].value_type()
+                == Some(&ValueType::Duration)
+    }));
     assert!(
         helper
             .hir()
@@ -324,17 +357,53 @@ fn analyzes_exact_loop_free_entry_reachability_hir_and_read_edges() {
 }
 
 #[test]
+fn rejects_unitless_wait_zero() {
+    let source = concat!(
+        "class Experiment:\n",
+        "    @kernel\n",
+        "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+        "        return Wait(0)\n",
+    );
+    let registered = register_fixture(
+        source,
+        &[DefinitionSpec {
+            id: 12,
+            qualified_name: "Experiment.build_sequence",
+            source_start_line: 2,
+            role: RegisteredDefinitionRole::Kernel,
+        }],
+        &[],
+        12,
+    );
+
+    let error = analyze_registered_entry(&registered, &mut InMemoryResolver::default())
+        .err()
+        .expect("Wait requires an actual Duration even when its value is zero");
+
+    assert!(
+        error
+            .to_string()
+            .contains("value type mismatch: expected duration, found i32"),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("/project/experiment.py:4:"),
+        "{error}"
+    );
+}
+
+#[test]
 fn ignores_unreachable_registered_definition_with_unsupported_syntax() {
     let source = concat!(
         "@morphism\n",
         "def pulse(width: int) -> Morphism:\n",
-        "    return identity(cycles(width))\n",
+        "    return Wait(cycles(width))\n",
         "\n",
         "@kernel\n",
         "def unused(flag: bool) -> Morphism:\n",
         "    if flag:\n",
-        "        return identity(cycles(1))\n",
-        "    return identity(cycles(0))\n",
+        "        return Wait(cycles(1))\n",
+        "    return Id()\n",
         "\n",
         "class Experiment:\n",
         "    @kernel\n",
@@ -389,8 +458,8 @@ fn rejects_reachable_if_at_its_source_location() {
         "    @kernel\n",
         "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
         "        if False:\n",
-        "            return identity(cycles(0))\n",
-        "        return identity(cycles(1))\n",
+        "            return Id()\n",
+        "        return Wait(cycles(1))\n",
     );
     let registered = register_fixture(
         source,
@@ -561,7 +630,7 @@ fn rejects_a_referenced_missing_exp_param_at_the_read() {
         "    @kernel\n",
         "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
         "        width = params[self.width]\n",
-        "        return identity(cycles(width))\n",
+        "        return Wait(cycles(width))\n",
     );
     let registered = register_fixture(
         source,
@@ -598,7 +667,7 @@ fn rejects_a_referenced_exp_param_with_an_unsupported_source_type() {
         "    @kernel\n",
         "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
         "        width = params[self.width]\n",
-        "        return identity(cycles(width))\n",
+        "        return Wait(cycles(width))\n",
     );
     let registered = register_fixture(
         source,
@@ -645,13 +714,13 @@ fn does_not_query_bad_exp_param_read_in_an_unreachable_definition() {
     let source = concat!(
         "@kernel\n",
         "def unused(self, params: ExpParams) -> Morphism:\n",
-        "    return identity(cycles(params[self.bad]))\n",
+        "    return Wait(cycles(params[self.bad]))\n",
         "\n",
         "class Experiment:\n",
         "    @kernel\n",
         "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
         "        width = params[self.width]\n",
-        "        return identity(cycles(width))\n",
+        "        return Wait(cycles(width))\n",
     );
     let registered = register_fixture(
         source,
@@ -696,7 +765,7 @@ fn preserves_and_applies_registered_source_defaults() {
     let source = concat!(
         "@morphism\n",
         "def configured(carrier: float, enabled: bool = False, label: int = 1) -> Morphism:\n",
-        "    return identity(cycles(1))\n",
+        "    return Wait(cycles(1))\n",
         "\n",
         "class Experiment:\n",
         "    @kernel\n",

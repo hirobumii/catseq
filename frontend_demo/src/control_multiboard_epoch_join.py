@@ -10,7 +10,7 @@
 from catseq import control, hardware, kernel
 from catseq.control import Control
 from catseq.hardware.ttl import pulse
-from catseq.morphism import Morphism, identity
+from catseq.morphism import Morphism, Id, Wait
 from catseq.time_utils import us
 
 from support.detectors import detector0
@@ -19,17 +19,17 @@ from support.hardware_map import correction_b, readout_a, readout_b
 
 @kernel
 def remote_correction() -> Morphism:
-    return identity(0) >> {correction_b: pulse(7 * us)}
+    return Id() >> {correction_b: pulse(7 * us)}
 
 
 @kernel
 def local_noop() -> Morphism:
-    return identity(1 * us)
+    return Wait(1 * us)
 
 
 @kernel
 def next_epoch_readout() -> Morphism:
-    return identity(0) >> {
+    return Id() >> {
         readout_a: pulse(5 * us),
         readout_b: pulse(5 * us),
     }

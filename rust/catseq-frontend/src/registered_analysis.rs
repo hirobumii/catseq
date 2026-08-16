@@ -749,6 +749,14 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
     ) -> Result<(), RegisteredAnalysisError> {
         match &expression.node {
             ExprKind::Name { .. } | ExprKind::Constant { .. } => Ok(()),
+            ExprKind::UnaryOp { .. }
+                if matches!(
+                    source_literal(expression),
+                    Some(SourceLiteral::Int32(_)) | Some(SourceLiteral::Float64(_))
+                ) =>
+            {
+                Ok(())
+            }
             ExprKind::Subscript { value, slice, .. } => {
                 let (params_name, owner_name, attribute) = exp_param_path(value, slice)
                     .ok_or_else(|| {
@@ -1307,31 +1315,39 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                     topology_effect,
                 })
             }
-            ExprKind::Constant { value, .. } => {
-                let (value_type, literal) = match value {
-                    Constant::None => (ValueType::None, SourceLiteral::None),
-                    Constant::Bool(value) => (ValueType::Bool, SourceLiteral::Bool(*value)),
-                    Constant::Int(value) => {
-                        let value = i32::try_from(*value).map_err(|_| {
-                            RegisteredAnalysisError::at(
-                                "integer literal is outside the CatSeq Int32 source profile",
+            ExprKind::Constant { .. } | ExprKind::UnaryOp { .. } => {
+                let (value_type, literal) = match &expression.node {
+                    ExprKind::Constant { value, .. } => match value {
+                        Constant::None => (ValueType::None, SourceLiteral::None),
+                        Constant::Bool(value) => (ValueType::Bool, SourceLiteral::Bool(*value)),
+                        Constant::Int(value) => {
+                            let value = i32::try_from(*value).map_err(|_| {
+                                RegisteredAnalysisError::at(
+                                    "integer literal is outside the CatSeq Int32 source profile",
+                                    self.anchor(expression.location),
+                                )
+                            })?;
+                            (ValueType::Int32, SourceLiteral::Int32(value))
+                        }
+                        Constant::Float(value) => {
+                            (ValueType::Float64, SourceLiteral::Float64(value.to_bits()))
+                        }
+                        Constant::Str(value) => {
+                            (ValueType::String, SourceLiteral::String(value.clone()))
+                        }
+                        _ => {
+                            return Err(RegisteredAnalysisError::at(
+                                "unsupported literal in the initial Kernel/Morphism source subset",
                                 self.anchor(expression.location),
-                            )
-                        })?;
-                        (ValueType::Int32, SourceLiteral::Int32(value))
+                            ));
+                        }
+                    },
+                    ExprKind::UnaryOp { .. } => {
+                        let literal = source_literal(expression)
+                            .expect("the discovery pass admitted only signed numeric literals");
+                        (source_literal_value_type(&literal), literal)
                     }
-                    Constant::Float(value) => {
-                        (ValueType::Float64, SourceLiteral::Float64(value.to_bits()))
-                    }
-                    Constant::Str(value) => {
-                        (ValueType::String, SourceLiteral::String(value.clone()))
-                    }
-                    _ => {
-                        return Err(RegisteredAnalysisError::at(
-                            "unsupported literal in the initial Kernel/Morphism source subset",
-                            self.anchor(expression.location),
-                        ));
-                    }
+                    _ => unreachable!("this arm matches only literals"),
                 };
                 let fact = SemanticFact::value(
                     value_type.clone(),

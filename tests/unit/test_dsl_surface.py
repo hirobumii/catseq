@@ -25,7 +25,7 @@ from catseq.morphism import (
     identity,
     morphism,
 )
-from catseq.morphism.core import _registered_definition
+from catseq.morphism.core import _registered_definition, compiler_intrinsic
 from catseq.time_utils import Duration
 from catseq.types import StaticWaveform
 
@@ -126,6 +126,40 @@ def test_atomic_morphism_declaration_records_its_stable_symbol() -> None:
 
     assert atomic.__catseq_definition__.kind == "atomic_morphism"
     assert atomic.__catseq_definition__.symbol == "example.atomic"
+
+
+def test_definition_decorators_reject_direct_cpython_execution() -> None:
+    executed: list[str] = []
+    sentinel = object()
+
+    @morphism
+    def composite() -> Morphism:
+        executed.append("morphism")
+        return cast(Morphism, sentinel)
+
+    @atomic_morphism("example.direct-atomic")
+    def atomic() -> Morphism:
+        executed.append("atomic")
+        return cast(Morphism, sentinel)
+
+    @compiler_intrinsic("example.direct-intrinsic")
+    def intrinsic() -> int:
+        executed.append("intrinsic")
+        return 1
+
+    for definition, role_name in (
+        (composite, "Morphism Definition"),
+        (atomic, "Atomic Morphism"),
+        (intrinsic, "Compiler Intrinsic"),
+    ):
+        registered = _registered_definition(definition)
+        assert registered is not None
+        assert registered.original is definition.__wrapped__
+        assert registered.wrapper is definition
+        with pytest.raises(CompilerOnlyError, match=role_name):
+            definition()
+
+    assert executed == []
 
 
 def test_atomic_morphism_requires_a_non_empty_exact_string_symbol() -> None:

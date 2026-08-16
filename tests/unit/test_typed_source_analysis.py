@@ -132,6 +132,11 @@ def _registered_morphism(width: int) -> Morphism:
 
 
 @morphism
+def _signed_literal_delay(integer: int, floating: float) -> Morphism:
+    return identity(cycles(integer))
+
+
+@morphism
 def _invalid_morphism_result() -> int:
     return 1
 
@@ -148,6 +153,13 @@ class _MorphismDefinitionExperiment(BaseExp):
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
         return _registered_morphism(params[self.width])
+
+
+@dataclass
+class _SignedLiteralExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return _signed_literal_delay(+1, -1.5) >> _signed_literal_delay(-1, +1.5)
 
 
 @dataclass
@@ -541,6 +553,24 @@ def test_registered_entry_analysis_retains_morphism_definition_and_atomic_leaf()
     assert atomic[:2] == (f"{__name__}._atomic_leaf", "typed_source_leaf")
     assert atomic[2].endswith("test_typed_source_analysis.py")
     assert atomic[3] > 0
+
+
+def test_registered_entry_analysis_admits_signed_numeric_literals() -> None:
+    analysis = _native._FrontendSession({})._analyze_registered_kernel(
+        _SignedLiteralExperiment(h5_writer=cast(Any, object())),
+        ExpParams.empty(),
+    )
+
+    entry_name = f"{__name__}._SignedLiteralExperiment.build_sequence"
+    helper_name = f"{__name__}._signed_literal_delay"
+    assert analysis._body_definitions == [
+        (entry_name, "kernel"),
+        (helper_name, "morphism_definition"),
+    ]
+    assert analysis._call_edges == [
+        (entry_name, helper_name, "morphism_definition"),
+        (entry_name, helper_name, "morphism_definition"),
+    ]
 
 
 @pytest.mark.parametrize(

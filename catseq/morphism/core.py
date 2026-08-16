@@ -162,26 +162,29 @@ def _register_definition(
         raise TypeError("CatSeq definitions must belong to an imported Python module")
     if original.__globals__ is not module.__dict__:
         raise TypeError("CatSeq definitions must use their owning module globals")
-    wrapper: FunctionType
-    if role in ("kernel", "compute"):
-        definition_kind = "Kernel" if role == "kernel" else "Compute Function"
-        execution_remedy = (
-            "analyze its BaseExp owner through the registered frontend"
-            if role == "kernel"
-            else "reference it from registered @kernel or @compute source"
+    definition_kind = {
+        "kernel": "Kernel",
+        "compute": "Compute Function",
+        "morphism": "Morphism Definition",
+        "atomic_morphism": "Atomic Morphism",
+        "compiler_intrinsic": "Compiler Intrinsic",
+    }[role]
+    if role == "kernel":
+        execution_remedy = "analyze its BaseExp owner through the registered frontend"
+    elif role == "compute":
+        execution_remedy = "reference it from registered @kernel or @compute source"
+    else:
+        execution_remedy = "reference it from registered source"
+
+    @wraps(original)
+    def reject_execution(*args: object, **kwargs: object) -> Never:
+        del args, kwargs
+        raise CompilerOnlyError(
+            f"{original.__qualname__} is a compiler-only CatSeq {definition_kind}; "
+            f"{execution_remedy} instead of calling it in CPython"
         )
 
-        @wraps(original)
-        def reject_execution(*args: object, **kwargs: object) -> Never:
-            del args, kwargs
-            raise CompilerOnlyError(
-                f"{original.__qualname__} is a compiler-only CatSeq {definition_kind}; "
-                f"{execution_remedy} instead of calling it in CPython"
-            )
-
-        wrapper = cast(FunctionType, reject_execution)
-    else:
-        wrapper = original
+    wrapper = cast(FunctionType, reject_execution)
 
     if role == "atomic_morphism":
         setattr(

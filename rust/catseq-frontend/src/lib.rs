@@ -27,4 +27,7 @@ pub use source_hir::{
     SourceAnchor, SourceBinding, SourceHirKind, SourceHirNode, SourceIntrinsic, SourceLiteral,
     TopologyEffect, TypedSourceHir, ValueAvailability, ValueType, ValueTypeConstructor,
 };
-pub use typed::{ParameterKind, TypeSignature, TypedCheckReport, TypedDefinition, TypedParameter};
+pub use typed::{
+    ParameterAuthority, ParameterKind, ParameterSemantics, TypeSignature, TypedCheckReport,
+    TypedDefinition, TypedParameter,
+};

@@ -908,6 +908,97 @@ def test_entry_analysis_ignores_unreferenced_registered_module_source_failure(
         loader.failure = None
 
 
+def test_entry_analysis_does_not_query_the_process_registration_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core_module = sys.modules["catseq.morphism.core"]
+
+    def reject_catalog_query() -> object:
+        raise AssertionError("entry analysis must not query the process catalog")
+
+    monkeypatch.setattr(
+        core_module,
+        "_registered_definition_catalog",
+        reject_catalog_query,
+    )
+    experiment = _SimpleAnalysisExperiment(h5_writer=cast(Any, object()))
+
+    analysis = _native._FrontendSession({})._analyze_registered_kernel(
+        experiment,
+        ExpParams({}),
+    )
+
+    assert analysis._entry_name == (
+        f"{__name__}._SimpleAnalysisExperiment.build_sequence"
+    )
+
+
+def test_entry_analysis_follows_exact_module_attribute_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reachable_name = "catseq_test_exact_module_path_reachable"
+    reachable_source = """\
+from catseq.morphism import Morphism, identity, morphism
+from catseq.time_utils import cycles
+
+@morphism
+def alias() -> Morphism:
+    return identity(cycles(1))
+"""
+    reachable_loader = _MutableSourceLoader(reachable_name, reachable_source)
+    reachable_module = ModuleType(reachable_name)
+    reachable_module.__loader__ = reachable_loader
+    monkeypatch.setitem(sys.modules, reachable_name, reachable_module)
+    exec(
+        compile(reachable_source, f"<{reachable_name}>", "exec"),
+        reachable_module.__dict__,
+    )
+
+    unrelated_name = "catseq_test_exact_module_path_unrelated"
+    unrelated_module, unrelated_loader = _load_registered_source_module(
+        monkeypatch,
+        unrelated_name,
+        "cycles",
+    )
+    operations = ModuleType("catseq_test_exact_module_path_operations")
+    operations.alias = reachable_module.alias
+    operations.cycles = unrelated_module.cycles
+
+    entry_name = "catseq_test_exact_module_path_entry"
+    entry_source = """\
+from catseq.experiment.base_exp import BaseExp
+from catseq.experiment.params import ExpParams
+from catseq.morphism import Morphism, identity
+from catseq.morphism.core import kernel
+from catseq.time_utils import cycles
+
+class ExactPathExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return operations.alias() >> identity(cycles(1))
+"""
+    entry_loader = _MutableSourceLoader(entry_name, entry_source)
+    entry_module = ModuleType(entry_name)
+    entry_module.__loader__ = entry_loader
+    entry_module.operations = operations
+    monkeypatch.setitem(sys.modules, entry_name, entry_module)
+    exec(compile(entry_source, f"<{entry_name}>", "exec"), entry_module.__dict__)
+    experiment = entry_module.ExactPathExperiment(h5_writer=cast(Any, object()))
+    unrelated_loader.failure = OSError("unrelated same-name source unavailable")
+
+    try:
+        analysis = _native._FrontendSession({})._analyze_registered_kernel(
+            experiment,
+            ExpParams({}),
+        )
+        assert analysis._body_definitions == [
+            (f"{entry_name}.ExactPathExperiment.build_sequence", "kernel"),
+            (f"{reachable_name}.alias", "morphism_definition"),
+        ]
+    finally:
+        unrelated_loader.failure = None
+
+
 def test_entry_analysis_rejects_source_that_no_longer_matches_registered_code(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

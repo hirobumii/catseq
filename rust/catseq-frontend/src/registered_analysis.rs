@@ -19,7 +19,8 @@ use crate::source_hir::{
     TopologyEffect, TypedSourceHir, ValueAvailability, ValueType, ValueTypeConstructor,
 };
 use crate::typed::{
-    ParameterKind, TypeSignature, TypedCheckReport, TypedDefinition, TypedParameter,
+    ParameterAuthority, ParameterKind, ParameterSemantics, TypeSignature, TypedCheckReport,
+    TypedDefinition, TypedParameter,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -456,7 +457,18 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                 SourceBinding::ValueType(value_type) => {
                     TypedParameter::value(name, value_type, kind, default)
                 }
-                source_binding => TypedParameter::source(name, source_binding, kind),
+                SourceBinding::EntryOwner => {
+                    TypedParameter::source(name, ParameterAuthority::EntryOwner, kind)
+                }
+                SourceBinding::ExpParams => {
+                    TypedParameter::source(name, ParameterAuthority::ExpParams, kind)
+                }
+                _ => {
+                    return Err(RegisteredAnalysisError::at(
+                        "parameter annotation does not denote an admitted value or source authority",
+                        anchor,
+                    ));
+                }
             });
         }
         for (argument, default) in args.kwonlyargs.iter().zip(&args.kw_defaults) {
@@ -485,8 +497,16 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                 SourceBinding::ValueType(value_type) => {
                     TypedParameter::value(name, value_type, ParameterKind::KeywordOnly, default)
                 }
-                source_binding => {
-                    TypedParameter::source(name, source_binding, ParameterKind::KeywordOnly)
+                SourceBinding::ExpParams => TypedParameter::source(
+                    name,
+                    ParameterAuthority::ExpParams,
+                    ParameterKind::KeywordOnly,
+                ),
+                _ => {
+                    return Err(RegisteredAnalysisError::at(
+                        "parameter annotation does not denote an admitted value or source authority",
+                        anchor,
+                    ));
                 }
             });
         }
@@ -499,8 +519,8 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
         let return_type = self.resolve_value_annotation(&definition, returns)?;
         if definition_id == entry_id
             && (parameters.len() != 2
-                || parameters[0].source_binding() != Some(&SourceBinding::EntryOwner)
-                || parameters[1].source_binding() != Some(&SourceBinding::ExpParams)
+                || parameters[0].authority() != Some(&ParameterAuthority::EntryOwner)
+                || parameters[1].authority() != Some(&ParameterAuthority::ExpParams)
                 || return_type != ValueType::Morphism)
         {
             return Err(RegisteredAnalysisError::at(
@@ -657,16 +677,12 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
             .parameters()
             .iter()
             .map(|parameter| {
-                let binding = parameter
-                    .source_binding()
-                    .cloned()
-                    .or_else(|| {
-                        parameter
-                            .value_type()
-                            .cloned()
-                            .map(SourceBinding::ValueType)
-                    })
-                    .expect("typed parameters retain either a value type or source authority");
+                let binding = match parameter.semantics() {
+                    ParameterSemantics::Value { value_type, .. } => {
+                        SourceBinding::ValueType(value_type.clone())
+                    }
+                    ParameterSemantics::SourceAuthority(authority) => authority.source_binding(),
+                };
                 (parameter.name().to_owned(), binding)
             })
             .collect::<BTreeMap<_, _>>();
@@ -1052,10 +1068,17 @@ struct LoweredExpression {
 #[derive(Clone)]
 struct CallParameter {
     name: String,
-    value_type: Option<ValueType>,
-    source_binding: Option<SourceBinding>,
+    semantics: CallParameterSemantics,
     kind: ParameterKind,
-    default: Option<SourceLiteral>,
+}
+
+#[derive(Clone)]
+enum CallParameterSemantics {
+    Value {
+        value_type: ValueType,
+        default: Option<SourceLiteral>,
+    },
+    SourceAuthority,
 }
 
 #[derive(Clone, Copy)]
@@ -1117,20 +1140,16 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
 
     fn lower(mut self, body: &[Stmt]) -> Result<TypedSourceHir, RegisteredAnalysisError> {
         for parameter in self.plan.signature.parameters() {
-            let binding = if let Some(value_type) = parameter.value_type() {
-                LocalBinding::Value {
+            let binding = match parameter.semantics() {
+                ParameterSemantics::Value { value_type, .. } => LocalBinding::Value {
                     node_id: u32::MAX,
                     value_type: value_type.clone(),
                     availability: ValueAvailability::Compile,
                     topology_effect: TopologyEffect::Empty,
+                },
+                ParameterSemantics::SourceAuthority(authority) => {
+                    LocalBinding::Source(authority.source_binding())
                 }
-            } else {
-                LocalBinding::Source(
-                    parameter
-                        .source_binding()
-                        .cloned()
-                        .expect("non-value parameters retain source authority"),
-                )
             };
             self.locals.insert(parameter.name().to_owned(), binding);
         }
@@ -1506,10 +1525,11 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                     SourceIntrinsic::Cycles => (
                         vec![CallParameter {
                             name: "count".to_owned(),
-                            value_type: Some(ValueType::Int32),
-                            source_binding: None,
+                            semantics: CallParameterSemantics::Value {
+                                value_type: ValueType::Int32,
+                                default: None,
+                            },
                             kind: ParameterKind::PositionalOrKeyword,
-                            default: None,
                         }],
                         ValueType::Duration,
                         TopologyEffect::Empty,
@@ -1517,10 +1537,11 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                     SourceIntrinsic::Identity => (
                         vec![CallParameter {
                             name: "duration".to_owned(),
-                            value_type: Some(ValueType::Duration),
-                            source_binding: None,
+                            semantics: CallParameterSemantics::Value {
+                                value_type: ValueType::Duration,
+                                default: None,
+                            },
                             kind: ParameterKind::PositionalOrKeyword,
-                            default: None,
                         }],
                         ValueType::Morphism,
                         TopologyEffect::Morphism,
@@ -1545,16 +1566,25 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                 let mut parameters = Vec::new();
                 for parameter in signature.parameters() {
                     if bound_entry_owner
-                        && parameter.source_binding() == Some(&SourceBinding::EntryOwner)
+                        && parameter.authority() == Some(&ParameterAuthority::EntryOwner)
                     {
                         continue;
                     }
                     parameters.push(CallParameter {
                         name: parameter.name().to_owned(),
-                        value_type: parameter.value_type().cloned(),
-                        source_binding: parameter.source_binding().cloned(),
+                        semantics: match parameter.semantics() {
+                            ParameterSemantics::Value {
+                                value_type,
+                                default,
+                            } => CallParameterSemantics::Value {
+                                value_type: value_type.clone(),
+                                default: default.clone(),
+                            },
+                            ParameterSemantics::SourceAuthority(_) => {
+                                CallParameterSemantics::SourceAuthority
+                            }
+                        },
                         kind: parameter.kind(),
-                        default: parameter.default().cloned(),
                     });
                 }
                 (
@@ -1588,10 +1618,11 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                     .enumerate()
                     .map(|(index, value_type)| CallParameter {
                         name: format!("arg{index}"),
-                        value_type: Some(value_type_from_compute(value_type)),
-                        source_binding: None,
+                        semantics: CallParameterSemantics::Value {
+                            value_type: value_type_from_compute(value_type),
+                            default: None,
+                        },
                         kind: ParameterKind::PositionalOnly,
-                        default: None,
                     })
                     .collect::<Vec<_>>();
                 let result = value_type_from_compute(interface.result());
@@ -1680,13 +1711,15 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                     )
                 }
             };
-            let expected = parameter.value_type.as_ref().ok_or_else(|| {
-                debug_assert!(parameter.source_binding.is_some());
-                RegisteredAnalysisError::at(
-                    "source-authority parameters require their exact bound source value",
-                    self.nodes[actual.node_id as usize].anchor().clone(),
-                )
-            })?;
+            let expected = match &parameter.semantics {
+                CallParameterSemantics::Value { value_type, .. } => value_type,
+                CallParameterSemantics::SourceAuthority => {
+                    return Err(RegisteredAnalysisError::at(
+                        "source-authority parameters require their exact bound source value",
+                        self.nodes[actual.node_id as usize].anchor().clone(),
+                    ));
+                }
+            };
             self.require_type(expected, &actual.value_type, actual.node_id)?;
             self.add_role(
                 actual.node_id,
@@ -1899,7 +1932,16 @@ fn bind_call_arguments(
     let missing = parameters
         .iter()
         .zip(&bound)
-        .filter(|(parameter, bound)| bound.is_none() && parameter.default.is_none())
+        .filter(|(parameter, bound)| {
+            bound.is_none()
+                && !matches!(
+                    &parameter.semantics,
+                    CallParameterSemantics::Value {
+                        default: Some(_),
+                        ..
+                    }
+                )
+        })
         .map(|(parameter, _)| parameter.name.as_str())
         .collect::<Vec<_>>();
     if !missing.is_empty() {
@@ -1918,11 +1960,11 @@ fn bind_call_arguments(
             parameter_id,
             value: bound[parameter_id]
                 .take()
-                .or_else(|| {
-                    parameter
-                        .default
-                        .clone()
-                        .map(BoundCallArgumentValue::Default)
+                .or_else(|| match &parameter.semantics {
+                    CallParameterSemantics::Value { default, .. } => {
+                        default.clone().map(BoundCallArgumentValue::Default)
+                    }
+                    CallParameterSemantics::SourceAuthority => None,
                 })
                 .expect("every required call parameter was validated as bound"),
         })

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use catseq_frontend::{
     CallArgumentOrigin, DefinitionNameBindingInput, DefinitionRegistrationInput, DependencyRole,
-    ModuleRegistrationInput, MorphismComposition, RegisteredDefinitionRole,
+    ModuleRegistrationInput, MorphismComposition, ParameterAuthority, RegisteredDefinitionRole,
     RegisteredKernelModules, RegisteredRequestResolver, RegistrationInput, RequestResolutionError,
     ResolvedCallTarget, ResolvedExternalRead, SourceBinding, SourceHirKind, SourceIntrinsic,
     SourceLiteral, TopologyEffect, ValueAvailability, ValueType, analyze_registered_entry,
@@ -224,12 +224,12 @@ fn analyzes_exact_loop_free_entry_reachability_hir_and_read_edges() {
         .find(|definition| definition.definition_id() == 12)
         .expect("entry remains in the report");
     assert_eq!(
-        entry.signature().parameters()[0].source_binding(),
-        Some(&SourceBinding::EntryOwner)
+        entry.signature().parameters()[0].authority(),
+        Some(&ParameterAuthority::EntryOwner)
     );
     assert_eq!(
-        entry.signature().parameters()[1].source_binding(),
-        Some(&SourceBinding::ExpParams)
+        entry.signature().parameters()[1].authority(),
+        Some(&ParameterAuthority::ExpParams)
     );
     assert_eq!(entry.signature().parameters()[0].value_type(), None);
     assert_eq!(entry.signature().parameters()[1].value_type(), None);
@@ -304,7 +304,7 @@ fn analyzes_exact_loop_free_entry_reachability_hir_and_read_edges() {
         helper.signature().parameters()[0].value_type(),
         Some(&ValueType::Int32)
     );
-    assert_eq!(helper.signature().parameters()[0].source_binding(), None);
+    assert_eq!(helper.signature().parameters()[0].authority(), None);
     assert!(
         helper
             .hir()

@@ -16,12 +16,34 @@ pub enum ParameterKind {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ParameterAuthority {
+    EntryOwner,
+    ExpParams,
+}
+
+impl ParameterAuthority {
+    pub const fn source_binding(&self) -> SourceBinding {
+        match self {
+            Self::EntryOwner => SourceBinding::EntryOwner,
+            Self::ExpParams => SourceBinding::ExpParams,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ParameterSemantics {
+    Value {
+        value_type: ValueType,
+        default: Option<SourceLiteral>,
+    },
+    SourceAuthority(ParameterAuthority),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TypedParameter {
     name: String,
-    value_type: Option<ValueType>,
-    source_binding: Option<SourceBinding>,
+    semantics: ParameterSemantics,
     kind: ParameterKind,
-    default: Option<SourceLiteral>,
 }
 
 impl TypedParameter {
@@ -33,24 +55,19 @@ impl TypedParameter {
     ) -> Self {
         Self {
             name,
-            value_type: Some(value_type),
-            source_binding: None,
+            semantics: ParameterSemantics::Value {
+                value_type,
+                default,
+            },
             kind,
-            default,
         }
     }
 
-    pub(crate) fn source(name: String, source_binding: SourceBinding, kind: ParameterKind) -> Self {
-        assert!(
-            !matches!(source_binding, SourceBinding::ValueType(_)),
-            "ordinary parameter types belong in TypedParameter::value",
-        );
+    pub(crate) fn source(name: String, authority: ParameterAuthority, kind: ParameterKind) -> Self {
         Self {
             name,
-            value_type: None,
-            source_binding: Some(source_binding),
+            semantics: ParameterSemantics::SourceAuthority(authority),
             kind,
-            default: None,
         }
     }
 
@@ -59,11 +76,21 @@ impl TypedParameter {
     }
 
     pub const fn value_type(&self) -> Option<&ValueType> {
-        self.value_type.as_ref()
+        match &self.semantics {
+            ParameterSemantics::Value { value_type, .. } => Some(value_type),
+            ParameterSemantics::SourceAuthority(_) => None,
+        }
     }
 
-    pub const fn source_binding(&self) -> Option<&SourceBinding> {
-        self.source_binding.as_ref()
+    pub const fn authority(&self) -> Option<&ParameterAuthority> {
+        match &self.semantics {
+            ParameterSemantics::Value { .. } => None,
+            ParameterSemantics::SourceAuthority(authority) => Some(authority),
+        }
+    }
+
+    pub const fn semantics(&self) -> &ParameterSemantics {
+        &self.semantics
     }
 
     pub const fn kind(&self) -> ParameterKind {
@@ -71,7 +98,10 @@ impl TypedParameter {
     }
 
     pub const fn default(&self) -> Option<&SourceLiteral> {
-        self.default.as_ref()
+        match &self.semantics {
+            ParameterSemantics::Value { default, .. } => default.as_ref(),
+            ParameterSemantics::SourceAuthority(_) => None,
+        }
     }
 }
 

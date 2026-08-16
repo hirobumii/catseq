@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-use nac3ast::{Constant, Expr, ExprKind, Location, Operator, Stmt, StmtKind};
+use nac3ast::{Constant, Expr, ExprKind, Keyword, Location, Operator, Stmt, StmtKind, Unaryop};
 
 use crate::compute_validation::{
     ComputeType, ComputeValidation, ValidatedComputeInterface, validate_compute_roots,
@@ -14,10 +14,13 @@ use crate::registered_modules::{
 };
 use crate::source_hir::{
     ComputeCallReference, DefinitionCallEdge, DependencyRole, ExternalRead, MorphismComposition,
-    ResolvedCallTarget, SemanticFact, SourceAnchor, SourceHirKind, SourceHirNode, SourceIntrinsic,
-    SourceLiteral, SourceType, TopologyEffect, TypedSourceHir, ValueAvailability,
+    ResolvedCallTarget, SemanticFact, SourceAnchor, SourceBinding, SourceHirKind, SourceHirNode,
+    SourceIntrinsic, SourceLiteral, TopologyEffect, TypedSourceHir, ValueAvailability, ValueType,
+    ValueTypeConstructor,
 };
-use crate::typed::{TypeSignature, TypedCheckReport, TypedDefinition, TypedParameter};
+use crate::typed::{
+    ParameterKind, TypeSignature, TypedCheckReport, TypedDefinition, TypedParameter,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RequestResolutionError {
@@ -41,18 +44,10 @@ impl Display for RequestResolutionError {
 impl Error for RequestResolutionError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ResolvedSourceCallable {
-    Definition { definition_id: usize },
-    Intrinsic(SourceIntrinsic),
-    HostRpc { display_name: String },
-    Unsupported { display_name: String },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedExternalRead {
     pub id: u32,
     pub name: String,
-    pub source_type: SourceType,
+    pub value_type: ValueType,
     pub availability: ValueAvailability,
     pub value: SourceLiteral,
 }
@@ -64,20 +59,20 @@ pub trait RegisteredRequestResolver {
         anchor: &SourceAnchor,
     ) -> Result<bool, RequestResolutionError>;
 
-    fn resolve_annotation(
+    fn resolve_annotation_binding(
         &mut self,
         definition_id: usize,
         path: &str,
         anchor: &SourceAnchor,
-    ) -> Result<SourceType, RequestResolutionError>;
+    ) -> Result<SourceBinding, RequestResolutionError>;
 
-    fn resolve_callable(
+    fn resolve_callable_binding(
         &mut self,
         definition_id: usize,
         path: &str,
         bound_entry_owner: bool,
         anchor: &SourceAnchor,
-    ) -> Result<ResolvedSourceCallable, RequestResolutionError>;
+    ) -> Result<SourceBinding, RequestResolutionError>;
 
     fn resolve_exp_param(
         &mut self,
@@ -257,7 +252,10 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                 .plans
                 .get(definition_id)
                 .expect("discovered definitions always retain analysis plans");
-            let hir = if definition.role() == RegisteredDefinitionRole::Atomic {
+            let hir = if matches!(
+                definition.role(),
+                RegisteredDefinitionRole::Atomic | RegisteredDefinitionRole::Intrinsic
+            ) {
                 TypedSourceHir::new(
                     *definition_id,
                     definition.qualified_name().to_owned(),
@@ -336,7 +334,7 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                 self.compute_roots.insert(definition_id);
                 return Ok(());
             }
-            RegisteredDefinitionRole::Atomic => {
+            RegisteredDefinitionRole::Atomic | RegisteredDefinitionRole::Intrinsic => {
                 let signature = self.signature(definition_id)?;
                 self.discovery_order.push(definition_id);
                 self.plans.insert(
@@ -396,20 +394,17 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                 self.definition_anchor(&definition),
             ));
         };
-        if args.vararg.is_some()
-            || args.kwarg.is_some()
-            || !args.kwonlyargs.is_empty()
-            || !args.defaults.is_empty()
-            || args.kw_defaults.iter().any(Option::is_some)
-        {
+        if args.vararg.is_some() || args.kwarg.is_some() {
             return Err(RegisteredAnalysisError::at(
-                "registered source parameters must be required positional parameters",
+                "registered source parameters do not admit variadic arguments",
                 self.definition_anchor(&definition),
             ));
         }
 
         let entry_id = self.registered.entry_definition_id();
         let mut parameters = Vec::new();
+        let positional_count = args.posonlyargs.len() + args.args.len();
+        let defaults_start = positional_count - args.defaults.len();
         for (index, argument) in args.posonlyargs.iter().chain(&args.args).enumerate() {
             let name = argument.node.arg.to_string();
             let anchor = self.anchor(definition.module_id(), argument.location);
@@ -420,24 +415,77 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                     .map_err(|error| {
                         RegisteredAnalysisError::at(error.to_string(), anchor.clone())
                     })?;
-            let source_type = if is_entry_owner {
+            let binding = if is_entry_owner {
                 if argument.node.annotation.is_some() {
                     return Err(RegisteredAnalysisError::at(
                         "entry owner receiver must not declare a source ABI type",
                         anchor,
                     ));
                 }
-                SourceType::EntryOwner
+                SourceBinding::EntryOwner
             } else {
                 let annotation = argument.node.annotation.as_deref().ok_or_else(|| {
                     RegisteredAnalysisError::at(
                         format!("parameter `{name}` requires an admitted annotation"),
-                        anchor,
+                        anchor.clone(),
                     )
                 })?;
                 self.resolve_annotation(&definition, annotation)?
             };
-            parameters.push(TypedParameter::new(name, source_type));
+            let default = if index >= defaults_start {
+                let value_type = binding.value_type().ok_or_else(|| {
+                    RegisteredAnalysisError::at(
+                        "source authority parameters cannot declare defaults",
+                        anchor.clone(),
+                    )
+                })?;
+                Some(self.resolve_default(
+                    &definition,
+                    &args.defaults[index - defaults_start],
+                    value_type,
+                )?)
+            } else {
+                None
+            };
+            parameters.push(TypedParameter::new(
+                name,
+                binding,
+                if index < args.posonlyargs.len() {
+                    ParameterKind::PositionalOnly
+                } else {
+                    ParameterKind::PositionalOrKeyword
+                },
+                default,
+            ));
+        }
+        for (argument, default) in args.kwonlyargs.iter().zip(&args.kw_defaults) {
+            let name = argument.node.arg.to_string();
+            let anchor = self.anchor(definition.module_id(), argument.location);
+            let annotation = argument.node.annotation.as_deref().ok_or_else(|| {
+                RegisteredAnalysisError::at(
+                    format!("parameter `{name}` requires an admitted annotation"),
+                    anchor.clone(),
+                )
+            })?;
+            let binding = self.resolve_annotation(&definition, annotation)?;
+            let default = default
+                .as_ref()
+                .map(|default| {
+                    let value_type = binding.value_type().ok_or_else(|| {
+                        RegisteredAnalysisError::at(
+                            "source authority parameters cannot declare defaults",
+                            anchor.clone(),
+                        )
+                    })?;
+                    self.resolve_default(&definition, default, value_type)
+                })
+                .transpose()?;
+            parameters.push(TypedParameter::new(
+                name,
+                binding,
+                ParameterKind::KeywordOnly,
+                default,
+            ));
         }
         let returns = returns.as_deref().ok_or_else(|| {
             RegisteredAnalysisError::at(
@@ -445,12 +493,12 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                 self.definition_anchor(&definition),
             )
         })?;
-        let return_type = self.resolve_annotation(&definition, returns)?;
+        let return_type = self.resolve_value_annotation(&definition, returns)?;
         if definition_id == entry_id
             && (parameters.len() != 2
-                || parameters[0].source_type() != &SourceType::EntryOwner
-                || parameters[1].source_type() != &SourceType::ExpParams
-                || return_type != SourceType::Morphism)
+                || parameters[0].binding() != &SourceBinding::EntryOwner
+                || parameters[1].binding() != &SourceBinding::ExpParams
+                || return_type != ValueType::Morphism)
         {
             return Err(RegisteredAnalysisError::at(
                 "entry signature must be (entry owner, ExpParams) -> Morphism",
@@ -466,17 +514,116 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
         &mut self,
         definition: &RegisteredDefinition,
         annotation: &Expr,
-    ) -> Result<SourceType, RegisteredAnalysisError> {
-        let path = direct_path(annotation).ok_or_else(|| {
-            RegisteredAnalysisError::at(
-                "annotation must resolve through one direct exact binding",
+    ) -> Result<SourceBinding, RegisteredAnalysisError> {
+        let anchor = self.anchor(definition.module_id(), annotation.location);
+        match &annotation.node {
+            ExprKind::Subscript { value, slice, .. } => {
+                let path = direct_path(value).ok_or_else(|| {
+                    RegisteredAnalysisError::at(
+                        "source type constructor must resolve through one direct exact binding",
+                        anchor.clone(),
+                    )
+                })?;
+                let binding = self
+                    .resolver
+                    .resolve_annotation_binding(definition.id(), &path, &anchor)
+                    .map_err(|error| {
+                        RegisteredAnalysisError::at(error.to_string(), anchor.clone())
+                    })?;
+                let item = self.resolve_value_annotation(definition, slice)?;
+                match binding {
+                    SourceBinding::TypeConstructor(ValueTypeConstructor::List) => {
+                        Ok(SourceBinding::ValueType(ValueType::List(Box::new(item))))
+                    }
+                    SourceBinding::TypeConstructor(ValueTypeConstructor::Sequence) => Ok(
+                        SourceBinding::ValueType(ValueType::Sequence(Box::new(item))),
+                    ),
+                    _ => Err(RegisteredAnalysisError::at(
+                        format!("annotation `{path}` is not an admitted source type constructor"),
+                        anchor,
+                    )),
+                }
+            }
+            ExprKind::BinOp {
+                left,
+                op: Operator::BitOr,
+                right,
+            } if matches!(
+                left.node,
+                ExprKind::Constant {
+                    value: Constant::None,
+                    ..
+                }
+            ) =>
+            {
+                Ok(SourceBinding::ValueType(ValueType::Optional(Box::new(
+                    self.resolve_value_annotation(definition, right)?,
+                ))))
+            }
+            ExprKind::BinOp {
+                left,
+                op: Operator::BitOr,
+                right,
+            } if matches!(
+                right.node,
+                ExprKind::Constant {
+                    value: Constant::None,
+                    ..
+                }
+            ) =>
+            {
+                Ok(SourceBinding::ValueType(ValueType::Optional(Box::new(
+                    self.resolve_value_annotation(definition, left)?,
+                ))))
+            }
+            _ => {
+                let path = direct_path(annotation).ok_or_else(|| {
+                    RegisteredAnalysisError::at(
+                        "annotation must resolve through one direct exact binding",
+                        anchor.clone(),
+                    )
+                })?;
+                self.resolver
+                    .resolve_annotation_binding(definition.id(), &path, &anchor)
+                    .map_err(|error| RegisteredAnalysisError::at(error.to_string(), anchor.clone()))
+            }
+        }
+    }
+
+    fn resolve_value_annotation(
+        &mut self,
+        definition: &RegisteredDefinition,
+        annotation: &Expr,
+    ) -> Result<ValueType, RegisteredAnalysisError> {
+        match self.resolve_annotation(definition, annotation)? {
+            SourceBinding::ValueType(value_type) => Ok(value_type),
+            _ => Err(RegisteredAnalysisError::at(
+                "annotation does not denote an admitted value type",
                 self.anchor(definition.module_id(), annotation.location),
+            )),
+        }
+    }
+
+    fn resolve_default(
+        &self,
+        definition: &RegisteredDefinition,
+        expression: &Expr,
+        expected: &ValueType,
+    ) -> Result<SourceLiteral, RegisteredAnalysisError> {
+        let literal = source_literal(expression).ok_or_else(|| {
+            RegisteredAnalysisError::at(
+                "registered source defaults must be scalar literal values",
+                self.anchor(definition.module_id(), expression.location),
             )
         })?;
-        let anchor = self.anchor(definition.module_id(), annotation.location);
-        self.resolver
-            .resolve_annotation(definition.id(), &path, &anchor)
-            .map_err(|error| RegisteredAnalysisError::at(error.to_string(), anchor))
+        if source_literal_matches(&literal, expected) {
+            Ok(literal)
+        } else {
+            Err(RegisteredAnalysisError::at(
+                format!("source default does not match declared type {expected}"),
+                self.anchor(definition.module_id(), expression.location),
+            ))
+        }
     }
 
     fn validate_body(
@@ -503,10 +650,10 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
             .iter()
             .map(|parameter| parameter.name().to_owned())
             .collect::<BTreeSet<_>>();
-        let mut parameter_authorities = signature
+        let mut parameter_bindings = signature
             .parameters()
             .iter()
-            .map(|parameter| (parameter.name().to_owned(), parameter.source_type().clone()))
+            .map(|parameter| (parameter.name().to_owned(), parameter.binding().clone()))
             .collect::<BTreeMap<_, _>>();
         for (index, statement) in body.iter().enumerate() {
             match &statement.node {
@@ -521,13 +668,13 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                         definition,
                         value,
                         &locals,
-                        &parameter_authorities,
+                        &parameter_bindings,
                         calls,
                         reads,
                     )?;
                     let name = id.to_string();
                     locals.insert(name.clone());
-                    parameter_authorities.remove(&name);
+                    parameter_bindings.remove(&name);
                 }
                 StmtKind::Return {
                     value: Some(value), ..
@@ -536,7 +683,7 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                         definition,
                         value,
                         &locals,
-                        &parameter_authorities,
+                        &parameter_bindings,
                         calls,
                         reads,
                     )?;
@@ -552,7 +699,7 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
         definition: &RegisteredDefinition,
         expression: &Expr,
         locals: &BTreeSet<String>,
-        parameter_authorities: &BTreeMap<String, SourceType>,
+        parameter_bindings: &BTreeMap<String, SourceBinding>,
         calls: &mut BTreeMap<LocationKey, PlannedCall>,
         reads: &mut BTreeMap<LocationKey, ResolvedExternalRead>,
     ) -> Result<(), RegisteredAnalysisError> {
@@ -566,8 +713,8 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                             self.anchor(definition.module_id(), expression.location),
                         )
                     })?;
-                if parameter_authorities.get(&params_name) != Some(&SourceType::ExpParams)
-                    || parameter_authorities.get(&owner_name) != Some(&SourceType::EntryOwner)
+                if parameter_bindings.get(&params_name) != Some(&SourceBinding::ExpParams)
+                    || parameter_bindings.get(&owner_name) != Some(&SourceBinding::EntryOwner)
                 {
                     return Err(RegisteredAnalysisError::at(
                         "parameter reads require the exact entry owner and ExpParams parameters",
@@ -581,12 +728,14 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                     .map_err(|error| {
                         RegisteredAnalysisError::at(error.to_string(), anchor.clone())
                     })?;
-                if !matches!(resolved.source_type, SourceType::Bool | SourceType::Int32) {
+                if !matches!(
+                    resolved.value_type,
+                    ValueType::Bool | ValueType::Int32 | ValueType::Float64 | ValueType::String
+                ) {
                     return Err(RegisteredAnalysisError::at(
                         format!(
                             "ExpParam `{}` has unsupported type {}",
-                            resolved.name,
-                            resolved.source_type.as_str()
+                            resolved.name, resolved.value_type
                         ),
                         anchor,
                     ));
@@ -594,13 +743,13 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                 let external = ExternalRead::new(
                     resolved.id,
                     resolved.name.clone(),
-                    resolved.source_type.clone(),
+                    resolved.value_type.clone(),
                     resolved.availability,
                     resolved.value.clone(),
                     anchor,
                 );
                 if let Some(previous) = self.external_reads.get(&resolved.id)
-                    && (previous.source_type() != external.source_type()
+                    && (previous.value_type() != external.value_type()
                         || previous.availability() != external.availability()
                         || previous.value() != external.value())
                 {
@@ -618,35 +767,21 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                 op: Operator::RShift,
                 right,
             } => {
-                self.scan_expression(
-                    definition,
-                    left,
-                    locals,
-                    parameter_authorities,
-                    calls,
-                    reads,
-                )?;
-                self.scan_expression(
-                    definition,
-                    right,
-                    locals,
-                    parameter_authorities,
-                    calls,
-                    reads,
-                )
+                self.scan_expression(definition, left, locals, parameter_bindings, calls, reads)?;
+                self.scan_expression(definition, right, locals, parameter_bindings, calls, reads)
             }
             ExprKind::Call {
                 func,
                 args,
                 keywords,
             } => {
-                if !keywords.is_empty()
-                    || args
-                        .iter()
-                        .any(|argument| matches!(argument.node, ExprKind::Starred { .. }))
+                if args
+                    .iter()
+                    .any(|argument| matches!(argument.node, ExprKind::Starred { .. }))
+                    || keywords.iter().any(|keyword| keyword.node.arg.is_none())
                 {
                     return Err(RegisteredAnalysisError::at(
-                        "argument unpacking and keyword calls are outside the initial source subset",
+                        "argument unpacking is outside the initial source subset",
                         self.anchor(definition.module_id(), expression.location),
                     ));
                 }
@@ -658,7 +793,7 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                 })?;
                 let root = path.split('.').next().expect("direct paths are non-empty");
                 let bound_entry_owner =
-                    parameter_authorities.get(root) == Some(&SourceType::EntryOwner);
+                    parameter_bindings.get(root) == Some(&SourceBinding::EntryOwner);
                 if locals.contains(root) && !bound_entry_owner {
                     return Err(RegisteredAnalysisError::at(
                         "indirect or dynamically selected calls are unsupported",
@@ -679,21 +814,26 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                 } else {
                     match self
                         .resolver
-                        .resolve_callable(definition.id(), &path, bound_entry_owner, &anchor)
+                        .resolve_callable_binding(
+                            definition.id(),
+                            &path,
+                            bound_entry_owner,
+                            &anchor,
+                        )
                         .map_err(|error| {
                             RegisteredAnalysisError::at(error.to_string(), anchor.clone())
                         })? {
-                        ResolvedSourceCallable::Definition { definition_id } => self
-                            .plan_registered_call(
-                                definition.id(),
-                                definition_id,
-                                bound_entry_owner,
-                                &anchor,
-                            )?,
-                        ResolvedSourceCallable::Intrinsic(intrinsic) => {
-                            PlannedCall::Intrinsic(intrinsic)
-                        }
-                        ResolvedSourceCallable::HostRpc { display_name } => {
+                        SourceBinding::Definition {
+                            definition_id,
+                            role: _,
+                        } => self.plan_registered_call(
+                            definition.id(),
+                            definition_id,
+                            bound_entry_owner,
+                            &anchor,
+                        )?,
+                        SourceBinding::Intrinsic(intrinsic) => PlannedCall::Intrinsic(intrinsic),
+                        SourceBinding::HostRpc { display_name } => {
                             return Err(RegisteredAnalysisError::at(
                                 format!(
                                     "unimplemented: host RPC calls are not implemented ({display_name})"
@@ -701,11 +841,21 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                                 anchor,
                             ));
                         }
-                        ResolvedSourceCallable::Unsupported { display_name } => {
+                        SourceBinding::Unsupported { display_name } => {
                             return Err(RegisteredAnalysisError::at(
                                 format!(
                                     "indirect or dynamically selected callable `{display_name}` is unsupported"
                                 ),
+                                anchor,
+                            ));
+                        }
+                        SourceBinding::ValueType(_)
+                        | SourceBinding::TypeConstructor(_)
+                        | SourceBinding::EntryOwner
+                        | SourceBinding::ExpParams
+                        | SourceBinding::ExpParam { .. } => {
+                            return Err(RegisteredAnalysisError::at(
+                                format!("source binding `{path}` is not callable"),
                                 anchor,
                             ));
                         }
@@ -725,7 +875,17 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                         definition,
                         argument,
                         locals,
-                        parameter_authorities,
+                        parameter_bindings,
+                        calls,
+                        reads,
+                    )?;
+                }
+                for keyword in keywords {
+                    self.scan_expression(
+                        definition,
+                        &keyword.node.value,
+                        locals,
+                        parameter_bindings,
                         calls,
                         reads,
                     )?;
@@ -808,7 +968,20 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                 self.definition_anchor(definition),
             ));
         };
-        Ok(body)
+        Ok(match body.first().map(|statement| &statement.node) {
+            Some(StmtKind::Expr { value, .. })
+                if matches!(
+                    value.node,
+                    ExprKind::Constant {
+                        value: Constant::Str(_),
+                        ..
+                    }
+                ) =>
+            {
+                &body[1..]
+            }
+            _ => body,
+        })
     }
 
     fn definition(&self, id: usize) -> Result<&RegisteredDefinition, RegisteredAnalysisError> {
@@ -842,19 +1015,30 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
     }
 }
 
-#[derive(Clone)]
-struct LocalBinding {
-    node_id: u32,
-    source_type: SourceType,
-    availability: ValueAvailability,
-    topology_effect: TopologyEffect,
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LocalBinding {
+    Value {
+        node_id: u32,
+        value_type: ValueType,
+        availability: ValueAvailability,
+        topology_effect: TopologyEffect,
+    },
+    Source(SourceBinding),
 }
 
 struct LoweredExpression {
     node_id: u32,
-    source_type: SourceType,
+    value_type: ValueType,
     availability: ValueAvailability,
     topology_effect: TopologyEffect,
+}
+
+#[derive(Clone)]
+struct CallParameter {
+    name: String,
+    binding: SourceBinding,
+    kind: ParameterKind,
+    has_default: bool,
 }
 
 struct DefinitionLowerer<'a, 'b> {
@@ -897,15 +1081,17 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
 
     fn lower(mut self, body: &[Stmt]) -> Result<TypedSourceHir, RegisteredAnalysisError> {
         for parameter in self.plan.signature.parameters() {
-            self.locals.insert(
-                parameter.name().to_owned(),
-                LocalBinding {
+            let binding = if let Some(value_type) = parameter.value_type() {
+                LocalBinding::Value {
                     node_id: u32::MAX,
-                    source_type: parameter.source_type().clone(),
+                    value_type: value_type.clone(),
                     availability: ValueAvailability::Compile,
                     topology_effect: TopologyEffect::Empty,
-                },
-            );
+                }
+            } else {
+                LocalBinding::Source(parameter.binding().clone())
+            };
+            self.locals.insert(parameter.name().to_owned(), binding);
         }
         for statement in body {
             let root = self.lower_statement(statement)?;
@@ -930,8 +1116,8 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                 };
                 let value = self.lower_expression(value)?;
                 let target_anchor = self.anchor(targets[0].location);
-                let mut target_fact = SemanticFact::new(
-                    value.source_type.clone(),
+                let mut target_fact = SemanticFact::value(
+                    value.value_type.clone(),
                     value.availability,
                     TopologyEffect::Empty,
                 );
@@ -947,15 +1133,15 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                 );
                 self.locals.insert(
                     id.to_string(),
-                    LocalBinding {
+                    LocalBinding::Value {
                         node_id: value.node_id,
-                        source_type: value.source_type,
+                        value_type: value.value_type,
                         availability: value.availability,
                         topology_effect: value.topology_effect,
                     },
                 );
                 let fact =
-                    SemanticFact::new(SourceType::Unit, value.availability, value.topology_effect);
+                    SemanticFact::value(ValueType::Unit, value.availability, value.topology_effect);
                 Ok(self.push_node(
                     SourceHirKind::Assignment,
                     None,
@@ -972,19 +1158,22 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                 let value = self.lower_expression(value)?;
                 self.require_type(
                     self.plan.signature.return_type(),
-                    &value.source_type,
+                    &value.value_type,
                     value.node_id,
                 )?;
                 self.add_role(
                     value.node_id,
-                    if value.source_type == SourceType::Morphism {
+                    if value.value_type == ValueType::Morphism {
                         DependencyRole::Structural
                     } else {
                         DependencyRole::Relocatable
                     },
                 );
-                let fact =
-                    SemanticFact::new(value.source_type, value.availability, value.topology_effect);
+                let fact = SemanticFact::value(
+                    value.value_type,
+                    value.availability,
+                    value.topology_effect,
+                );
                 Ok(self.push_node(
                     SourceHirKind::Return,
                     None,
@@ -1012,13 +1201,22 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                         self.anchor(expression.location),
                     )
                 })?;
-                let mut fact = SemanticFact::new(
-                    binding.source_type.clone(),
-                    binding.availability,
-                    binding.topology_effect,
-                );
-                if binding.node_id != u32::MAX {
-                    fact.set_resolved_node(binding.node_id);
+                let LocalBinding::Value {
+                    node_id: resolved_node,
+                    value_type,
+                    availability,
+                    topology_effect,
+                } = binding
+                else {
+                    return Err(RegisteredAnalysisError::at(
+                        format!("source authority `{name}` is not an ordinary value"),
+                        self.anchor(expression.location),
+                    ));
+                };
+                let mut fact =
+                    SemanticFact::value(value_type.clone(), availability, topology_effect);
+                if resolved_node != u32::MAX {
+                    fact.set_resolved_node(resolved_node);
                 }
                 let node_id = self.push_node(
                     SourceHirKind::Name,
@@ -1031,14 +1229,15 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                 );
                 Ok(LoweredExpression {
                     node_id,
-                    source_type: binding.source_type,
-                    availability: binding.availability,
-                    topology_effect: binding.topology_effect,
+                    value_type,
+                    availability,
+                    topology_effect,
                 })
             }
             ExprKind::Constant { value, .. } => {
-                let (source_type, literal) = match value {
-                    Constant::Bool(value) => (SourceType::Bool, SourceLiteral::Bool(*value)),
+                let (value_type, literal) = match value {
+                    Constant::None => (ValueType::None, SourceLiteral::None),
+                    Constant::Bool(value) => (ValueType::Bool, SourceLiteral::Bool(*value)),
                     Constant::Int(value) => {
                         let value = i32::try_from(*value).map_err(|_| {
                             RegisteredAnalysisError::at(
@@ -1046,7 +1245,13 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                                 self.anchor(expression.location),
                             )
                         })?;
-                        (SourceType::Int32, SourceLiteral::Int32(value))
+                        (ValueType::Int32, SourceLiteral::Int32(value))
+                    }
+                    Constant::Float(value) => {
+                        (ValueType::Float64, SourceLiteral::Float64(value.to_bits()))
+                    }
+                    Constant::Str(value) => {
+                        (ValueType::String, SourceLiteral::String(value.clone()))
                     }
                     _ => {
                         return Err(RegisteredAnalysisError::at(
@@ -1055,8 +1260,8 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                         ));
                     }
                 };
-                let fact = SemanticFact::new(
-                    source_type.clone(),
+                let fact = SemanticFact::value(
+                    value_type.clone(),
                     ValueAvailability::Compile,
                     TopologyEffect::Empty,
                 );
@@ -1071,7 +1276,7 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                 );
                 Ok(LoweredExpression {
                     node_id,
-                    source_type,
+                    value_type,
                     availability: ValueAvailability::Compile,
                     topology_effect: TopologyEffect::Empty,
                 })
@@ -1086,13 +1291,16 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
             } => {
                 let left = self.lower_expression(left)?;
                 let right = self.lower_expression(right)?;
-                self.require_type(&SourceType::Morphism, &left.source_type, left.node_id)?;
-                self.require_type(&SourceType::Morphism, &right.source_type, right.node_id)?;
+                self.require_type(&ValueType::Morphism, &left.value_type, left.node_id)?;
+                self.require_type(&ValueType::Morphism, &right.value_type, right.node_id)?;
                 self.add_role(left.node_id, DependencyRole::Structural);
                 self.add_role(right.node_id, DependencyRole::Structural);
                 let availability = left.availability.max(right.availability);
-                let fact =
-                    SemanticFact::new(SourceType::Morphism, availability, TopologyEffect::Morphism);
+                let fact = SemanticFact::value(
+                    ValueType::Morphism,
+                    availability,
+                    TopologyEffect::Morphism,
+                );
                 let node_id = self.push_node(
                     SourceHirKind::Binary,
                     None,
@@ -1104,12 +1312,16 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                 );
                 Ok(LoweredExpression {
                     node_id,
-                    source_type: SourceType::Morphism,
+                    value_type: ValueType::Morphism,
                     availability,
                     topology_effect: TopologyEffect::Morphism,
                 })
             }
-            ExprKind::Call { func, args, .. } => self.lower_call(expression, func, args),
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => self.lower_call(expression, func, args, keywords),
             _ => unreachable!("the discovery pass rejected unsupported expressions"),
         }
     }
@@ -1127,16 +1339,24 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
             .external_reads
             .get(&LocationKey::from(expression.location))
             .expect("every admitted ExpParam read retains its exact resolution");
-        let params = self.lower_expression(value)?;
-        let owner_binding = self
-            .locals
-            .get(&owner_name)
-            .expect("entry owner parameters are retained")
-            .clone();
-        let owner_fact = SemanticFact::new(
-            SourceType::EntryOwner,
-            ValueAvailability::Compile,
-            TopologyEffect::Empty,
+        assert_eq!(
+            self.locals.get(&params_name),
+            Some(&LocalBinding::Source(SourceBinding::ExpParams)),
+            "the discovery pass retained exact ExpParams authority",
+        );
+        assert_eq!(
+            self.locals.get(&owner_name),
+            Some(&LocalBinding::Source(SourceBinding::EntryOwner)),
+            "the discovery pass retained exact entry-owner authority",
+        );
+        let params = self.push_node(
+            SourceHirKind::Name,
+            Some(params_name.clone()),
+            None,
+            None,
+            &[],
+            self.anchor(value.location),
+            SemanticFact::binding(SourceBinding::ExpParams),
         );
         let owner = self.push_node(
             SourceHirKind::Name,
@@ -1145,16 +1365,8 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
             None,
             &[],
             self.anchor(slice.location),
-            owner_fact,
+            SemanticFact::binding(SourceBinding::EntryOwner),
         );
-        let mut attribute_fact = SemanticFact::new(
-            SourceType::ExpParam(Box::new(resolved.source_type.clone())),
-            ValueAvailability::Compile,
-            TopologyEffect::Empty,
-        );
-        if owner_binding.node_id != u32::MAX {
-            attribute_fact.set_resolved_node(owner_binding.node_id);
-        }
         let attribute_node = self.push_node(
             SourceHirKind::Attribute,
             Some(format!("{owner_name}.{attribute}")),
@@ -1162,10 +1374,14 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
             None,
             &[owner],
             self.anchor(slice.location),
-            attribute_fact,
+            SemanticFact::binding(SourceBinding::ExpParam {
+                id: resolved.id,
+                name: resolved.name.clone(),
+                value_type: resolved.value_type.clone(),
+            }),
         );
-        let mut fact = SemanticFact::new(
-            resolved.source_type.clone(),
+        let mut fact = SemanticFact::value(
+            resolved.value_type.clone(),
             resolved.availability,
             TopologyEffect::Empty,
         );
@@ -1175,13 +1391,13 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
             Some(format!("{params_name}[{owner_name}.{attribute}]")),
             None,
             None,
-            &[params.node_id, attribute_node],
+            &[params, attribute_node],
             self.anchor(expression.location),
             fact,
         );
         Ok(LoweredExpression {
             node_id,
-            source_type: resolved.source_type.clone(),
+            value_type: resolved.value_type.clone(),
             availability: resolved.availability,
             topology_effect: TopologyEffect::Empty,
         })
@@ -1192,6 +1408,7 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
         expression: &Expr,
         function: &Expr,
         arguments: &[Expr],
+        keywords: &[Keyword],
     ) -> Result<LoweredExpression, RegisteredAnalysisError> {
         let path = direct_path(function).expect("the discovery pass admitted only direct calls");
         let planned = self
@@ -1200,11 +1417,22 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
             .get(&LocationKey::from(expression.location))
             .expect("every admitted call retains exact resolution")
             .clone();
-        let callee_fact = SemanticFact::new(
-            SourceType::Callable,
-            ValueAvailability::Compile,
-            TopologyEffect::Empty,
-        );
+        let callee_binding = match &planned {
+            PlannedCall::Intrinsic(intrinsic) => SourceBinding::Intrinsic(*intrinsic),
+            PlannedCall::Definition {
+                definition_id,
+                role,
+                ..
+            } => SourceBinding::Definition {
+                definition_id: *definition_id,
+                role: *role,
+            },
+            PlannedCall::Compute { definition_id, .. } => SourceBinding::Definition {
+                definition_id: *definition_id,
+                role: RegisteredDefinitionRole::Compute,
+            },
+        };
+        let callee_fact = SemanticFact::binding(callee_binding);
         let callee = self.push_node(
             if path.contains('.') {
                 SourceHirKind::Attribute
@@ -1219,26 +1447,39 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
             callee_fact,
         );
         self.add_role(callee, DependencyRole::Structural);
-        let lowered_arguments = arguments
-            .iter()
-            .map(|argument| self.lower_expression(argument))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut lowered_arguments = Vec::with_capacity(arguments.len() + keywords.len());
+        for argument in arguments {
+            lowered_arguments.push(self.lower_expression(argument)?);
+        }
+        for keyword in keywords {
+            lowered_arguments.push(self.lower_expression(&keyword.node.value)?);
+        }
         let availability = lowered_arguments
             .iter()
             .map(|argument| argument.availability)
             .max()
             .unwrap_or(ValueAvailability::Compile);
-        let (parameter_types, result_type, topology_effect, resolved_call) = match planned {
+        let (parameters, result_type, topology_effect, resolved_call) = match planned {
             PlannedCall::Intrinsic(intrinsic) => {
                 let (parameters, result, effect) = match intrinsic {
                     SourceIntrinsic::Cycles => (
-                        vec![SourceType::Int32],
-                        SourceType::Duration,
+                        vec![CallParameter {
+                            name: "count".to_owned(),
+                            binding: SourceBinding::ValueType(ValueType::Int32),
+                            kind: ParameterKind::PositionalOrKeyword,
+                            has_default: false,
+                        }],
+                        ValueType::Duration,
                         TopologyEffect::Empty,
                     ),
                     SourceIntrinsic::Identity => (
-                        vec![SourceType::Duration],
-                        SourceType::Morphism,
+                        vec![CallParameter {
+                            name: "duration".to_owned(),
+                            binding: SourceBinding::ValueType(ValueType::Duration),
+                            kind: ParameterKind::PositionalOrKeyword,
+                            has_default: false,
+                        }],
+                        ValueType::Morphism,
                         TopologyEffect::Morphism,
                     ),
                 };
@@ -1258,17 +1499,22 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                     .signatures
                     .get(&definition_id)
                     .expect("reachable registered calls retain signatures");
+                let mut parameters = Vec::new();
+                for parameter in signature.parameters() {
+                    if bound_entry_owner && parameter.binding() == &SourceBinding::EntryOwner {
+                        continue;
+                    }
+                    parameters.push(CallParameter {
+                        name: parameter.name().to_owned(),
+                        binding: parameter.binding().clone(),
+                        kind: parameter.kind(),
+                        has_default: parameter.default().is_some(),
+                    });
+                }
                 (
-                    signature
-                        .parameters()
-                        .iter()
-                        .filter(|parameter| {
-                            !bound_entry_owner || parameter.source_type() != &SourceType::EntryOwner
-                        })
-                        .map(|parameter| parameter.source_type().clone())
-                        .collect(),
+                    parameters,
                     signature.return_type().clone(),
-                    if signature.return_type() == &SourceType::Morphism {
+                    if signature.return_type() == &ValueType::Morphism {
                         TopologyEffect::Morphism
                     } else {
                         TopologyEffect::Empty
@@ -1293,9 +1539,15 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                     .parameters()
                     .iter()
                     .copied()
-                    .map(source_type_from_compute)
+                    .enumerate()
+                    .map(|(index, value_type)| CallParameter {
+                        name: format!("arg{index}"),
+                        binding: SourceBinding::ValueType(value_type_from_compute(value_type)),
+                        kind: ParameterKind::PositionalOnly,
+                        has_default: false,
+                    })
                     .collect::<Vec<_>>();
-                let result = source_type_from_compute(interface.result());
+                let result = value_type_from_compute(interface.result());
                 let provenance = interface.provenance();
                 let reference = ComputeCallReference::new(
                     work_id,
@@ -1322,21 +1574,34 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                 )
             }
         };
-        if parameter_types.len() != lowered_arguments.len() {
-            return Err(RegisteredAnalysisError::at(
-                format!(
-                    "call expects {} positional arguments, found {}",
-                    parameter_types.len(),
-                    lowered_arguments.len()
-                ),
-                self.anchor(expression.location),
-            ));
-        }
+        let keyword_names = keywords
+            .iter()
+            .map(|keyword| {
+                keyword
+                    .node
+                    .arg
+                    .as_ref()
+                    .expect("the discovery pass rejected keyword unpacking")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        let parameter_types = bind_call_arguments(
+            &parameters,
+            arguments.len(),
+            &keyword_names,
+            self.anchor(expression.location),
+        )?;
         for (expected, actual) in parameter_types.iter().zip(&lowered_arguments) {
-            self.require_type(expected, &actual.source_type, actual.node_id)?;
+            let expected = expected.value_type().ok_or_else(|| {
+                RegisteredAnalysisError::at(
+                    "source-authority parameters require their exact bound source value",
+                    self.nodes[actual.node_id as usize].anchor().clone(),
+                )
+            })?;
+            self.require_type(expected, &actual.value_type, actual.node_id)?;
             self.add_role(
                 actual.node_id,
-                if actual.source_type == SourceType::Morphism {
+                if actual.value_type == ValueType::Morphism {
                     DependencyRole::Structural
                 } else {
                     DependencyRole::Relocatable
@@ -1346,7 +1611,7 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
         let mut children = Vec::with_capacity(lowered_arguments.len() + 1);
         children.push(callee);
         children.extend(lowered_arguments.iter().map(|argument| argument.node_id));
-        let mut fact = SemanticFact::new(result_type.clone(), availability, topology_effect);
+        let mut fact = SemanticFact::value(result_type.clone(), availability, topology_effect);
         fact.set_resolved_call(resolved_call);
         let node_id = self.push_node(
             SourceHirKind::Call,
@@ -1359,7 +1624,7 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
         );
         Ok(LoweredExpression {
             node_id,
-            source_type: result_type,
+            value_type: result_type,
             availability,
             topology_effect,
         })
@@ -1367,16 +1632,18 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
 
     fn require_type(
         &self,
-        expected: &SourceType,
-        found: &SourceType,
+        expected: &ValueType,
+        found: &ValueType,
         node_id: u32,
     ) -> Result<(), RegisteredAnalysisError> {
-        if expected == found {
+        if expected == found
+            || matches!(expected, ValueType::Optional(inner) if found == inner.as_ref() || found == &ValueType::None)
+        {
             return Ok(());
         }
         Err(RegisteredAnalysisError::at(
             format!(
-                "source type mismatch: expected {}, found {}",
+                "value type mismatch: expected {}, found {}",
                 expected.as_str(),
                 found.as_str()
             ),
@@ -1400,7 +1667,7 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
         self.edges.extend_from_slice(children);
         let edge_count = u32::try_from(children.len()).expect("Source HIR node arity exceeds u32");
         let node_id = u32::try_from(self.nodes.len()).expect("Source HIR node count exceeds u32");
-        fact.add_role(default_role(fact.source_type()));
+        fact.add_role(default_role(fact.value_type()));
         self.nodes.push(SourceHirNode::new(
             kind,
             symbol,
@@ -1470,21 +1737,127 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
     }
 }
 
-fn default_role(source_type: &SourceType) -> DependencyRole {
-    if matches!(
-        source_type,
-        SourceType::Morphism | SourceType::Callable | SourceType::Unit
-    ) {
+fn bind_call_arguments(
+    parameters: &[CallParameter],
+    positional_count: usize,
+    keyword_names: &[String],
+    anchor: SourceAnchor,
+) -> Result<Vec<SourceBinding>, RegisteredAnalysisError> {
+    let positional_parameters = parameters
+        .iter()
+        .enumerate()
+        .filter(|(_, parameter)| parameter.kind != ParameterKind::KeywordOnly)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if positional_count > positional_parameters.len() {
+        return Err(RegisteredAnalysisError::at(
+            format!(
+                "call accepts at most {} positional arguments, found {positional_count}",
+                positional_parameters.len()
+            ),
+            anchor,
+        ));
+    }
+
+    let mut bound = vec![false; parameters.len()];
+    let mut expected = Vec::with_capacity(positional_count + keyword_names.len());
+    for parameter_id in positional_parameters.into_iter().take(positional_count) {
+        bound[parameter_id] = true;
+        expected.push(parameters[parameter_id].binding.clone());
+    }
+    for name in keyword_names {
+        let parameter_id = parameters
+            .iter()
+            .position(|parameter| parameter.name == *name)
+            .ok_or_else(|| {
+                RegisteredAnalysisError::at(
+                    format!("call has no parameter named `{name}`"),
+                    anchor.clone(),
+                )
+            })?;
+        let parameter = &parameters[parameter_id];
+        if parameter.kind == ParameterKind::PositionalOnly {
+            return Err(RegisteredAnalysisError::at(
+                format!("positional-only parameter `{name}` cannot be passed by keyword"),
+                anchor,
+            ));
+        }
+        if bound[parameter_id] {
+            return Err(RegisteredAnalysisError::at(
+                format!("parameter `{name}` is supplied more than once"),
+                anchor,
+            ));
+        }
+        bound[parameter_id] = true;
+        expected.push(parameter.binding.clone());
+    }
+    let missing = parameters
+        .iter()
+        .zip(&bound)
+        .filter(|(parameter, bound)| !**bound && !parameter.has_default)
+        .map(|(parameter, _)| parameter.name.as_str())
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(RegisteredAnalysisError::at(
+            format!(
+                "call is missing required parameters: {}",
+                missing.join(", ")
+            ),
+            anchor,
+        ));
+    }
+    Ok(expected)
+}
+
+fn source_literal(expression: &Expr) -> Option<SourceLiteral> {
+    match &expression.node {
+        ExprKind::Constant { value, .. } => match value {
+            Constant::None => Some(SourceLiteral::None),
+            Constant::Bool(value) => Some(SourceLiteral::Bool(*value)),
+            Constant::Int(value) => i32::try_from(*value).ok().map(SourceLiteral::Int32),
+            Constant::Float(value) => Some(SourceLiteral::Float64(value.to_bits())),
+            Constant::Str(value) => Some(SourceLiteral::String(value.clone())),
+            _ => None,
+        },
+        ExprKind::UnaryOp { op, operand } => match (op, source_literal(operand)?) {
+            (Unaryop::UAdd, SourceLiteral::Int32(value)) => Some(SourceLiteral::Int32(value)),
+            (Unaryop::USub, SourceLiteral::Int32(value)) => {
+                value.checked_neg().map(SourceLiteral::Int32)
+            }
+            (Unaryop::UAdd, SourceLiteral::Float64(value)) => Some(SourceLiteral::Float64(value)),
+            (Unaryop::USub, SourceLiteral::Float64(value)) => {
+                Some(SourceLiteral::Float64((-f64::from_bits(value)).to_bits()))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn source_literal_matches(literal: &SourceLiteral, expected: &ValueType) -> bool {
+    match (literal, expected) {
+        (SourceLiteral::None, ValueType::None | ValueType::Optional(_))
+        | (SourceLiteral::Bool(_), ValueType::Bool)
+        | (SourceLiteral::Int32(_), ValueType::Int32)
+        | (SourceLiteral::Float64(_), ValueType::Float64)
+        | (SourceLiteral::String(_), ValueType::String) => true,
+        (_, ValueType::Optional(inner)) => source_literal_matches(literal, inner),
+        _ => false,
+    }
+}
+
+fn default_role(value_type: Option<&ValueType>) -> DependencyRole {
+    if value_type.is_none() || matches!(value_type, Some(ValueType::Morphism | ValueType::Unit)) {
         DependencyRole::Structural
     } else {
         DependencyRole::Relocatable
     }
 }
 
-fn source_type_from_compute(compute_type: ComputeType) -> SourceType {
+fn value_type_from_compute(compute_type: ComputeType) -> ValueType {
     match compute_type {
-        ComputeType::Bool => SourceType::Bool,
-        ComputeType::Int32 => SourceType::Int32,
+        ComputeType::Bool => ValueType::Bool,
+        ComputeType::Int32 => ValueType::Int32,
     }
 }
 

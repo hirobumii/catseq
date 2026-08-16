@@ -3,6 +3,18 @@
 CatSeq separates pure realtime value computation from hardware timing and
 structured control while preserving explicit interfaces between those domains.
 
+## Sequencing language
+
+**Morphism**:
+The single resource-indexed sequencing value sort, whether or not its Resource
+Slots have been bound.
+_Avoid_: MorphismDef, MorphismTemplate, MorphismFamily
+
+**Morphism Definition**:
+A restricted `@morphism` source declaration whose application produces a
+Morphism; it is a declaration role, not another value type.
+_Avoid_: Morphism Template
+
 ## Compute language
 
 **Compute Profile**:

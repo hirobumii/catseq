@@ -13,7 +13,7 @@ pub use compute_validation::{
 };
 pub use registered_analysis::{
     RegisteredAnalysisError, RegisteredEntryAnalysis, RegisteredRequestResolver,
-    RequestResolutionError, ResolvedExternalRead, ResolvedSourceCallable, analyze_registered_entry,
+    RequestResolutionError, ResolvedExternalRead, analyze_registered_entry,
 };
 pub use registered_modules::{
     BuiltinNameBindingInput, DefinitionNameBindingInput, DefinitionRegistrationInput,
@@ -23,7 +23,8 @@ pub use registered_modules::{
 };
 pub use source_hir::{
     ComputeCallReference, DefinitionCallEdge, DependencyRole, ExternalRead, MorphismComposition,
-    ResolvedCallTarget, SemanticFact, SourceAnchor, SourceHirKind, SourceHirNode, SourceIntrinsic,
-    SourceLiteral, SourceType, TopologyEffect, TypedSourceHir, ValueAvailability,
+    ResolvedCallTarget, SemanticFact, SourceAnchor, SourceBinding, SourceHirKind, SourceHirNode,
+    SourceIntrinsic, SourceLiteral, TopologyEffect, TypedSourceHir, ValueAvailability, ValueType,
+    ValueTypeConstructor,
 };
-pub use typed::{TypeSignature, TypedCheckReport, TypedDefinition, TypedParameter};
+pub use typed::{ParameterKind, TypeSignature, TypedCheckReport, TypedDefinition, TypedParameter};

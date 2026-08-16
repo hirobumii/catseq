@@ -5,12 +5,13 @@ interpreted by the registered-source frontend and must not be evaluated by the
 Python host runtime.
 """
 
-from ..morphism import MorphismDef
-from ..morphism.core import compiler_only
+from ..morphism import Morphism
+from ..morphism.core import compiler_intrinsic, compiler_only
 from ..time_utils import Duration
 
 
-def hold(duration: Duration) -> MorphismDef:
+@compiler_intrinsic("catseq.hardware.common.hold")
+def hold(duration: Duration) -> Morphism:
     """Move channel-local logical time without changing channel state."""
     compiler_only("catseq.hardware.common.hold")
 

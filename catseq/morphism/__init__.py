@@ -4,13 +4,11 @@ from .core import (
     CompilerDefinition,
     CompilerOnlyError,
     Morphism,
-    MorphismDef,
-    MorphismTemplate,
     atomic_morphism,
     compute,
     identity,
     kernel,
-    morphism_template,
+    morphism,
     repeat_morphism,
 )
 
@@ -18,12 +16,10 @@ __all__ = [
     "CompilerDefinition",
     "CompilerOnlyError",
     "Morphism",
-    "MorphismDef",
-    "MorphismTemplate",
     "atomic_morphism",
     "compute",
     "identity",
     "kernel",
-    "morphism_template",
+    "morphism",
     "repeat_morphism",
 ]

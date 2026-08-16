@@ -1,6 +1,7 @@
 //! Python-free typed source facts produced from exact registered definitions.
 
 use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter};
 
 use crate::compute_validation::ComputeType;
 use crate::registered_modules::RegisteredDefinitionRole;
@@ -46,38 +47,92 @@ impl SourceAnchor {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-pub enum SourceType {
+pub enum ValueType {
     Unit,
+    None,
     Bool,
     Int32,
+    Float64,
+    String,
     Duration,
     Morphism,
-    Callable,
-    EntryOwner,
-    ExpParams,
-    ExpParam(Box<SourceType>),
+    Optional(Box<ValueType>),
+    List(Box<ValueType>),
+    Sequence(Box<ValueType>),
+    Named(String),
 }
 
-impl SourceType {
-    pub const fn as_str(&self) -> &'static str {
+impl ValueType {
+    pub fn as_str(&self) -> String {
         match self {
-            Self::Unit => "unit",
-            Self::Bool => "bool",
-            Self::Int32 => "i32",
-            Self::Duration => "duration",
-            Self::Morphism => "morphism",
-            Self::Callable => "callable",
-            Self::EntryOwner => "entry_owner",
-            Self::ExpParams => "exp_params",
-            Self::ExpParam(_) => "exp_param",
+            Self::Unit => "unit".to_owned(),
+            Self::None => "none".to_owned(),
+            Self::Bool => "bool".to_owned(),
+            Self::Int32 => "i32".to_owned(),
+            Self::Float64 => "f64".to_owned(),
+            Self::String => "str".to_owned(),
+            Self::Duration => "duration".to_owned(),
+            Self::Morphism => "morphism".to_owned(),
+            Self::Optional(value) => format!("optional[{value}]"),
+            Self::List(value) => format!("list[{value}]"),
+            Self::Sequence(value) => format!("sequence[{value}]"),
+            Self::Named(name) => name.clone(),
+        }
+    }
+}
+
+impl Display for ValueType {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ValueTypeConstructor {
+    List,
+    Sequence,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SourceBinding {
+    ValueType(ValueType),
+    TypeConstructor(ValueTypeConstructor),
+    EntryOwner,
+    ExpParams,
+    ExpParam {
+        id: u32,
+        name: String,
+        value_type: ValueType,
+    },
+    Definition {
+        definition_id: usize,
+        role: RegisteredDefinitionRole,
+    },
+    Intrinsic(SourceIntrinsic),
+    HostRpc {
+        display_name: String,
+    },
+    Unsupported {
+        display_name: String,
+    },
+}
+
+impl SourceBinding {
+    pub const fn value_type(&self) -> Option<&ValueType> {
+        match self {
+            Self::ValueType(value_type) => Some(value_type),
+            _ => None,
         }
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SourceLiteral {
+    None,
     Bool(bool),
     Int32(i32),
+    Float64(u64),
+    String(String),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -339,7 +394,8 @@ impl SourceHirNode {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SemanticFact {
-    source_type: SourceType,
+    value_type: Option<ValueType>,
+    source_binding: Option<SourceBinding>,
     availability: ValueAvailability,
     roles: Vec<DependencyRole>,
     topology_effect: TopologyEffect,
@@ -349,13 +405,14 @@ pub struct SemanticFact {
 }
 
 impl SemanticFact {
-    pub(crate) fn new(
-        source_type: SourceType,
+    pub(crate) fn value(
+        value_type: ValueType,
         availability: ValueAvailability,
         topology_effect: TopologyEffect,
     ) -> Self {
         Self {
-            source_type,
+            value_type: Some(value_type),
+            source_binding: None,
             availability,
             roles: Vec::new(),
             topology_effect,
@@ -365,8 +422,25 @@ impl SemanticFact {
         }
     }
 
-    pub fn source_type(&self) -> &SourceType {
-        &self.source_type
+    pub(crate) fn binding(binding: SourceBinding) -> Self {
+        Self {
+            value_type: None,
+            source_binding: Some(binding),
+            availability: ValueAvailability::Compile,
+            roles: Vec::new(),
+            topology_effect: TopologyEffect::Empty,
+            resolved_node: None,
+            resolved_call: None,
+            external_read_id: None,
+        }
+    }
+
+    pub const fn value_type(&self) -> Option<&ValueType> {
+        self.value_type.as_ref()
+    }
+
+    pub const fn source_binding(&self) -> Option<&SourceBinding> {
+        self.source_binding.as_ref()
     }
 
     pub const fn availability(&self) -> ValueAvailability {
@@ -472,7 +546,7 @@ impl TypedSourceHir {
 pub struct ExternalRead {
     id: u32,
     name: String,
-    source_type: SourceType,
+    value_type: ValueType,
     availability: ValueAvailability,
     value: SourceLiteral,
     anchor: SourceAnchor,
@@ -482,7 +556,7 @@ impl ExternalRead {
     pub(crate) fn new(
         id: u32,
         name: String,
-        source_type: SourceType,
+        value_type: ValueType,
         availability: ValueAvailability,
         value: SourceLiteral,
         anchor: SourceAnchor,
@@ -490,7 +564,7 @@ impl ExternalRead {
         Self {
             id,
             name,
-            source_type,
+            value_type,
             availability,
             value,
             anchor,
@@ -505,8 +579,8 @@ impl ExternalRead {
         &self.name
     }
 
-    pub const fn source_type(&self) -> &SourceType {
-        &self.source_type
+    pub const fn value_type(&self) -> &ValueType {
+        &self.value_type
     }
 
     pub const fn availability(&self) -> ValueAvailability {

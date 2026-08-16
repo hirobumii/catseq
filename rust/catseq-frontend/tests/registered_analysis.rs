@@ -5,8 +5,8 @@ use catseq_frontend::{
     DefinitionNameBindingInput, DefinitionRegistrationInput, DependencyRole,
     ModuleRegistrationInput, MorphismComposition, RegisteredDefinitionRole,
     RegisteredKernelModules, RegisteredRequestResolver, RegistrationInput, RequestResolutionError,
-    ResolvedExternalRead, ResolvedSourceCallable, SourceHirKind, SourceIntrinsic, SourceLiteral,
-    SourceType, TopologyEffect, ValueAvailability, analyze_registered_entry,
+    ResolvedExternalRead, SourceBinding, SourceHirKind, SourceIntrinsic, SourceLiteral,
+    TopologyEffect, ValueAvailability, ValueType, analyze_registered_entry,
     register_kernel_modules,
 };
 
@@ -63,7 +63,7 @@ fn register_fixture(
 #[derive(Default)]
 struct InMemoryResolver {
     reads: BTreeMap<String, Result<ResolvedExternalRead, RequestResolutionError>>,
-    callables: BTreeMap<String, ResolvedSourceCallable>,
+    callables: BTreeMap<String, SourceBinding>,
     queried_reads: Vec<String>,
 }
 
@@ -74,7 +74,7 @@ impl InMemoryResolver {
             Ok(ResolvedExternalRead {
                 id,
                 name: attribute.to_owned(),
-                source_type: SourceType::Int32,
+                value_type: ValueType::Int32,
                 availability: ValueAvailability::Compile,
                 value: SourceLiteral::Int32(value),
             }),
@@ -85,7 +85,7 @@ impl InMemoryResolver {
     fn with_host_rpc(mut self, path: &str) -> Self {
         self.callables.insert(
             path.to_owned(),
-            ResolvedSourceCallable::HostRpc {
+            SourceBinding::HostRpc {
                 display_name: path.to_owned(),
             },
         );
@@ -102,37 +102,38 @@ impl RegisteredRequestResolver for InMemoryResolver {
         Ok(definition_id == 12)
     }
 
-    fn resolve_annotation(
+    fn resolve_annotation_binding(
         &mut self,
         _definition_id: usize,
         path: &str,
         _anchor: &catseq_frontend::SourceAnchor,
-    ) -> Result<SourceType, RequestResolutionError> {
+    ) -> Result<SourceBinding, RequestResolutionError> {
         match path {
-            "int" => Ok(SourceType::Int32),
-            "bool" => Ok(SourceType::Bool),
-            "ExpParams" => Ok(SourceType::ExpParams),
-            "Morphism" => Ok(SourceType::Morphism),
+            "int" => Ok(SourceBinding::ValueType(ValueType::Int32)),
+            "bool" => Ok(SourceBinding::ValueType(ValueType::Bool)),
+            "float" => Ok(SourceBinding::ValueType(ValueType::Float64)),
+            "ExpParams" => Ok(SourceBinding::ExpParams),
+            "Morphism" => Ok(SourceBinding::ValueType(ValueType::Morphism)),
             _ => Err(RequestResolutionError::new(format!(
                 "unsupported annotation `{path}`"
             ))),
         }
     }
 
-    fn resolve_callable(
+    fn resolve_callable_binding(
         &mut self,
         _definition_id: usize,
         path: &str,
         _bound_entry_owner: bool,
         _anchor: &catseq_frontend::SourceAnchor,
-    ) -> Result<ResolvedSourceCallable, RequestResolutionError> {
+    ) -> Result<SourceBinding, RequestResolutionError> {
         if let Some(callable) = self.callables.get(path) {
             return Ok(callable.clone());
         }
         Ok(match path {
-            "cycles" => ResolvedSourceCallable::Intrinsic(SourceIntrinsic::Cycles),
-            "identity" => ResolvedSourceCallable::Intrinsic(SourceIntrinsic::Identity),
-            _ => ResolvedSourceCallable::Unsupported {
+            "cycles" => SourceBinding::Intrinsic(SourceIntrinsic::Cycles),
+            "identity" => SourceBinding::Intrinsic(SourceIntrinsic::Identity),
+            _ => SourceBinding::Unsupported {
                 display_name: path.to_owned(),
             },
         })
@@ -222,6 +223,63 @@ fn analyzes_exact_loop_free_entry_reachability_hir_and_read_edges() {
         .iter()
         .find(|definition| definition.definition_id() == 12)
         .expect("entry remains in the report");
+    assert_eq!(
+        entry.signature().parameters()[0].binding(),
+        &SourceBinding::EntryOwner
+    );
+    assert_eq!(
+        entry.signature().parameters()[1].binding(),
+        &SourceBinding::ExpParams
+    );
+    assert_eq!(entry.signature().parameters()[0].value_type(), None);
+    assert_eq!(entry.signature().parameters()[1].value_type(), None);
+    assert_eq!(entry.signature().return_type(), &ValueType::Morphism);
+    assert!(
+        entry
+            .hir()
+            .nodes()
+            .iter()
+            .enumerate()
+            .any(|(node_id, node)| {
+                node.symbol() == Some("params")
+                    && entry.hir().facts()[node_id].value_type().is_none()
+                    && entry.hir().facts()[node_id].source_binding()
+                        == Some(&SourceBinding::ExpParams)
+            })
+    );
+    assert!(
+        entry
+            .hir()
+            .nodes()
+            .iter()
+            .enumerate()
+            .any(|(node_id, node)| {
+                node.symbol() == Some("self.width")
+                    && entry.hir().facts()[node_id].value_type().is_none()
+                    && entry.hir().facts()[node_id].source_binding()
+                        == Some(&SourceBinding::ExpParam {
+                            id: 3,
+                            name: "width".to_owned(),
+                            value_type: ValueType::Int32,
+                        })
+            })
+    );
+    assert!(
+        entry
+            .hir()
+            .nodes()
+            .iter()
+            .enumerate()
+            .any(|(node_id, node)| {
+                node.symbol() == Some("pulse")
+                    && entry.hir().facts()[node_id].value_type().is_none()
+                    && entry.hir().facts()[node_id].source_binding()
+                        == Some(&SourceBinding::Definition {
+                            definition_id: 11,
+                            role: RegisteredDefinitionRole::MorphismDefinition,
+                        })
+            })
+    );
     assert!(
         entry
             .hir()
@@ -231,7 +289,7 @@ fn analyzes_exact_loop_free_entry_reachability_hir_and_read_edges() {
             .any(|(node_id, node)| {
                 node.kind() == SourceHirKind::Subscript
                     && entry.hir().facts()[node_id].external_read_id() == Some(3)
-                    && entry.hir().facts()[node_id].source_type() == &SourceType::Int32
+                    && entry.hir().facts()[node_id].value_type() == Some(&ValueType::Int32)
                     && entry.hir().facts()[node_id].availability() == ValueAvailability::Compile
                     && entry.hir().facts()[node_id].roles() == [DependencyRole::Relocatable]
             })
@@ -251,7 +309,7 @@ fn analyzes_exact_loop_free_entry_reachability_hir_and_read_edges() {
             .any(|(node_id, node)| {
                 node.kind() == SourceHirKind::Binary
                     && node.morphism_composition() == Some(MorphismComposition::AutoSerial)
-                    && helper.hir().facts()[node_id].source_type() == &SourceType::Morphism
+                    && helper.hir().facts()[node_id].value_type() == Some(&ValueType::Morphism)
                     && helper.hir().facts()[node_id].topology_effect() == TopologyEffect::Morphism
                     && helper.hir().facts()[node_id]
                         .roles()
@@ -554,7 +612,7 @@ fn rejects_a_referenced_exp_param_with_an_unsupported_source_type() {
         Ok(ResolvedExternalRead {
             id: 3,
             name: "width".to_owned(),
-            source_type: SourceType::Duration,
+            value_type: ValueType::Duration,
             availability: ValueAvailability::Compile,
             value: SourceLiteral::Int32(17),
         }),
@@ -626,4 +684,52 @@ fn does_not_query_bad_exp_param_read_in_an_unreachable_definition() {
     );
     assert_eq!(analysis.report().external_reads().len(), 1);
     assert_eq!(analysis.report().external_reads()[0].name(), "width");
+}
+
+#[test]
+fn preserves_and_applies_registered_source_defaults() {
+    let source = concat!(
+        "@morphism\n",
+        "def configured(carrier: float, enabled: bool = False) -> Morphism:\n",
+        "    return identity(cycles(1))\n",
+        "\n",
+        "class Experiment:\n",
+        "    @kernel\n",
+        "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+        "        return configured(100e6)\n",
+    );
+    let registered = register_fixture(
+        source,
+        &[
+            DefinitionSpec {
+                id: 10,
+                qualified_name: "configured",
+                source_start_line: 1,
+                role: RegisteredDefinitionRole::MorphismDefinition,
+            },
+            DefinitionSpec {
+                id: 12,
+                qualified_name: "Experiment.build_sequence",
+                source_start_line: 6,
+                role: RegisteredDefinitionRole::Kernel,
+            },
+        ],
+        &[("configured", 10)],
+        12,
+    );
+
+    let analysis = analyze_registered_entry(&registered, &mut InMemoryResolver::default())
+        .expect("an omitted registered default must satisfy the call shape");
+    let configured = analysis
+        .report()
+        .definitions()
+        .iter()
+        .find(|definition| definition.definition_id() == 10)
+        .expect("the called Morphism Definition is reachable");
+
+    assert_eq!(configured.signature().parameters().len(), 2);
+    assert_eq!(
+        configured.signature().parameters()[1].default(),
+        Some(&SourceLiteral::Bool(false))
+    );
 }

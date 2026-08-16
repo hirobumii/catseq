@@ -1,14 +1,18 @@
 use catseq_frontend::{
     RegisteredDefinitionRole, RegisteredEntryAnalysis, RegisteredRequestResolver,
-    RequestResolutionError, ResolvedExternalRead, ResolvedSourceCallable, SourceIntrinsic,
-    SourceLiteral, SourceType, ValueAvailability, analyze_registered_entry,
+    RequestResolutionError, ResolvedExternalRead, SourceBinding, SourceIntrinsic, SourceLiteral,
+    ValueAvailability, ValueType, ValueTypeConstructor, analyze_registered_entry,
 };
 use pyo3::PyTypeInfo;
 use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFunction, PyInt, PyList, PyModule, PyTuple};
+use pyo3::types::{
+    PyBool, PyDict, PyFloat, PyFunction, PyInt, PyList, PyModule, PyString, PyTuple, PyType,
+};
 
-use crate::kernel_collector::{PyKernelDefinitionCollection, collect_kernel_definitions};
+use crate::kernel_collector::{
+    PyKernelDefinitionCollection, collect_entry_kernel_definitions, collect_kernel_definitions,
+};
 use crate::kernel_registration::{PyRegisteredKernelModules, register_collected_kernel_modules};
 
 #[pyclass(name = "_FrontendSession", module = "catseq._native", frozen)]
@@ -34,7 +38,7 @@ impl PyFrontendSession {
         experiment: &Bound<'_, PyAny>,
         params: &Bound<'_, PyAny>,
     ) -> PyResult<PyTypedSourceAnalysis> {
-        let collection = collect_kernel_definitions(py, experiment)?;
+        let collection = collect_entry_kernel_definitions(py, experiment)?;
         let registered = register_collected_kernel_modules(py, collection)?;
         let mut resolver =
             PythonRegisteredRequestResolver::new(py, &registered, experiment, params)?;
@@ -131,16 +135,22 @@ impl PyTypedSourceAnalysis {
         let rows = PyList::empty(py);
         for read in self.inner.report().external_reads() {
             let value = match read.value() {
+                SourceLiteral::None => py.None(),
                 SourceLiteral::Bool(value) => {
                     value.into_pyobject(py)?.to_owned().into_any().unbind()
                 }
                 SourceLiteral::Int32(value) => value.into_pyobject(py)?.into_any().unbind(),
+                SourceLiteral::Float64(value) => f64::from_bits(*value)
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+                SourceLiteral::String(value) => value.into_pyobject(py)?.into_any().unbind(),
             };
             rows.append(PyTuple::new(
                 py,
                 [
                     read.name().into_pyobject(py)?.into_any().unbind(),
-                    read.source_type()
+                    read.value_type()
                         .as_str()
                         .into_pyobject(py)?
                         .into_any()
@@ -452,12 +462,12 @@ impl RegisteredRequestResolver for PythonRegisteredRequestResolver<'_, '_> {
         Ok(false)
     }
 
-    fn resolve_annotation(
+    fn resolve_annotation_binding(
         &mut self,
         definition_id: usize,
         path: &str,
         _anchor: &catseq_frontend::SourceAnchor,
-    ) -> Result<SourceType, RequestResolutionError> {
+    ) -> Result<SourceBinding, RequestResolutionError> {
         let value = self
             .exact_path(definition_id, path, false)
             .map_err(request_error)?
@@ -465,18 +475,45 @@ impl RegisteredRequestResolver for PythonRegisteredRequestResolver<'_, '_> {
                 RequestResolutionError::new(format!("annotation `{path}` is unbound"))
             })?;
         if value.is(&PyInt::type_object(self.py)) {
-            return Ok(SourceType::Int32);
+            return Ok(SourceBinding::ValueType(ValueType::Int32));
         }
         if value.is(&PyBool::type_object(self.py)) {
-            return Ok(SourceType::Bool);
+            return Ok(SourceBinding::ValueType(ValueType::Bool));
         }
-        let morphism = self
+        if value.is(&PyFloat::type_object(self.py)) {
+            return Ok(SourceBinding::ValueType(ValueType::Float64));
+        }
+        if value.is(&PyString::type_object(self.py)) {
+            return Ok(SourceBinding::ValueType(ValueType::String));
+        }
+        if value.is(&PyList::type_object(self.py)) {
+            return Ok(SourceBinding::TypeConstructor(ValueTypeConstructor::List));
+        }
+        let sequence = self
+            .py
+            .import("collections.abc")
+            .and_then(|module| module.getattr("Sequence"))
+            .map_err(request_error)?;
+        if value.is(&sequence) {
+            return Ok(SourceBinding::TypeConstructor(
+                ValueTypeConstructor::Sequence,
+            ));
+        }
+        let morphism_module = self
             .py
             .import("catseq.morphism.core")
-            .and_then(|module| module.getattr("Morphism"))
             .map_err(request_error)?;
+        let morphism = morphism_module.getattr("Morphism").map_err(request_error)?;
         if value.is(&morphism) {
-            return Ok(SourceType::Morphism);
+            return Ok(SourceBinding::ValueType(ValueType::Morphism));
+        }
+        let duration = self
+            .py
+            .import("catseq.time_utils")
+            .and_then(|module| module.getattr("Duration"))
+            .map_err(request_error)?;
+        if value.is(&duration) {
+            return Ok(SourceBinding::ValueType(ValueType::Duration));
         }
         let exp_params = self
             .py
@@ -484,25 +521,40 @@ impl RegisteredRequestResolver for PythonRegisteredRequestResolver<'_, '_> {
             .and_then(|module| module.getattr("ExpParams"))
             .map_err(request_error)?;
         if value.is(&exp_params) {
-            return Ok(SourceType::ExpParams);
+            return Ok(SourceBinding::ExpParams);
+        }
+        if let Ok(value_type) = value.downcast_exact::<PyType>() {
+            let module = value_type
+                .getattr("__module__")
+                .and_then(|value| value.extract::<String>())
+                .map_err(request_error)?;
+            if module.starts_with("catseq.types.") {
+                let qualified_name = value_type
+                    .getattr("__qualname__")
+                    .and_then(|value| value.extract::<String>())
+                    .map_err(request_error)?;
+                return Ok(SourceBinding::ValueType(ValueType::Named(format!(
+                    "{module}.{qualified_name}"
+                ))));
+            }
         }
         Err(RequestResolutionError::new(format!(
             "annotation `{path}` is not an admitted exact source type"
         )))
     }
 
-    fn resolve_callable(
+    fn resolve_callable_binding(
         &mut self,
         definition_id: usize,
         path: &str,
         bound_entry_owner: bool,
         _anchor: &catseq_frontend::SourceAnchor,
-    ) -> Result<ResolvedSourceCallable, RequestResolutionError> {
+    ) -> Result<SourceBinding, RequestResolutionError> {
         let Some(value) = self
             .exact_path(definition_id, path, bound_entry_owner)
             .map_err(request_error)?
         else {
-            return Ok(ResolvedSourceCallable::Unsupported {
+            return Ok(SourceBinding::Unsupported {
                 display_name: path.to_owned(),
             });
         };
@@ -511,7 +563,16 @@ impl RegisteredRequestResolver for PythonRegisteredRequestResolver<'_, '_> {
                 value.is(&definition.original) || value.is(&definition.wrapper)
             })
         {
-            return Ok(ResolvedSourceCallable::Definition { definition_id });
+            let role = self
+                .registered
+                .frontend
+                .definition(definition_id)
+                .expect("Python and Rust registration definitions share exact ids")
+                .role();
+            return Ok(SourceBinding::Definition {
+                definition_id,
+                role,
+            });
         }
         let cycles = self
             .py
@@ -519,7 +580,7 @@ impl RegisteredRequestResolver for PythonRegisteredRequestResolver<'_, '_> {
             .and_then(|module| module.getattr("cycles"))
             .map_err(request_error)?;
         if value.is(&cycles) {
-            return Ok(ResolvedSourceCallable::Intrinsic(SourceIntrinsic::Cycles));
+            return Ok(SourceBinding::Intrinsic(SourceIntrinsic::Cycles));
         }
         let identity = self
             .py
@@ -527,14 +588,14 @@ impl RegisteredRequestResolver for PythonRegisteredRequestResolver<'_, '_> {
             .and_then(|module| module.getattr("identity"))
             .map_err(request_error)?;
         if value.is(&identity) {
-            return Ok(ResolvedSourceCallable::Intrinsic(SourceIntrinsic::Identity));
+            return Ok(SourceBinding::Intrinsic(SourceIntrinsic::Identity));
         }
         if value.downcast_exact::<PyFunction>().is_ok() {
-            return Ok(ResolvedSourceCallable::HostRpc {
+            return Ok(SourceBinding::HostRpc {
                 display_name: path.to_owned(),
             });
         }
-        Ok(ResolvedSourceCallable::Unsupported {
+        Ok(SourceBinding::Unsupported {
             display_name: path.to_owned(),
         })
     }
@@ -573,9 +634,9 @@ impl RegisteredRequestResolver for PythonRegisteredRequestResolver<'_, '_> {
                 request_error(error)
             }
         })?;
-        let (source_type, value) = if let Ok(value) = value.downcast_exact::<PyBool>() {
+        let (value_type, value) = if let Ok(value) = value.downcast_exact::<PyBool>() {
             (
-                SourceType::Bool,
+                ValueType::Bool,
                 SourceLiteral::Bool(value.extract().map_err(request_error)?),
             )
         } else if let Ok(value) = value.downcast_exact::<PyInt>() {
@@ -585,17 +646,23 @@ impl RegisteredRequestResolver for PythonRegisteredRequestResolver<'_, '_> {
                     "ExpParam `{owner_attribute}` integer value is outside i32"
                 ))
             })?;
-            (SourceType::Int32, SourceLiteral::Int32(value))
+            (ValueType::Int32, SourceLiteral::Int32(value))
+        } else if let Ok(value) = value.downcast_exact::<PyFloat>() {
+            let value = value.extract::<f64>().map_err(request_error)?;
+            (ValueType::Float64, SourceLiteral::Float64(value.to_bits()))
+        } else if let Ok(value) = value.downcast_exact::<PyString>() {
+            let value = value.extract::<String>().map_err(request_error)?;
+            (ValueType::String, SourceLiteral::String(value))
         } else {
             return Err(RequestResolutionError::new(format!(
-                "ExpParam `{owner_attribute}` must contain an exact bool or i32 int"
+                "ExpParam `{owner_attribute}` must contain an exact bool, i32 int, f64 float, or string"
             )));
         };
         let id = self.external_id(&declaration);
         Ok(ResolvedExternalRead {
             id,
             name: declaration_name,
-            source_type,
+            value_type,
             availability: ValueAvailability::Compile,
             value,
         })

@@ -400,6 +400,7 @@ fn role_name(role: RegisteredDefinitionRole) -> &'static str {
         RegisteredDefinitionRole::Compute => "Compute",
         RegisteredDefinitionRole::MorphismDefinition => "Morphism",
         RegisteredDefinitionRole::Atomic => "Atomic",
+        RegisteredDefinitionRole::Intrinsic => "Intrinsic",
     }
 }
 

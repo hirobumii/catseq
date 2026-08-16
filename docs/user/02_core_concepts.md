@@ -79,30 +79,29 @@ ramp 的物理宽度仍须非负。回移越过 Epoch 起点会在编译期报�
 会在调度前展开，不会错误编码为原生 hardware loop。最终 OASM 时间戳和
 `logical_duration_cycles` 始终非负，后者取序列访问过的最远逻辑时间点。
 
-## MorphismDef：可编译的 Morphism Template
+## Morphism Definition：定义可复用的 Morphism
 
-`MorphismDef` 是 `MorphismTemplate` 的兼容拼写。它不是 Python generator，
-也不会在 CPython 中接收 `start_state` 后构造 Lane。模板具有自由 Channel
-slot；绑定 Channel 时，Rust Morphism arena 生成引用共享模板体的
-`Instantiate` 节点。
+`Morphism` 是用户源码中唯一的时序值类型。它可以带有尚未绑定的 Resource
+Slot；绑定 Channel 不会把它变成另一种值。`@morphism` 标记的是产生
+`Morphism` 的受限源码定义，而不是 `MorphismTemplate` 之类的第二种类型。
 
-用户可以直接用 Atomic Morphism 组合更复杂的模板：
+用户可以直接用 Atomic Morphism 组合更复杂的 Morphism Definition：
 
 ```python
 from catseq.hardware.ttl import hold, set_high, set_low
-from catseq.morphism import MorphismDef, morphism_template
+from catseq.morphism import Morphism, morphism
 from catseq.time_utils import Duration
 
 
-@morphism_template
-def pulse(duration: Duration) -> MorphismDef:
+@morphism
+def pulse(duration: Duration) -> Morphism:
     return set_high() >> hold(duration) >> set_low()
 ```
 
 编译器将函数体保留为 `Serial(set_high, Wait(duration), set_low)`，调用点
-只保存参数和 `Instantiate` 引用。入口中可使用
+只保存参数和共享定义引用。入口中可使用
 `{my_channel: pulse(duration)}` 完成绑定。输入/输出状态由 Morphism Effect
 沿 Serial 边隐式传递，不出现在 Python 函数参数中。
 
 `@atomic_morphism` 仅供硬件驱动/Intrinsic Registry 声明不可再分解的叶子；
-普通用户应通过 `@morphism_template` 组合已注册的原子操作。
+普通用户应通过 `@morphism` 组合已注册的原子操作。

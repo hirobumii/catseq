@@ -1,6 +1,6 @@
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyFunction, PyModule, PyTuple};
+use pyo3::types::{PyDict, PyFunction, PyModule, PyTuple};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CollectedDefinitionRole {
@@ -8,6 +8,7 @@ pub(crate) enum CollectedDefinitionRole {
     Compute,
     MorphismDefinition,
     Atomic,
+    Intrinsic,
 }
 
 impl CollectedDefinitionRole {
@@ -17,6 +18,7 @@ impl CollectedDefinitionRole {
             Self::Compute => "compute",
             Self::MorphismDefinition => "morphism_definition",
             Self::Atomic => "atomic",
+            Self::Intrinsic => "intrinsic",
         }
     }
 }
@@ -92,6 +94,27 @@ pub(crate) fn collect_kernel_definitions(
     py: Python<'_>,
     experiment: &Bound<'_, PyAny>,
 ) -> PyResult<PyKernelDefinitionCollection> {
+    collect_kernel_definitions_with_scope(py, experiment, CollectionScope::Catalog)
+}
+
+pub(crate) fn collect_entry_kernel_definitions(
+    py: Python<'_>,
+    experiment: &Bound<'_, PyAny>,
+) -> PyResult<PyKernelDefinitionCollection> {
+    collect_kernel_definitions_with_scope(py, experiment, CollectionScope::EntryBindings)
+}
+
+#[derive(Clone, Copy)]
+enum CollectionScope {
+    Catalog,
+    EntryBindings,
+}
+
+fn collect_kernel_definitions_with_scope(
+    py: Python<'_>,
+    experiment: &Bound<'_, PyAny>,
+    scope: CollectionScope,
+) -> PyResult<PyKernelDefinitionCollection> {
     let base_exp = py
         .import("catseq.experiment.base_exp")?
         .getattr("BaseExp")?;
@@ -125,19 +148,137 @@ pub(crate) fn collect_kernel_definitions(
 
     let catalog = core.getattr("_registered_definition_catalog")?.call0()?;
     let catalog = catalog.downcast_exact::<PyTuple>()?;
-    let definitions = catalog
+    let mut definitions = catalog
         .iter()
         .map(|facts| {
             let facts = parse_facts(&facts)?;
             facts.collect()
         })
         .collect::<PyResult<Vec<_>>>()?;
+    if matches!(scope, CollectionScope::EntryBindings) {
+        definitions = select_entry_bindings(py, experiment, &entry, definitions)?;
+    }
 
     Ok(PyKernelDefinitionCollection {
         owner: experiment.clone().unbind(),
         entry,
         definitions,
     })
+}
+
+fn select_entry_bindings(
+    py: Python<'_>,
+    experiment: &Bound<'_, PyAny>,
+    entry: &CollectedDefinition,
+    catalog: Vec<CollectedDefinition>,
+) -> PyResult<Vec<CollectedDefinition>> {
+    let entry_id = exact_definition_id(entry.original.bind(py), &catalog).ok_or_else(|| {
+        PyRuntimeError::new_err(
+            "registered BaseExp.build_sequence is absent from the definition catalog",
+        )
+    })?;
+    let mut selected = vec![false; catalog.len()];
+    let mut pending = vec![entry_id];
+    selected[entry_id] = true;
+
+    while let Some(definition_id) = pending.pop() {
+        let original = catalog[definition_id]
+            .original
+            .bind(py)
+            .downcast_exact::<PyFunction>()?;
+        let code = original.getattr("__code__")?;
+        let names_object = code.getattr("co_names")?;
+        let names = names_object.downcast_exact::<PyTuple>()?;
+        let names = names
+            .iter()
+            .map(|name| name.extract::<String>())
+            .collect::<PyResult<Vec<_>>>()?;
+        let globals_object = original.getattr("__globals__")?;
+        let globals = globals_object.downcast_exact::<PyDict>()?;
+        for name in &names {
+            let Some(value) = globals.get_item(name)? else {
+                continue;
+            };
+            select_exact_binding(&value, &names, &catalog, &mut selected, &mut pending)?;
+        }
+
+        let mro_object = experiment.get_type().getattr("__mro__")?;
+        let mro = mro_object.downcast_exact::<PyTuple>()?;
+        for class in mro.iter() {
+            let namespace = class.getattr("__dict__")?;
+            for name in &names {
+                if let Ok(value) = namespace.get_item(name) {
+                    select_definition(&value, &catalog, &mut selected, &mut pending);
+                }
+            }
+        }
+    }
+
+    Ok(catalog
+        .into_iter()
+        .enumerate()
+        .filter_map(|(definition_id, definition)| selected[definition_id].then_some(definition))
+        .collect())
+}
+
+fn select_exact_binding(
+    value: &Bound<'_, PyAny>,
+    names: &[String],
+    catalog: &[CollectedDefinition],
+    selected: &mut [bool],
+    pending: &mut Vec<usize>,
+) -> PyResult<()> {
+    if select_definition(value, catalog, selected, pending) {
+        return Ok(());
+    }
+    let Ok(module) = value.downcast_exact::<PyModule>() else {
+        return Ok(());
+    };
+    let mut modules = vec![module.clone()];
+    let mut visited = Vec::<Py<PyModule>>::new();
+    while let Some(module) = modules.pop() {
+        if visited.iter().any(|known| known.is(&module)) {
+            continue;
+        }
+        visited.push(module.clone().unbind());
+        for name in names {
+            let Some(attribute) = module.dict().get_item(name)? else {
+                continue;
+            };
+            if select_definition(&attribute, catalog, selected, pending) {
+                continue;
+            }
+            if let Ok(nested) = attribute.downcast_exact::<PyModule>() {
+                modules.push(nested.clone());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn select_definition(
+    value: &Bound<'_, PyAny>,
+    catalog: &[CollectedDefinition],
+    selected: &mut [bool],
+    pending: &mut Vec<usize>,
+) -> bool {
+    let Some(definition_id) = exact_definition_id(value, catalog) else {
+        return false;
+    };
+    if !selected[definition_id] {
+        selected[definition_id] = true;
+        pending.push(definition_id);
+    }
+    true
+}
+
+fn exact_definition_id(
+    value: &Bound<'_, PyAny>,
+    definitions: &[CollectedDefinition],
+) -> Option<usize> {
+    definitions
+        .iter()
+        .position(|definition| value.is(&definition.original) || value.is(&definition.wrapper))
 }
 
 struct RegistrationFacts<'py> {
@@ -182,8 +323,9 @@ fn definition_role(role: &str) -> PyResult<CollectedDefinitionRole> {
     match role {
         "kernel" => Ok(CollectedDefinitionRole::Kernel),
         "compute" => Ok(CollectedDefinitionRole::Compute),
-        "morphism_template" => Ok(CollectedDefinitionRole::MorphismDefinition),
+        "morphism" => Ok(CollectedDefinitionRole::MorphismDefinition),
         "atomic_morphism" => Ok(CollectedDefinitionRole::Atomic),
+        "compiler_intrinsic" => Ok(CollectedDefinitionRole::Intrinsic),
         _ => Err(PyRuntimeError::new_err("unknown CatSeq definition role")),
     }
 }

@@ -311,12 +311,138 @@ pub(crate) fn register_collected_kernel_modules(
         entry_definition_id,
     })
     .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+    verify_source_revisions(py, &frontend, &definitions)?;
     Ok(PyRegisteredKernelModules {
         frontend,
         owner,
         entry,
         definitions,
     })
+}
+
+fn verify_source_revisions(
+    py: Python<'_>,
+    frontend: &RegisteredKernelModules,
+    definitions: &[CollectedDefinition],
+) -> PyResult<()> {
+    let compile = py.import("builtins")?.getattr("compile")?;
+    let code_type = py.import("types")?.getattr("CodeType")?;
+    let compiled_modules = frontend
+        .modules()
+        .iter()
+        .map(|module| {
+            let code = compile.call1((
+                module.source().as_ref(),
+                module.file_name(),
+                "exec",
+                0,
+                true,
+            ))?;
+            Ok((module.id(), code.unbind()))
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+
+    for registered in frontend.definitions() {
+        let definition = definitions.get(registered.id()).ok_or_else(|| {
+            PyRuntimeError::new_err("registered source revision has no Python definition")
+        })?;
+        let original = definition
+            .original
+            .bind(py)
+            .downcast_exact::<PyFunction>()?;
+        let original_code = original.getattr("__code__")?;
+        let source_start_line = original_code
+            .getattr("co_firstlineno")?
+            .extract::<usize>()?;
+        let module_code = compiled_modules
+            .iter()
+            .find(|(module_id, _)| *module_id == registered.module_id())
+            .expect("every registered definition retains compiled module source")
+            .1
+            .bind(py);
+        let candidate = find_compiled_definition_code(
+            module_code,
+            &code_type,
+            registered.qualified_name(),
+            source_start_line,
+        )?
+        .ok_or_else(|| source_revision_error(frontend, registered.id(), "compiled identity"))?;
+        if let Some(attribute) = code_revision_mismatch(&original_code, &candidate)? {
+            return Err(source_revision_error(frontend, registered.id(), attribute));
+        }
+    }
+    Ok(())
+}
+
+fn code_revision_mismatch(
+    left: &Bound<'_, PyAny>,
+    right: &Bound<'_, PyAny>,
+) -> PyResult<Option<&'static str>> {
+    for attribute in [
+        "co_argcount",
+        "co_posonlyargcount",
+        "co_kwonlyargcount",
+        "co_nlocals",
+        "co_stacksize",
+        "co_code",
+        "co_consts",
+        "co_names",
+        "co_varnames",
+        "co_freevars",
+        "co_cellvars",
+        "co_exceptiontable",
+    ] {
+        if !left.getattr(attribute)?.eq(right.getattr(attribute)?)? {
+            return Ok(Some(attribute));
+        }
+    }
+    Ok(None)
+}
+
+fn find_compiled_definition_code<'py>(
+    module_code: &Bound<'py, PyAny>,
+    code_type: &Bound<'py, PyAny>,
+    qualified_name: &str,
+    source_start_line: usize,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    let mut pending = vec![module_code.clone()];
+    while let Some(code) = pending.pop() {
+        let candidate_name = code.getattr("co_qualname")?.extract::<String>()?;
+        let candidate_line = code.getattr("co_firstlineno")?.extract::<usize>()?;
+        if candidate_name == qualified_name && candidate_line == source_start_line {
+            return Ok(Some(code));
+        }
+        let constants_object = code.getattr("co_consts")?;
+        let constants = constants_object.downcast_exact::<PyTuple>()?;
+        for constant in constants.iter() {
+            if constant.get_type().is(code_type) {
+                pending.push(constant);
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn source_revision_error(
+    frontend: &RegisteredKernelModules,
+    definition_id: usize,
+    mismatch: &str,
+) -> PyErr {
+    let definition = frontend
+        .definition(definition_id)
+        .expect("source revision checks use a registered definition id");
+    let module = frontend
+        .modules()
+        .iter()
+        .find(|module| module.id() == definition.module_id())
+        .expect("registered definitions retain their module");
+    PyRuntimeError::new_err(format!(
+        "registered definition {}.{} does not match the source revision at {}:{} ({mismatch})",
+        module.import_name(),
+        definition.qualified_name(),
+        module.file_name(),
+        definition.location().row,
+    ))
 }
 
 fn definition_name_bindings(
@@ -492,5 +618,6 @@ const fn frontend_role(role: CollectedDefinitionRole) -> RegisteredDefinitionRol
         CollectedDefinitionRole::Compute => RegisteredDefinitionRole::Compute,
         CollectedDefinitionRole::MorphismDefinition => RegisteredDefinitionRole::MorphismDefinition,
         CollectedDefinitionRole::Atomic => RegisteredDefinitionRole::Atomic,
+        CollectedDefinitionRole::Intrinsic => RegisteredDefinitionRole::Intrinsic,
     }
 }

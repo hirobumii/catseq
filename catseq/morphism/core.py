@@ -31,7 +31,7 @@ class CompilerOnlyError(RuntimeError):
 class CompilerDefinition:
     """Import-time metadata consumed by the registered-source frontend."""
 
-    kind: Literal["atomic_morphism", "morphism_template"]
+    kind: Literal["atomic_morphism", "morphism"]
     symbol: str | None = None
 
 
@@ -39,7 +39,13 @@ class CompilerDefinition:
 class _RegisteredDefinition:
     """ARTIQ-style import-time registration for one exact definition."""
 
-    role: Literal["kernel", "compute", "atomic_morphism", "morphism_template"]
+    role: Literal[
+        "kernel",
+        "compute",
+        "atomic_morphism",
+        "morphism",
+        "compiler_intrinsic",
+    ]
     symbol: str | None
     original: FunctionType
     wrapper: FunctionType
@@ -64,8 +70,8 @@ def compiler_only(symbol: str) -> Never:
     )
 
 
-class MorphismTemplate:
-    """Nominal source type for a reusable Morphism with free channel slots."""
+class Morphism:
+    """The single nominal sequencing value type in CatSeq source."""
 
     def __new__(cls, *args: object, **kwargs: object) -> Never:
         del args, kwargs
@@ -79,36 +85,7 @@ class MorphismTemplate:
 
     def __call__(self, target: object, *args: object, **kwargs: object) -> Morphism:
         del target, args, kwargs
-        compiler_only("MorphismTemplate binding")
-
-    def __rshift__(self, other: MorphismTemplate) -> MorphismTemplate:
-        del other
-        compiler_only("MorphismTemplate serial composition")
-
-    def __matmul__(self, other: MorphismTemplate) -> MorphismTemplate:
-        del other
-        compiler_only("MorphismTemplate strict serial composition")
-
-    def __or__(self, other: MorphismTemplate) -> MorphismTemplate:
-        del other
-        compiler_only("MorphismTemplate parallel composition")
-
-    def with_label(self, label: str) -> MorphismTemplate:
-        del label
-        compiler_only("MorphismTemplate.with_label")
-
-
-# Preserve the established source spelling while giving the compiler model an
-# honest name.  This is a nominal alias, not a deferred Python generator.
-MorphismDef = MorphismTemplate
-
-
-class Morphism:
-    """Nominal source type for a channel-bound sequencing state transformer."""
-
-    def __new__(cls, *args: object, **kwargs: object) -> Never:
-        del args, kwargs
-        compiler_only(cls.__name__)
+        compiler_only("Morphism resource binding")
 
     @overload
     def __rshift__(self, other: Morphism) -> Morphism: ...
@@ -116,7 +93,7 @@ class Morphism:
     @overload
     def __rshift__(
         self,
-        other: Mapping[Channel, MorphismTemplate],
+        other: Mapping[Channel, Morphism],
     ) -> Morphism: ...
 
     def __rshift__(self, other: object) -> Morphism:
@@ -130,6 +107,10 @@ class Morphism:
     def __or__(self, other: Morphism) -> Morphism:
         del other
         compiler_only("Morphism parallel composition")
+
+    def with_label(self, label: str) -> Morphism:
+        del label
+        compiler_only("Morphism.with_label")
 
 
 _F = TypeVar("_F", bound=Callable[..., object])
@@ -161,7 +142,13 @@ def _registered_definition_catalog() -> tuple[tuple[object, ...], ...]:
 def _register_definition(
     definition: _F,
     *,
-    role: Literal["kernel", "compute", "atomic_morphism", "morphism_template"],
+    role: Literal[
+        "kernel",
+        "compute",
+        "atomic_morphism",
+        "morphism",
+        "compiler_intrinsic",
+    ],
     symbol: str | None = None,
 ) -> _F:
     if type(definition) is not FunctionType:
@@ -202,11 +189,11 @@ def _register_definition(
             "__catseq_definition__",
             CompilerDefinition(kind="atomic_morphism", symbol=symbol),
         )
-    elif role == "morphism_template":
+    elif role == "morphism":
         setattr(
             wrapper,
             "__catseq_definition__",
-            CompilerDefinition(kind="morphism_template"),
+            CompilerDefinition(kind="morphism"),
         )
     registration = _RegisteredDefinition(
         role=role,
@@ -233,15 +220,15 @@ def compute(definition: _F) -> _F:
     return _register_definition(definition, role="compute")
 
 
-def morphism_template(definition: _F) -> _F:
-    """Mark a restricted Python function as a composable Morphism Template.
+def morphism(definition: _F) -> _F:
+    """Register a restricted source definition that produces a Morphism.
 
     Like ARTIQ's ``@kernel``, this decorator preserves the original Python
     function so the native compiler can parse its body.  It never builds a
     runtime Morphism arena.
     """
 
-    return _register_definition(definition, role="morphism_template")
+    return _register_definition(definition, role="morphism")
 
 
 def atomic_morphism(symbol: str) -> Callable[[_F], _F]:
@@ -256,6 +243,24 @@ def atomic_morphism(symbol: str) -> Callable[[_F], _F]:
         return _register_definition(
             definition,
             role="atomic_morphism",
+            symbol=symbol,
+        )
+
+    return decorate
+
+
+def compiler_intrinsic(symbol: str) -> Callable[[_F], _F]:
+    """Register one exact bodyless compiler intrinsic declaration."""
+
+    if type(symbol) is not str:
+        raise TypeError("compiler_intrinsic symbol must be an exact string")
+    if not symbol:
+        raise ValueError("compiler_intrinsic symbol must not be empty")
+
+    def decorate(definition: _F) -> _F:
+        return _register_definition(
+            definition,
+            role="compiler_intrinsic",
             symbol=symbol,
         )
 

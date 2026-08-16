@@ -8,7 +8,11 @@ import pytest
 from catseq import _native
 from catseq.experiment.base_exp import BaseExp
 from catseq.experiment.params import ExpParam, ExpParams
-from catseq.morphism import Morphism, atomic_morphism, identity, morphism_template
+from catseq.hardware.rwg import initialize as rwg_initialize
+from catseq.hardware.sync import global_sync
+from catseq.hardware.ttl import initialize as ttl_initialize
+from catseq.hardware.ttl import pulse as ttl_pulse
+from catseq.morphism import Morphism, atomic_morphism, identity, morphism
 from catseq.morphism.core import compute, kernel
 from catseq.time_utils import cycles
 
@@ -122,7 +126,7 @@ def _atomic_leaf(width: int) -> Morphism:
     raise AssertionError("an Atomic body must not execute")
 
 
-@morphism_template
+@morphism
 def _registered_morphism(width: int) -> Morphism:
     return _atomic_leaf(width)
 
@@ -134,6 +138,34 @@ class _MorphismDefinitionExperiment(BaseExp):
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
         return _registered_morphism(params[self.width])
+
+
+@dataclass
+class _TtlAtomicExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return ttl_initialize()
+
+
+@dataclass
+class _TtlDurationExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return ttl_pulse(cycles(1))
+
+
+@dataclass
+class _RwgDefaultExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return rwg_initialize(100e6)
+
+
+@dataclass
+class _ShippedIntrinsicExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return global_sync()
 
 
 @dataclass
@@ -487,6 +519,55 @@ def test_registered_entry_analysis_retains_morphism_definition_and_atomic_leaf()
     assert atomic[3] > 0
 
 
+def test_registered_entry_analysis_admits_shipped_morphism_annotations() -> None:
+    frontend = _native._FrontendSession({})
+
+    atomic = frontend._analyze_registered_kernel(
+        _TtlAtomicExperiment(h5_writer=cast(Any, object())),
+        ExpParams.empty(),
+    )
+    duration = frontend._analyze_registered_kernel(
+        _TtlDurationExperiment(h5_writer=cast(Any, object())),
+        ExpParams.empty(),
+    )
+
+    assert atomic._body_definitions == [
+        (f"{__name__}._TtlAtomicExperiment.build_sequence", "kernel"),
+        ("catseq.hardware.ttl.initialize", "atomic"),
+    ]
+    assert duration._body_definitions == [
+        (f"{__name__}._TtlDurationExperiment.build_sequence", "kernel"),
+        ("catseq.hardware.ttl.pulse", "morphism_definition"),
+        ("catseq.hardware.ttl.set_high", "atomic"),
+        ("catseq.hardware.ttl.hold", "intrinsic"),
+        ("catseq.hardware.ttl.set_low", "atomic"),
+    ]
+
+
+def test_registered_entry_analysis_applies_shipped_default_parameter() -> None:
+    analysis = _native._FrontendSession({})._analyze_registered_kernel(
+        _RwgDefaultExperiment(h5_writer=cast(Any, object())),
+        ExpParams.empty(),
+    )
+
+    assert analysis._body_definitions == [
+        (f"{__name__}._RwgDefaultExperiment.build_sequence", "kernel"),
+        ("catseq.hardware.rwg.initialize", "atomic"),
+    ]
+
+
+def test_registered_entry_analysis_classifies_shipped_intrinsic_before_rpc() -> None:
+    analysis = _native._FrontendSession({})._analyze_registered_kernel(
+        _ShippedIntrinsicExperiment(h5_writer=cast(Any, object())),
+        ExpParams.empty(),
+    )
+
+    assert analysis._body_definitions == [
+        (f"{__name__}._ShippedIntrinsicExperiment.build_sequence", "kernel"),
+        ("catseq.hardware.sync.global_sync", "intrinsic"),
+    ]
+
+
 def test_registered_entry_analysis_rejects_reachable_unsupported_syntax() -> None:
     frontend = _native._FrontendSession({})
     experiment = _UnsupportedStatementExperiment(
@@ -572,7 +653,7 @@ def test_registered_entry_analysis_failure_does_not_publish_compute_result() -> 
         (ExpParams.empty(), "ExpParams has no value for `width`"),
         (
             ExpParams({_MissingParamExperiment.width: object()}),
-            "ExpParam `width` must contain an exact bool or i32 int",
+            "ExpParam `width` must contain an exact bool, i32 int, f64 float, or string",
         ),
     ],
 )
@@ -610,20 +691,21 @@ def test_registered_entry_analysis_rejects_indirect_local_call() -> None:
     assert "test_typed_source_analysis.py:" in str(raised.value)
 
 
-def test_registered_entry_analysis_rejects_keyword_call_shape() -> None:
+def test_registered_entry_analysis_binds_keyword_call() -> None:
     frontend = _native._FrontendSession({})
     experiment = _InvalidCallShapeExperiment(
         h5_writer=cast(Any, object()),
     )
 
-    with pytest.raises(RuntimeError) as raised:
-        frontend._analyze_registered_kernel(
-            experiment,
-            ExpParams({_InvalidCallShapeExperiment.width: 4}),
-        )
+    analysis = frontend._analyze_registered_kernel(
+        experiment,
+        ExpParams({_InvalidCallShapeExperiment.width: 4}),
+    )
 
-    assert "argument unpacking and keyword calls" in str(raised.value)
-    assert "test_typed_source_analysis.py:" in str(raised.value)
+    assert analysis._body_definitions == [
+        (f"{__name__}._InvalidCallShapeExperiment.build_sequence", "kernel"),
+        (f"{__name__}._first_delay", "kernel"),
+    ]
 
 
 def test_registered_entry_analysis_rejects_unowned_subscript() -> None:
@@ -700,7 +782,7 @@ def test_registered_entry_analysis_keeps_unbound_owner_receiver_explicit() -> No
         h5_writer=cast(Any, object()),
     )
 
-    with pytest.raises(RuntimeError, match="call expects 2 positional arguments"):
+    with pytest.raises(RuntimeError, match="call is missing required parameters: width"):
         frontend._analyze_registered_kernel(
             experiment,
             ExpParams({_UnboundOwnerMethodExperiment.width: 4}),

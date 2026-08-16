@@ -4,38 +4,69 @@ use serde::{Deserialize, Serialize};
 
 use crate::registered_modules::{RegisteredDefinition, RegisteredDefinitionRole, RegisteredModule};
 use crate::source_hir::{
-    ComputeCallReference, DefinitionCallEdge, ExternalRead, SourceAnchor, SourceType,
-    TypedSourceHir,
+    ComputeCallReference, DefinitionCallEdge, ExternalRead, SourceAnchor, SourceBinding,
+    SourceLiteral, TypedSourceHir, ValueType,
 };
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ParameterKind {
+    PositionalOnly,
+    PositionalOrKeyword,
+    KeywordOnly,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TypedParameter {
     name: String,
-    source_type: SourceType,
+    binding: SourceBinding,
+    kind: ParameterKind,
+    default: Option<SourceLiteral>,
 }
 
 impl TypedParameter {
-    pub(crate) fn new(name: String, source_type: SourceType) -> Self {
-        Self { name, source_type }
+    pub(crate) fn new(
+        name: String,
+        binding: SourceBinding,
+        kind: ParameterKind,
+        default: Option<SourceLiteral>,
+    ) -> Self {
+        Self {
+            name,
+            binding,
+            kind,
+            default,
+        }
     }
 
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    pub const fn source_type(&self) -> &SourceType {
-        &self.source_type
+    pub const fn binding(&self) -> &SourceBinding {
+        &self.binding
+    }
+
+    pub const fn value_type(&self) -> Option<&ValueType> {
+        self.binding.value_type()
+    }
+
+    pub const fn kind(&self) -> ParameterKind {
+        self.kind
+    }
+
+    pub const fn default(&self) -> Option<&SourceLiteral> {
+        self.default.as_ref()
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TypeSignature {
     parameters: Vec<TypedParameter>,
-    return_type: SourceType,
+    return_type: ValueType,
 }
 
 impl TypeSignature {
-    pub(crate) fn new(parameters: Vec<TypedParameter>, return_type: SourceType) -> Self {
+    pub(crate) fn new(parameters: Vec<TypedParameter>, return_type: ValueType) -> Self {
         Self {
             parameters,
             return_type,
@@ -46,7 +77,7 @@ impl TypeSignature {
         &self.parameters
     }
 
-    pub const fn return_type(&self) -> &SourceType {
+    pub const fn return_type(&self) -> &ValueType {
         &self.return_type
     }
 }

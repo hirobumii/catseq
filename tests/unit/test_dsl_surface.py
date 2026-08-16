@@ -5,18 +5,27 @@ from typing import Any, cast
 import pytest
 
 from catseq import replace
+from catseq.hardware.common import hold as common_hold
 from catseq.hardware.rwg import linear_ramp, load, play, set_state
-from catseq.hardware.rsp import pid_relink
+from catseq.hardware.rsp import (
+    initialize as rsp_initialize,
+    pid_config,
+    pid_hold,
+    pid_relink,
+    pid_release,
+    pid_start,
+    rf_config,
+)
+from catseq.hardware.sync import global_sync
 from catseq.hardware.ttl import pulse, set_high
 from catseq.morphism import (
     CompilerOnlyError,
     Morphism,
-    MorphismDef,
-    MorphismTemplate,
     atomic_morphism,
     identity,
-    morphism_template,
+    morphism,
 )
+from catseq.morphism.core import _registered_definition
 from catseq.time_utils import Duration
 from catseq.types import StaticWaveform
 
@@ -62,28 +71,57 @@ def test_hardware_operations_are_compiler_only_source_intrinsics() -> None:
         pid_relink()
 
 
+@pytest.mark.parametrize(
+    "function",
+    [
+        common_hold,
+        rsp_initialize,
+        pid_config,
+        pid_start,
+        pid_hold,
+        pid_release,
+        pid_relink,
+        rf_config,
+        global_sync,
+        import_module("catseq.hardware.rwg")._waveforms,
+    ],
+)
+def test_shipped_compiler_intrinsics_have_exact_registration(function: object) -> None:
+    registered = _registered_definition(function)
+
+    assert registered is not None
+    assert registered.role == "compiler_intrinsic"
+
+
 def test_morphism_is_a_nominal_source_type_not_a_runtime_ir() -> None:
     with pytest.raises(CompilerOnlyError, match="registered source"):
         Morphism()
 
 
-def test_morphismdef_is_the_source_spelling_of_morphismtemplate() -> None:
-    assert MorphismDef is MorphismTemplate
+def test_public_dsl_exposes_one_morphism_type() -> None:
+    catseq_module = import_module("catseq")
+    morphism_module = import_module("catseq.morphism")
+
+    assert catseq_module.Morphism is Morphism
+    assert morphism_module.Morphism is Morphism
+    for legacy_name in ("MorphismDef", "MorphismTemplate", "morphism_template"):
+        assert not hasattr(catseq_module, legacy_name)
+        assert not hasattr(morphism_module, legacy_name)
 
 
-def test_user_morphism_template_keeps_its_python_function_and_compiler_kind() -> None:
-    @morphism_template
-    def composite(duration: Duration) -> MorphismDef:
+def test_user_morphism_definition_keeps_its_python_function_and_compiler_kind() -> None:
+    @morphism
+    def composite(duration: Duration) -> Morphism:
         return pulse(duration)
 
     assert composite.__name__ == "composite"
-    assert composite.__catseq_definition__.kind == "morphism_template"
+    assert composite.__catseq_definition__.kind == "morphism"
     assert composite.__catseq_definition__.symbol is None
 
 
 def test_atomic_morphism_declaration_records_its_stable_symbol() -> None:
     @atomic_morphism("example.atomic")
-    def atomic() -> MorphismDef:
+    def atomic() -> Morphism:
         raise AssertionError("the declaration body is irrelevant to this test")
 
     assert atomic.__catseq_definition__.kind == "atomic_morphism"
@@ -102,10 +140,10 @@ def test_atomic_morphism_requires_a_non_empty_exact_string_symbol() -> None:
         atomic_morphism("")
 
 
-def test_hardware_api_distinguishes_composite_templates_from_atomic_leaves() -> None:
-    assert pulse.__catseq_definition__.kind == "morphism_template"
-    assert set_state.__catseq_definition__.kind == "morphism_template"
-    assert linear_ramp.__catseq_definition__.kind == "morphism_template"
+def test_hardware_api_distinguishes_composite_definitions_from_atomic_leaves() -> None:
+    assert pulse.__catseq_definition__.kind == "morphism"
+    assert set_state.__catseq_definition__.kind == "morphism"
+    assert linear_ramp.__catseq_definition__.kind == "morphism"
     assert load.__catseq_definition__.kind == "atomic_morphism"
     assert load.__catseq_definition__.symbol == "catseq.hardware.rwg.load"
     assert play.__catseq_definition__.kind == "atomic_morphism"

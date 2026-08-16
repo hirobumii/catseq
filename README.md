@@ -62,8 +62,8 @@ extension and require no local LLVM installation.
 
 ## Source model
 
-CatSeq retains the compiler-only Python surface for `Morphism`,
-`MorphismTemplate`, `>>`, `|`, `@kernel`, and `@compute`. Calling these
+CatSeq retains the compiler-only Python surface for `Morphism`, `@morphism`,
+`>>`, `|`, `@kernel`, and `@compute`. Calling these
 definitions as ordinary CPython functions fails fast: their bodies are source
 for the native frontend, not a second executable implementation.
 

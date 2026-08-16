@@ -14,6 +14,7 @@ pub enum RegisteredDefinitionRole {
     Compute,
     MorphismDefinition,
     Atomic,
+    Intrinsic,
 }
 
 impl RegisteredDefinitionRole {
@@ -23,6 +24,7 @@ impl RegisteredDefinitionRole {
             Self::Compute => "compute",
             Self::MorphismDefinition => "morphism_definition",
             Self::Atomic => "atomic",
+            Self::Intrinsic => "intrinsic",
         }
     }
 }
@@ -341,8 +343,12 @@ impl Display for RegistrationError {
                     RegisteredDefinitionRole::Compute => "Compute",
                     RegisteredDefinitionRole::MorphismDefinition => "Morphism Definition",
                     RegisteredDefinitionRole::Atomic => "Atomic",
+                    RegisteredDefinitionRole::Intrinsic => "Intrinsic",
                 };
-                if *role == RegisteredDefinitionRole::Atomic {
+                if matches!(
+                    role,
+                    RegisteredDefinitionRole::Atomic | RegisteredDefinitionRole::Intrinsic
+                ) {
                     write!(
                         formatter,
                         "registered {role_name} definition {definition} in module {module} must declare a non-empty symbol at {file_name}:{source_start_line}:{source_start_column}"
@@ -445,7 +451,7 @@ pub fn register_kernel_modules(
         let (ast_definition_index, indexed, source_start_column) =
             associate_definition(module, &definition)?;
         let atomic_symbol_is_valid = match definition.role {
-            RegisteredDefinitionRole::Atomic => definition
+            RegisteredDefinitionRole::Atomic | RegisteredDefinitionRole::Intrinsic => definition
                 .atomic_symbol
                 .as_deref()
                 .is_some_and(|symbol| !symbol.is_empty()),

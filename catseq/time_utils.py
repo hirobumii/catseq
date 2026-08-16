@@ -4,12 +4,19 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 from numbers import Real
-from typing import TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
 from .morphism.core import compiler_only
 
 
-Duration: TypeAlias = float
+if TYPE_CHECKING:
+    Duration: TypeAlias = float
+else:
+
+    class _DurationSourceType:
+        """Exact runtime binding for the compiler-only Duration annotation."""
+
+    Duration = _DurationSourceType
 _TimeValue: TypeAlias = Real | Decimal
 
 # Source-language SI units. The Rust frontend converts expressions containing

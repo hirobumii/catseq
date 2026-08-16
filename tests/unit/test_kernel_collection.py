@@ -22,9 +22,11 @@ from catseq.morphism import (
     Morphism,
     atomic_morphism,
     compute,
-    morphism_template,
+    identity,
+    morphism,
 )
 from catseq.morphism.core import _registered_definition, kernel
+from catseq.time_utils import cycles
 
 
 _BODY_CALLS = 0
@@ -141,7 +143,7 @@ def _unused_kernel() -> Morphism:
     raise AssertionError("Kernel collection must not execute Python bodies")
 
 
-@morphism_template
+@morphism
 def _morphism_definition(width: int) -> Morphism:
     del width
     raise AssertionError("Kernel collection must not execute Python bodies")
@@ -224,6 +226,13 @@ class _Experiment(BaseExp):
 
 
 @dataclass
+class _SimpleAnalysisExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return identity(cycles(1))
+
+
+@dataclass
 class _UndecoratedExperiment(BaseExp):
     def build_sequence(self, params: ExpParams) -> Morphism:
         del params
@@ -249,7 +258,7 @@ def test_kernel_registration_is_public_inert_and_exact_object_authoritative() ->
     setattr(
         fake,
         "__catseq_definition__",
-        CompilerDefinition(kind="morphism_template"),
+        CompilerDefinition(kind="morphism"),
     )
     assert _registered_definition(fake) is None
 
@@ -868,6 +877,79 @@ def test_module_source_failure_names_the_exact_registered_module(
         loader.failure = None
 
 
+def test_entry_analysis_ignores_unreferenced_registered_module_source_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "catseq_test_unreferenced_source_failure"
+    _, loader = _load_registered_source_module(
+        monkeypatch,
+        module_name,
+        "unreferenced_source_failure_helper",
+    )
+    loader.failure = OSError("unreferenced fixture source unavailable")
+    experiment = _SimpleAnalysisExperiment(
+        h5_writer=cast(Any, object()),
+    )
+
+    try:
+        analysis = _native._FrontendSession({})._analyze_registered_kernel(
+            experiment,
+            ExpParams({}),
+        )
+        assert (
+            analysis._entry_name
+            == f"{__name__}._SimpleAnalysisExperiment.build_sequence"
+        )
+        assert f"{module_name}.unreferenced_source_failure_helper" not in dict(
+            analysis._body_definitions
+        )
+    finally:
+        loader.failure = None
+
+
+def test_entry_analysis_rejects_source_that_no_longer_matches_registered_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "catseq_test_stale_registered_source"
+    original_source = """\
+from catseq.experiment.base_exp import BaseExp
+from catseq.experiment.params import ExpParams
+from catseq.morphism import Morphism, identity
+from catseq.morphism.core import kernel
+from catseq.time_utils import cycles
+
+class SnapshotExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return identity(cycles(1))
+"""
+    changed_source = original_source.replace("cycles(1)", "cycles(2)")
+    loader = _MutableSourceLoader(module_name, original_source)
+    module = ModuleType(module_name)
+    module.__loader__ = loader
+    monkeypatch.setitem(sys.modules, module_name, module)
+    exec(compile(original_source, f"<{module_name}>", "exec"), module.__dict__)
+    experiment = module.SnapshotExperiment(h5_writer=cast(Any, object()))
+    loader.source = changed_source
+
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                rf"registered definition {module_name}\.SnapshotExperiment\.build_sequence "
+                rf"does not match the source revision at <{module_name}>"
+            ),
+        ):
+            _native._FrontendSession({})._analyze_registered_kernel(
+                experiment,
+                ExpParams({}),
+            )
+    finally:
+        loader.source = original_source
+
+
 def test_nac3_parse_failure_retains_loader_module_location(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -939,7 +1021,7 @@ def test_collector_requires_actual_base_exp_and_registered_entry(
     setattr(
         _UndecoratedExperiment.build_sequence,
         "__catseq_definition__",
-        CompilerDefinition(kind="morphism_template"),
+        CompilerDefinition(kind="morphism"),
     )
 
     with pytest.raises(TypeError, match="registered.*@kernel"):
@@ -952,13 +1034,13 @@ def test_definition_roles_cannot_be_stacked() -> None:
     with pytest.raises(TypeError, match="already registered"):
 
         @kernel
-        @morphism_template
+        @morphism
         def invalid_inner() -> Morphism:
             raise AssertionError
 
     with pytest.raises(TypeError, match="already registered"):
 
-        @morphism_template
+        @morphism
         @kernel
         def invalid_outer() -> Morphism:
             raise AssertionError

@@ -7,13 +7,16 @@ use catseq_frontend::{
     RegisteredDefinitionRole, RegisteredKernelModules, RegistrationInput, register_kernel_modules,
     validate_compute_roots,
 };
+use nac3ast::{Constant, Expr, ExprKind, Operator, StmtKind, Unaryop};
 use pyo3::PyTypeInfo;
-use pyo3::exceptions::{PyRuntimeError, PyTypeError};
+use pyo3::exceptions::{PyAttributeError, PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFunction, PyInt, PyModule, PyTuple, PyType};
+use pyo3::types::{
+    PyBool, PyDict, PyFloat, PyFunction, PyInt, PyModule, PyString, PyTuple, PyType,
+};
 
 use crate::kernel_collector::{
-    CollectedDefinition, CollectedDefinitionRole, PyKernelDefinitionCollection,
+    CollectedDefinition, CollectedDefinitionRole, PyKernelDefinitionCollection, exact_definition_id,
 };
 
 #[pyclass(name = "_RegisteredKernelModules", module = "catseq._native", frozen)]
@@ -370,8 +373,348 @@ fn verify_source_revisions(
         if let Some(attribute) = code_revision_mismatch(&original_code, &candidate)? {
             return Err(source_revision_error(frontend, registered.id(), attribute));
         }
+        let statement = frontend
+            .definition_ast(registered.id())
+            .expect("registered definitions retain their exact parsed statement");
+        if let Some(attribute) = signature_revision_mismatch(py, original, statement)? {
+            return Err(source_revision_error(frontend, registered.id(), attribute));
+        }
     }
     Ok(())
+}
+
+fn signature_revision_mismatch(
+    py: Python<'_>,
+    function: &Bound<'_, PyFunction>,
+    statement: &nac3ast::Stmt,
+) -> PyResult<Option<&'static str>> {
+    let StmtKind::FunctionDef { args, returns, .. } = &statement.node else {
+        return Ok(Some("signature shape"));
+    };
+
+    let defaults_object = function.getattr("__defaults__")?;
+    let defaults = if defaults_object.is_none() {
+        Vec::new()
+    } else {
+        defaults_object
+            .downcast_exact::<PyTuple>()?
+            .iter()
+            .collect::<Vec<_>>()
+    };
+    if defaults.len() != args.defaults.len() {
+        return Ok(Some("positional defaults"));
+    }
+    for (source, runtime) in args.defaults.iter().zip(defaults) {
+        if let Some(source) = revision_literal(source)
+            && runtime_revision_literal(py, &runtime)? != Some(source)
+        {
+            return Ok(Some("positional defaults"));
+        }
+    }
+
+    let kw_defaults_object = function.getattr("__kwdefaults__")?;
+    let kw_defaults = if kw_defaults_object.is_none() {
+        None
+    } else {
+        Some(kw_defaults_object.downcast_exact::<PyDict>()?)
+    };
+    let source_kw_default_count = args
+        .kw_defaults
+        .iter()
+        .filter(|default| default.is_some())
+        .count();
+    if kw_defaults.map_or(0, |defaults| defaults.len()) != source_kw_default_count {
+        return Ok(Some("keyword defaults"));
+    }
+    for (argument, source) in args.kwonlyargs.iter().zip(&args.kw_defaults) {
+        let Some(source) = source else {
+            continue;
+        };
+        let name = argument.node.arg.to_string();
+        let runtime = match kw_defaults {
+            Some(defaults) => defaults.get_item(&name)?,
+            None => None,
+        }
+        .ok_or_else(|| PyRuntimeError::new_err("Python keyword default is unavailable"))?;
+        if let Some(source) = revision_literal(source)
+            && runtime_revision_literal(py, &runtime)? != Some(source)
+        {
+            return Ok(Some("keyword defaults"));
+        }
+    }
+
+    let annotations_object = function.getattr("__annotations__")?;
+    let annotations = annotations_object.downcast_exact::<PyDict>()?;
+    let mut source_annotations = Vec::new();
+    for argument in args
+        .posonlyargs
+        .iter()
+        .chain(&args.args)
+        .chain(&args.kwonlyargs)
+    {
+        if let Some(annotation) = argument.node.annotation.as_deref() {
+            source_annotations.push((argument.node.arg.to_string(), annotation));
+        }
+    }
+    if let Some(argument) = &args.vararg
+        && let Some(annotation) = argument.node.annotation.as_deref()
+    {
+        source_annotations.push((argument.node.arg.to_string(), annotation));
+    }
+    if let Some(argument) = &args.kwarg
+        && let Some(annotation) = argument.node.annotation.as_deref()
+    {
+        source_annotations.push((argument.node.arg.to_string(), annotation));
+    }
+    if let Some(returns) = returns.as_deref() {
+        source_annotations.push(("return".to_owned(), returns));
+    }
+    if annotations.len() != source_annotations.len() {
+        return Ok(Some("annotations"));
+    }
+    for (name, source) in source_annotations {
+        let runtime = annotations
+            .get_item(name)?
+            .ok_or_else(|| PyRuntimeError::new_err("Python annotation is unavailable"))?;
+        if !annotation_revision_matches(py, function, source, &runtime)? {
+            return Ok(Some("annotations"));
+        }
+    }
+
+    Ok(None)
+}
+
+#[derive(Eq, PartialEq)]
+enum RevisionLiteral {
+    None,
+    Bool(bool),
+    Int(String),
+    Float(u64),
+    String(String),
+}
+
+fn revision_literal(expression: &Expr) -> Option<RevisionLiteral> {
+    match &expression.node {
+        ExprKind::Constant { value, .. } => match value {
+            Constant::None => Some(RevisionLiteral::None),
+            Constant::Bool(value) => Some(RevisionLiteral::Bool(*value)),
+            Constant::Int(value) => Some(RevisionLiteral::Int(value.to_string())),
+            Constant::Float(value) => Some(RevisionLiteral::Float(value.to_bits())),
+            Constant::Str(value) => Some(RevisionLiteral::String(value.clone())),
+            _ => None,
+        },
+        ExprKind::UnaryOp { op, operand } => match (op, revision_literal(operand)?) {
+            (Unaryop::UAdd, value @ (RevisionLiteral::Int(_) | RevisionLiteral::Float(_))) => {
+                Some(value)
+            }
+            (Unaryop::USub, RevisionLiteral::Int(value)) => Some(RevisionLiteral::Int(format!(
+                "-{}",
+                value.trim_start_matches('+')
+            ))),
+            (Unaryop::USub, RevisionLiteral::Float(value)) => {
+                Some(RevisionLiteral::Float((-f64::from_bits(value)).to_bits()))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn runtime_revision_literal(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<Option<RevisionLiteral>> {
+    if value.is_none() {
+        return Ok(Some(RevisionLiteral::None));
+    }
+    if value.get_type().is(&PyBool::type_object(py)) {
+        return Ok(Some(RevisionLiteral::Bool(value.extract()?)));
+    }
+    if value.get_type().is(&PyInt::type_object(py)) {
+        return Ok(Some(RevisionLiteral::Int(
+            value.str()?.to_str()?.to_owned(),
+        )));
+    }
+    if value.get_type().is(&PyFloat::type_object(py)) {
+        return Ok(Some(RevisionLiteral::Float(
+            value.extract::<f64>()?.to_bits(),
+        )));
+    }
+    if value.get_type().is(&PyString::type_object(py)) {
+        return Ok(Some(RevisionLiteral::String(value.extract()?)));
+    }
+    Ok(None)
+}
+
+fn annotation_revision_matches(
+    py: Python<'_>,
+    function: &Bound<'_, PyFunction>,
+    source: &Expr,
+    runtime: &Bound<'_, PyAny>,
+) -> PyResult<bool> {
+    if let Ok(runtime) = runtime.downcast_exact::<PyString>() {
+        let Some(source) = render_annotation(source) else {
+            return Ok(false);
+        };
+        let runtime = runtime.to_str()?;
+        return Ok(compact_annotation(runtime) == compact_annotation(&source));
+    }
+    if let Some(source) = resolve_direct_annotation(function, source)? {
+        return Ok(source.is(runtime));
+    }
+    match &source.node {
+        ExprKind::Constant {
+            value: Constant::None,
+            ..
+        } => {
+            let none_type = py.import("types")?.getattr("NoneType")?;
+            Ok(runtime.is_none() || runtime.is(&none_type))
+        }
+        ExprKind::Subscript { value, slice, .. } => {
+            let Some(source_origin) = resolve_direct_annotation(function, value)? else {
+                return Ok(false);
+            };
+            let runtime_origin = match runtime.getattr("__origin__") {
+                Ok(origin) => origin,
+                Err(error) if error.is_instance_of::<PyAttributeError>(py) => return Ok(false),
+                Err(error) => return Err(error),
+            };
+            let source_origin = normalized_annotation_origin(py, &source_origin)?;
+            if !source_origin.is(&runtime_origin) {
+                return Ok(false);
+            }
+            let runtime_arguments_object = runtime.getattr("__args__")?;
+            let runtime_arguments = runtime_arguments_object.downcast_exact::<PyTuple>()?;
+            let source_arguments = match &slice.node {
+                ExprKind::Tuple { elts, .. } => elts.iter().collect::<Vec<_>>(),
+                _ => vec![slice.as_ref()],
+            };
+            if source_arguments.len() != runtime_arguments.len() {
+                return Ok(false);
+            }
+            for (source, runtime) in source_arguments.into_iter().zip(runtime_arguments.iter()) {
+                if !annotation_revision_matches(py, function, source, &runtime)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        ExprKind::BinOp {
+            left,
+            op: Operator::BitOr,
+            right,
+        } => {
+            let runtime_arguments_object = runtime.getattr("__args__")?;
+            let runtime_arguments = runtime_arguments_object.downcast_exact::<PyTuple>()?;
+            if runtime_arguments.len() != 2 {
+                return Ok(false);
+            }
+            annotation_revision_matches(py, function, left, &runtime_arguments.get_item(0)?)
+                .and_then(|left_matches| {
+                    if !left_matches {
+                        return Ok(false);
+                    }
+                    annotation_revision_matches(
+                        py,
+                        function,
+                        right,
+                        &runtime_arguments.get_item(1)?,
+                    )
+                })
+        }
+        _ => Ok(false),
+    }
+}
+
+fn normalized_annotation_origin<'py>(
+    py: Python<'py>,
+    annotation: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    match annotation.getattr("__origin__") {
+        Ok(origin) => Ok(origin),
+        Err(error) if error.is_instance_of::<PyAttributeError>(py) => Ok(annotation.clone()),
+        Err(error) => Err(error),
+    }
+}
+
+fn render_annotation(expression: &Expr) -> Option<String> {
+    match &expression.node {
+        ExprKind::Name { id, .. } => Some(id.to_string()),
+        ExprKind::Attribute { value, attr, .. } => {
+            Some(format!("{}.{}", render_annotation(value)?, attr))
+        }
+        ExprKind::Subscript { value, slice, .. } => Some(format!(
+            "{}[{}]",
+            render_annotation(value)?,
+            render_annotation(slice)?
+        )),
+        ExprKind::BinOp {
+            left,
+            op: Operator::BitOr,
+            right,
+        } => Some(format!(
+            "{}|{}",
+            render_annotation(left)?,
+            render_annotation(right)?
+        )),
+        ExprKind::Constant {
+            value: Constant::None,
+            ..
+        } => Some("None".to_owned()),
+        _ => None,
+    }
+}
+
+fn compact_annotation(annotation: &str) -> String {
+    annotation
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+fn resolve_direct_annotation<'py>(
+    function: &Bound<'py, PyFunction>,
+    expression: &Expr,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    let Some(path) = render_direct_path(expression) else {
+        return Ok(None);
+    };
+    let mut segments = path.split('.');
+    let root = segments
+        .next()
+        .expect("rendered annotation paths are non-empty");
+    let globals_object = function.getattr("__globals__")?;
+    let globals = globals_object.downcast_exact::<PyDict>()?;
+    let mut value = if let Some(value) = globals.get_item(root)? {
+        value
+    } else {
+        let builtins_object = function.getattr("__builtins__")?;
+        let builtins = builtins_object.downcast_exact::<PyDict>()?;
+        let Some(value) = builtins.get_item(root)? else {
+            return Ok(None);
+        };
+        value
+    };
+    for attribute in segments {
+        let Ok(module) = value.downcast_exact::<PyModule>() else {
+            return Ok(None);
+        };
+        let Some(next) = module.dict().get_item(attribute)? else {
+            return Ok(None);
+        };
+        value = next;
+    }
+    Ok(Some(value))
+}
+
+fn render_direct_path(expression: &Expr) -> Option<String> {
+    match &expression.node {
+        ExprKind::Name { id, .. } => Some(id.to_string()),
+        ExprKind::Attribute { value, attr, .. } => {
+            Some(format!("{}.{}", render_direct_path(value)?, attr))
+        }
+        _ => None,
+    }
 }
 
 fn code_revision_mismatch(
@@ -485,15 +828,6 @@ fn definition_name_bindings(
     Ok(bindings)
 }
 
-fn exact_definition_id(
-    value: &Bound<'_, PyAny>,
-    definitions: &[CollectedDefinition],
-) -> Option<usize> {
-    definitions
-        .iter()
-        .position(|definition| value.is(&definition.original) || value.is(&definition.wrapper))
-}
-
 fn builtin_name_bindings(
     py: Python<'_>,
     definitions: &[CollectedDefinition],
@@ -548,7 +882,7 @@ fn builtin_name_bindings(
     Ok(bindings)
 }
 
-const fn compute_type_name(compute_type: ComputeType) -> &'static str {
+pub(crate) const fn compute_type_name(compute_type: ComputeType) -> &'static str {
     match compute_type {
         ComputeType::Bool => "bool",
         ComputeType::Int32 => "i32",

@@ -1,4 +1,4 @@
-use pyo3::exceptions::{PyRuntimeError, PyTypeError};
+use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFunction, PyModule, PyTuple};
 
@@ -101,6 +101,10 @@ pub(crate) fn collect_entry_kernel_definitions(
     py: Python<'_>,
     experiment: &Bound<'_, PyAny>,
 ) -> PyResult<PyKernelDefinitionCollection> {
+    // This exact-binding closure limits which module sources must be made
+    // available to the Rust analyzer. It is deliberately only a source
+    // candidate set: entry-rooted semantic reachability remains a result of
+    // registered source analysis and unreachable candidates never enter HIR.
     collect_kernel_definitions_with_scope(py, experiment, CollectionScope::EntryBindings)
 }
 
@@ -207,8 +211,12 @@ fn select_entry_bindings(
         for class in mro.iter() {
             let namespace = class.getattr("__dict__")?;
             for name in &names {
-                if let Ok(value) = namespace.get_item(name) {
-                    select_definition(&value, &catalog, &mut selected, &mut pending);
+                match namespace.get_item(name) {
+                    Ok(value) => {
+                        select_exact_binding(&value, &names, &catalog, &mut selected, &mut pending)?
+                    }
+                    Err(error) if error.is_instance_of::<PyKeyError>(py) => {}
+                    Err(error) => return Err(error),
                 }
             }
         }
@@ -272,7 +280,7 @@ fn select_definition(
     true
 }
 
-fn exact_definition_id(
+pub(crate) fn exact_definition_id(
     value: &Bound<'_, PyAny>,
     definitions: &[CollectedDefinition],
 ) -> Option<usize> {

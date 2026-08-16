@@ -22,9 +22,9 @@ pub use registered_modules::{
     register_kernel_modules,
 };
 pub use source_hir::{
-    ComputeCallReference, DefinitionCallEdge, DependencyRole, ExternalRead, MorphismComposition,
-    ResolvedCallTarget, SemanticFact, SourceAnchor, SourceBinding, SourceHirKind, SourceHirNode,
-    SourceIntrinsic, SourceLiteral, TopologyEffect, TypedSourceHir, ValueAvailability, ValueType,
-    ValueTypeConstructor,
+    CallArgumentBinding, CallArgumentOrigin, ComputeCallReference, DefinitionCallEdge,
+    DependencyRole, ExternalRead, MorphismComposition, ResolvedCallTarget, SemanticFact,
+    SourceAnchor, SourceBinding, SourceHirKind, SourceHirNode, SourceIntrinsic, SourceLiteral,
+    TopologyEffect, TypedSourceHir, ValueAvailability, ValueType, ValueTypeConstructor,
 };
 pub use typed::{ParameterKind, TypeSignature, TypedCheckReport, TypedDefinition, TypedParameter};

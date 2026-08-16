@@ -13,10 +13,10 @@ use crate::registered_modules::{
     RegisteredDefinition, RegisteredDefinitionRole, RegisteredKernelModules,
 };
 use crate::source_hir::{
-    ComputeCallReference, DefinitionCallEdge, DependencyRole, ExternalRead, MorphismComposition,
-    ResolvedCallTarget, SemanticFact, SourceAnchor, SourceBinding, SourceHirKind, SourceHirNode,
-    SourceIntrinsic, SourceLiteral, TopologyEffect, TypedSourceHir, ValueAvailability, ValueType,
-    ValueTypeConstructor,
+    CallArgumentBinding, CallArgumentOrigin, ComputeCallReference, DefinitionCallEdge,
+    DependencyRole, ExternalRead, MorphismComposition, ResolvedCallTarget, SemanticFact,
+    SourceAnchor, SourceBinding, SourceHirKind, SourceHirNode, SourceIntrinsic, SourceLiteral,
+    TopologyEffect, TypedSourceHir, ValueAvailability, ValueType, ValueTypeConstructor,
 };
 use crate::typed::{
     ParameterKind, TypeSignature, TypedCheckReport, TypedDefinition, TypedParameter,
@@ -447,16 +447,17 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
             } else {
                 None
             };
-            parameters.push(TypedParameter::new(
-                name,
-                binding,
-                if index < args.posonlyargs.len() {
-                    ParameterKind::PositionalOnly
-                } else {
-                    ParameterKind::PositionalOrKeyword
-                },
-                default,
-            ));
+            let kind = if index < args.posonlyargs.len() {
+                ParameterKind::PositionalOnly
+            } else {
+                ParameterKind::PositionalOrKeyword
+            };
+            parameters.push(match binding {
+                SourceBinding::ValueType(value_type) => {
+                    TypedParameter::value(name, value_type, kind, default)
+                }
+                source_binding => TypedParameter::source(name, source_binding, kind),
+            });
         }
         for (argument, default) in args.kwonlyargs.iter().zip(&args.kw_defaults) {
             let name = argument.node.arg.to_string();
@@ -480,12 +481,14 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                     self.resolve_default(&definition, default, value_type)
                 })
                 .transpose()?;
-            parameters.push(TypedParameter::new(
-                name,
-                binding,
-                ParameterKind::KeywordOnly,
-                default,
-            ));
+            parameters.push(match binding {
+                SourceBinding::ValueType(value_type) => {
+                    TypedParameter::value(name, value_type, ParameterKind::KeywordOnly, default)
+                }
+                source_binding => {
+                    TypedParameter::source(name, source_binding, ParameterKind::KeywordOnly)
+                }
+            });
         }
         let returns = returns.as_deref().ok_or_else(|| {
             RegisteredAnalysisError::at(
@@ -496,8 +499,8 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
         let return_type = self.resolve_value_annotation(&definition, returns)?;
         if definition_id == entry_id
             && (parameters.len() != 2
-                || parameters[0].binding() != &SourceBinding::EntryOwner
-                || parameters[1].binding() != &SourceBinding::ExpParams
+                || parameters[0].source_binding() != Some(&SourceBinding::EntryOwner)
+                || parameters[1].source_binding() != Some(&SourceBinding::ExpParams)
                 || return_type != ValueType::Morphism)
         {
             return Err(RegisteredAnalysisError::at(
@@ -653,7 +656,19 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
         let mut parameter_bindings = signature
             .parameters()
             .iter()
-            .map(|parameter| (parameter.name().to_owned(), parameter.binding().clone()))
+            .map(|parameter| {
+                let binding = parameter
+                    .source_binding()
+                    .cloned()
+                    .or_else(|| {
+                        parameter
+                            .value_type()
+                            .cloned()
+                            .map(SourceBinding::ValueType)
+                    })
+                    .expect("typed parameters retain either a value type or source authority");
+                (parameter.name().to_owned(), binding)
+            })
             .collect::<BTreeMap<_, _>>();
         for (index, statement) in body.iter().enumerate() {
             match &statement.node {
@@ -1026,6 +1041,7 @@ enum LocalBinding {
     Source(SourceBinding),
 }
 
+#[derive(Clone)]
 struct LoweredExpression {
     node_id: u32,
     value_type: ValueType,
@@ -1036,9 +1052,29 @@ struct LoweredExpression {
 #[derive(Clone)]
 struct CallParameter {
     name: String,
-    binding: SourceBinding,
+    value_type: Option<ValueType>,
+    source_binding: Option<SourceBinding>,
     kind: ParameterKind,
-    has_default: bool,
+    default: Option<SourceLiteral>,
+}
+
+#[derive(Clone, Copy)]
+enum ExplicitCallArgumentOrigin {
+    Positional,
+    Keyword,
+}
+
+enum BoundCallArgumentValue {
+    Explicit {
+        argument_index: usize,
+        origin: ExplicitCallArgumentOrigin,
+    },
+    Default(SourceLiteral),
+}
+
+struct BoundCallArgument {
+    parameter_id: usize,
+    value: BoundCallArgumentValue,
 }
 
 struct DefinitionLowerer<'a, 'b> {
@@ -1089,7 +1125,12 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                     topology_effect: TopologyEffect::Empty,
                 }
             } else {
-                LocalBinding::Source(parameter.binding().clone())
+                LocalBinding::Source(
+                    parameter
+                        .source_binding()
+                        .cloned()
+                        .expect("non-value parameters retain source authority"),
+                )
             };
             self.locals.insert(parameter.name().to_owned(), binding);
         }
@@ -1465,9 +1506,10 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                     SourceIntrinsic::Cycles => (
                         vec![CallParameter {
                             name: "count".to_owned(),
-                            binding: SourceBinding::ValueType(ValueType::Int32),
+                            value_type: Some(ValueType::Int32),
+                            source_binding: None,
                             kind: ParameterKind::PositionalOrKeyword,
-                            has_default: false,
+                            default: None,
                         }],
                         ValueType::Duration,
                         TopologyEffect::Empty,
@@ -1475,9 +1517,10 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                     SourceIntrinsic::Identity => (
                         vec![CallParameter {
                             name: "duration".to_owned(),
-                            binding: SourceBinding::ValueType(ValueType::Duration),
+                            value_type: Some(ValueType::Duration),
+                            source_binding: None,
                             kind: ParameterKind::PositionalOrKeyword,
-                            has_default: false,
+                            default: None,
                         }],
                         ValueType::Morphism,
                         TopologyEffect::Morphism,
@@ -1501,14 +1544,17 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                     .expect("reachable registered calls retain signatures");
                 let mut parameters = Vec::new();
                 for parameter in signature.parameters() {
-                    if bound_entry_owner && parameter.binding() == &SourceBinding::EntryOwner {
+                    if bound_entry_owner
+                        && parameter.source_binding() == Some(&SourceBinding::EntryOwner)
+                    {
                         continue;
                     }
                     parameters.push(CallParameter {
                         name: parameter.name().to_owned(),
-                        binding: parameter.binding().clone(),
+                        value_type: parameter.value_type().cloned(),
+                        source_binding: parameter.source_binding().cloned(),
                         kind: parameter.kind(),
-                        has_default: parameter.default().is_some(),
+                        default: parameter.default().cloned(),
                     });
                 }
                 (
@@ -1542,9 +1588,10 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                     .enumerate()
                     .map(|(index, value_type)| CallParameter {
                         name: format!("arg{index}"),
-                        binding: SourceBinding::ValueType(value_type_from_compute(value_type)),
+                        value_type: Some(value_type_from_compute(value_type)),
+                        source_binding: None,
                         kind: ParameterKind::PositionalOnly,
-                        has_default: false,
+                        default: None,
                     })
                     .collect::<Vec<_>>();
                 let result = value_type_from_compute(interface.result());
@@ -1585,14 +1632,56 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                     .to_string()
             })
             .collect::<Vec<_>>();
-        let parameter_types = bind_call_arguments(
+        let bound_arguments = bind_call_arguments(
             &parameters,
             arguments.len(),
             &keyword_names,
             self.anchor(expression.location),
         )?;
-        for (expected, actual) in parameter_types.iter().zip(&lowered_arguments) {
-            let expected = expected.value_type().ok_or_else(|| {
+        let mut ordered_arguments = Vec::with_capacity(bound_arguments.len());
+        let mut call_arguments = Vec::with_capacity(bound_arguments.len());
+        for bound in bound_arguments {
+            let parameter = &parameters[bound.parameter_id];
+            let (actual, origin) = match bound.value {
+                BoundCallArgumentValue::Explicit {
+                    argument_index,
+                    origin,
+                } => (
+                    lowered_arguments[argument_index].clone(),
+                    match origin {
+                        ExplicitCallArgumentOrigin::Positional => CallArgumentOrigin::Positional,
+                        ExplicitCallArgumentOrigin::Keyword => CallArgumentOrigin::Keyword,
+                    },
+                ),
+                BoundCallArgumentValue::Default(literal) => {
+                    let value_type = source_literal_value_type(&literal);
+                    let fact = SemanticFact::value(
+                        value_type.clone(),
+                        ValueAvailability::Compile,
+                        TopologyEffect::Empty,
+                    );
+                    let node_id = self.push_node(
+                        SourceHirKind::Constant,
+                        None,
+                        Some(literal),
+                        None,
+                        &[],
+                        self.anchor(expression.location),
+                        fact,
+                    );
+                    (
+                        LoweredExpression {
+                            node_id,
+                            value_type,
+                            availability: ValueAvailability::Compile,
+                            topology_effect: TopologyEffect::Empty,
+                        },
+                        CallArgumentOrigin::Default,
+                    )
+                }
+            };
+            let expected = parameter.value_type.as_ref().ok_or_else(|| {
+                debug_assert!(parameter.source_binding.is_some());
                 RegisteredAnalysisError::at(
                     "source-authority parameters require their exact bound source value",
                     self.nodes[actual.node_id as usize].anchor().clone(),
@@ -1607,12 +1696,19 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                     DependencyRole::Relocatable
                 },
             );
+            call_arguments.push(CallArgumentBinding::new(
+                parameter.name.clone(),
+                actual.node_id,
+                origin,
+            ));
+            ordered_arguments.push(actual);
         }
-        let mut children = Vec::with_capacity(lowered_arguments.len() + 1);
+        let mut children = Vec::with_capacity(ordered_arguments.len() + 1);
         children.push(callee);
-        children.extend(lowered_arguments.iter().map(|argument| argument.node_id));
+        children.extend(ordered_arguments.iter().map(|argument| argument.node_id));
         let mut fact = SemanticFact::value(result_type.clone(), availability, topology_effect);
         fact.set_resolved_call(resolved_call);
+        fact.set_call_arguments(call_arguments);
         let node_id = self.push_node(
             SourceHirKind::Call,
             None,
@@ -1742,7 +1838,7 @@ fn bind_call_arguments(
     positional_count: usize,
     keyword_names: &[String],
     anchor: SourceAnchor,
-) -> Result<Vec<SourceBinding>, RegisteredAnalysisError> {
+) -> Result<Vec<BoundCallArgument>, RegisteredAnalysisError> {
     let positional_parameters = parameters
         .iter()
         .enumerate()
@@ -1759,13 +1855,20 @@ fn bind_call_arguments(
         ));
     }
 
-    let mut bound = vec![false; parameters.len()];
-    let mut expected = Vec::with_capacity(positional_count + keyword_names.len());
-    for parameter_id in positional_parameters.into_iter().take(positional_count) {
-        bound[parameter_id] = true;
-        expected.push(parameters[parameter_id].binding.clone());
+    let mut bound = (0..parameters.len())
+        .map(|_| None)
+        .collect::<Vec<Option<BoundCallArgumentValue>>>();
+    for (argument_index, parameter_id) in positional_parameters
+        .into_iter()
+        .take(positional_count)
+        .enumerate()
+    {
+        bound[parameter_id] = Some(BoundCallArgumentValue::Explicit {
+            argument_index,
+            origin: ExplicitCallArgumentOrigin::Positional,
+        });
     }
-    for name in keyword_names {
+    for (keyword_index, name) in keyword_names.iter().enumerate() {
         let parameter_id = parameters
             .iter()
             .position(|parameter| parameter.name == *name)
@@ -1782,19 +1885,21 @@ fn bind_call_arguments(
                 anchor,
             ));
         }
-        if bound[parameter_id] {
+        if bound[parameter_id].is_some() {
             return Err(RegisteredAnalysisError::at(
                 format!("parameter `{name}` is supplied more than once"),
                 anchor,
             ));
         }
-        bound[parameter_id] = true;
-        expected.push(parameter.binding.clone());
+        bound[parameter_id] = Some(BoundCallArgumentValue::Explicit {
+            argument_index: positional_count + keyword_index,
+            origin: ExplicitCallArgumentOrigin::Keyword,
+        });
     }
     let missing = parameters
         .iter()
         .zip(&bound)
-        .filter(|(parameter, bound)| !**bound && !parameter.has_default)
+        .filter(|(parameter, bound)| bound.is_none() && parameter.default.is_none())
         .map(|(parameter, _)| parameter.name.as_str())
         .collect::<Vec<_>>();
     if !missing.is_empty() {
@@ -1806,7 +1911,22 @@ fn bind_call_arguments(
             anchor,
         ));
     }
-    Ok(expected)
+    Ok(parameters
+        .iter()
+        .enumerate()
+        .map(|(parameter_id, parameter)| BoundCallArgument {
+            parameter_id,
+            value: bound[parameter_id]
+                .take()
+                .or_else(|| {
+                    parameter
+                        .default
+                        .clone()
+                        .map(BoundCallArgumentValue::Default)
+                })
+                .expect("every required call parameter was validated as bound"),
+        })
+        .collect())
 }
 
 fn source_literal(expression: &Expr) -> Option<SourceLiteral> {
@@ -1843,6 +1963,16 @@ fn source_literal_matches(literal: &SourceLiteral, expected: &ValueType) -> bool
         | (SourceLiteral::String(_), ValueType::String) => true,
         (_, ValueType::Optional(inner)) => source_literal_matches(literal, inner),
         _ => false,
+    }
+}
+
+fn source_literal_value_type(literal: &SourceLiteral) -> ValueType {
+    match literal {
+        SourceLiteral::None => ValueType::None,
+        SourceLiteral::Bool(_) => ValueType::Bool,
+        SourceLiteral::Int32(_) => ValueType::Int32,
+        SourceLiteral::Float64(_) => ValueType::Float64,
+        SourceLiteral::String(_) => ValueType::String,
     }
 }
 

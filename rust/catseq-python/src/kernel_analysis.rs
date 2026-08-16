@@ -13,7 +13,9 @@ use pyo3::types::{
 use crate::kernel_collector::{
     PyKernelDefinitionCollection, collect_entry_kernel_definitions, collect_kernel_definitions,
 };
-use crate::kernel_registration::{PyRegisteredKernelModules, register_collected_kernel_modules};
+use crate::kernel_registration::{
+    PyRegisteredKernelModules, compute_type_name, register_collected_kernel_modules,
+};
 
 #[pyclass(name = "_FrontendSession", module = "catseq._native", frozen)]
 pub(crate) struct PyFrontendSession {
@@ -675,11 +677,4 @@ fn request_error(error: PyErr) -> RequestResolutionError {
 
 fn definition_name(module: &str, qualified_name: &str) -> String {
     format!("{module}.{qualified_name}")
-}
-
-const fn compute_type_name(compute_type: catseq_frontend::ComputeType) -> &'static str {
-    match compute_type {
-        catseq_frontend::ComputeType::Bool => "bool",
-        catseq_frontend::ComputeType::Int32 => "i32",
-    }
 }

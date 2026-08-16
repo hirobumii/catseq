@@ -11,4 +11,5 @@ crate-type = ["cdylib"]
 [dependencies]
 catseq-frontend.workspace = true
 catseq-runtime.workspace = true
+nac3ast.workspace = true
 pyo3 = { version = "0.24.2", features = ["extension-module"] }

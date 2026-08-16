@@ -330,6 +330,42 @@ pub enum ResolvedCallTarget {
     Compute(Box<ComputeCallReference>),
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum CallArgumentOrigin {
+    Positional,
+    Keyword,
+    Default,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CallArgumentBinding {
+    parameter: String,
+    value_node: u32,
+    origin: CallArgumentOrigin,
+}
+
+impl CallArgumentBinding {
+    pub(crate) fn new(parameter: String, value_node: u32, origin: CallArgumentOrigin) -> Self {
+        Self {
+            parameter,
+            value_node,
+            origin,
+        }
+    }
+
+    pub fn parameter(&self) -> &str {
+        &self.parameter
+    }
+
+    pub const fn value_node(&self) -> u32 {
+        self.value_node
+    }
+
+    pub const fn origin(&self) -> CallArgumentOrigin {
+        self.origin
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SourceHirNode {
     kind: SourceHirKind,
@@ -401,6 +437,7 @@ pub struct SemanticFact {
     topology_effect: TopologyEffect,
     resolved_node: Option<u32>,
     resolved_call: Option<ResolvedCallTarget>,
+    call_arguments: Vec<CallArgumentBinding>,
     external_read_id: Option<u32>,
 }
 
@@ -418,6 +455,7 @@ impl SemanticFact {
             topology_effect,
             resolved_node: None,
             resolved_call: None,
+            call_arguments: Vec::new(),
             external_read_id: None,
         }
     }
@@ -431,6 +469,7 @@ impl SemanticFact {
             topology_effect: TopologyEffect::Empty,
             resolved_node: None,
             resolved_call: None,
+            call_arguments: Vec::new(),
             external_read_id: None,
         }
     }
@@ -463,6 +502,10 @@ impl SemanticFact {
         self.resolved_call.as_ref()
     }
 
+    pub fn call_arguments(&self) -> &[CallArgumentBinding] {
+        &self.call_arguments
+    }
+
     pub const fn external_read_id(&self) -> Option<u32> {
         self.external_read_id
     }
@@ -473,6 +516,10 @@ impl SemanticFact {
 
     pub(crate) fn set_resolved_call(&mut self, target: ResolvedCallTarget) {
         self.resolved_call = Some(target);
+    }
+
+    pub(crate) fn set_call_arguments(&mut self, arguments: Vec<CallArgumentBinding>) {
+        self.call_arguments = arguments;
     }
 
     pub(crate) fn set_external_read_id(&mut self, read_id: u32) {

@@ -273,10 +273,10 @@ during this design stage.
 
 ## Source spellings still intentionally open for review
 
-The semantic boundary is stronger than these provisional names.  In
-particular, review may change:
+The sequencing value spelling is settled: user source has one `Morphism` type,
+and reusable definitions use `@morphism`. The remaining provisional names may
+still change:
 
-- the public name replacing or retaining `morphism_template`;
 - the exact typed syntax for `loop_value`, carry edges, and exhaustion;
 - the concrete spelling and exact constant constructors for `fixed32[F]`;
 - the concrete Link-value declaration spelling;

@@ -18,23 +18,39 @@ pub enum ParameterKind {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TypedParameter {
     name: String,
-    binding: SourceBinding,
+    value_type: Option<ValueType>,
+    source_binding: Option<SourceBinding>,
     kind: ParameterKind,
     default: Option<SourceLiteral>,
 }
 
 impl TypedParameter {
-    pub(crate) fn new(
+    pub(crate) fn value(
         name: String,
-        binding: SourceBinding,
+        value_type: ValueType,
         kind: ParameterKind,
         default: Option<SourceLiteral>,
     ) -> Self {
         Self {
             name,
-            binding,
+            value_type: Some(value_type),
+            source_binding: None,
             kind,
             default,
+        }
+    }
+
+    pub(crate) fn source(name: String, source_binding: SourceBinding, kind: ParameterKind) -> Self {
+        assert!(
+            !matches!(source_binding, SourceBinding::ValueType(_)),
+            "ordinary parameter types belong in TypedParameter::value",
+        );
+        Self {
+            name,
+            value_type: None,
+            source_binding: Some(source_binding),
+            kind,
+            default: None,
         }
     }
 
@@ -42,12 +58,12 @@ impl TypedParameter {
         &self.name
     }
 
-    pub const fn binding(&self) -> &SourceBinding {
-        &self.binding
+    pub const fn value_type(&self) -> Option<&ValueType> {
+        self.value_type.as_ref()
     }
 
-    pub const fn value_type(&self) -> Option<&ValueType> {
-        self.binding.value_type()
+    pub const fn source_binding(&self) -> Option<&SourceBinding> {
+        self.source_binding.as_ref()
     }
 
     pub const fn kind(&self) -> ParameterKind {

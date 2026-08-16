@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use catseq_frontend::{
-    DefinitionNameBindingInput, DefinitionRegistrationInput, DependencyRole,
+    CallArgumentOrigin, DefinitionNameBindingInput, DefinitionRegistrationInput, DependencyRole,
     ModuleRegistrationInput, MorphismComposition, RegisteredDefinitionRole,
     RegisteredKernelModules, RegisteredRequestResolver, RegistrationInput, RequestResolutionError,
-    ResolvedExternalRead, SourceBinding, SourceHirKind, SourceIntrinsic, SourceLiteral,
-    TopologyEffect, ValueAvailability, ValueType, analyze_registered_entry,
+    ResolvedCallTarget, ResolvedExternalRead, SourceBinding, SourceHirKind, SourceIntrinsic,
+    SourceLiteral, TopologyEffect, ValueAvailability, ValueType, analyze_registered_entry,
     register_kernel_modules,
 };
 
@@ -224,12 +224,12 @@ fn analyzes_exact_loop_free_entry_reachability_hir_and_read_edges() {
         .find(|definition| definition.definition_id() == 12)
         .expect("entry remains in the report");
     assert_eq!(
-        entry.signature().parameters()[0].binding(),
-        &SourceBinding::EntryOwner
+        entry.signature().parameters()[0].source_binding(),
+        Some(&SourceBinding::EntryOwner)
     );
     assert_eq!(
-        entry.signature().parameters()[1].binding(),
-        &SourceBinding::ExpParams
+        entry.signature().parameters()[1].source_binding(),
+        Some(&SourceBinding::ExpParams)
     );
     assert_eq!(entry.signature().parameters()[0].value_type(), None);
     assert_eq!(entry.signature().parameters()[1].value_type(), None);
@@ -300,6 +300,11 @@ fn analyzes_exact_loop_free_entry_reachability_hir_and_read_edges() {
         .iter()
         .find(|definition| definition.definition_id() == 11)
         .expect("reachable helper remains in the report");
+    assert_eq!(
+        helper.signature().parameters()[0].value_type(),
+        Some(&ValueType::Int32)
+    );
+    assert_eq!(helper.signature().parameters()[0].source_binding(), None);
     assert!(
         helper
             .hir()
@@ -690,13 +695,13 @@ fn does_not_query_bad_exp_param_read_in_an_unreachable_definition() {
 fn preserves_and_applies_registered_source_defaults() {
     let source = concat!(
         "@morphism\n",
-        "def configured(carrier: float, enabled: bool = False) -> Morphism:\n",
+        "def configured(carrier: float, enabled: bool = False, label: int = 1) -> Morphism:\n",
         "    return identity(cycles(1))\n",
         "\n",
         "class Experiment:\n",
         "    @kernel\n",
         "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
-        "        return configured(100e6)\n",
+        "        return configured(100e6, label=7)\n",
     );
     let registered = register_fixture(
         source,
@@ -727,9 +732,55 @@ fn preserves_and_applies_registered_source_defaults() {
         .find(|definition| definition.definition_id() == 10)
         .expect("the called Morphism Definition is reachable");
 
-    assert_eq!(configured.signature().parameters().len(), 2);
+    assert_eq!(configured.signature().parameters().len(), 3);
     assert_eq!(
         configured.signature().parameters()[1].default(),
         Some(&SourceLiteral::Bool(false))
+    );
+    assert_eq!(
+        configured.signature().parameters()[2].default(),
+        Some(&SourceLiteral::Int32(1))
+    );
+
+    let entry = analysis
+        .report()
+        .definitions()
+        .iter()
+        .find(|definition| definition.definition_id() == 12)
+        .expect("entry remains in the report");
+    let call_fact = entry
+        .hir()
+        .facts()
+        .iter()
+        .find(|fact| {
+            matches!(
+                fact.resolved_call(),
+                Some(ResolvedCallTarget::Definition {
+                    definition_id: 10,
+                    ..
+                })
+            )
+        })
+        .expect("the configured call remains in entry HIR");
+    assert_eq!(
+        call_fact
+            .call_arguments()
+            .iter()
+            .map(|argument| (argument.parameter(), argument.origin()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("carrier", CallArgumentOrigin::Positional),
+            ("enabled", CallArgumentOrigin::Default),
+            ("label", CallArgumentOrigin::Keyword),
+        ]
+    );
+    let enabled = &call_fact.call_arguments()[1];
+    assert_eq!(
+        entry.hir().nodes()[enabled.value_node() as usize].literal(),
+        Some(&SourceLiteral::Bool(false))
+    );
+    assert_eq!(
+        entry.hir().facts()[enabled.value_node() as usize].value_type(),
+        Some(&ValueType::Bool)
     );
 }

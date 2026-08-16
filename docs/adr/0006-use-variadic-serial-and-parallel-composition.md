@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: amended by ADR-0053 and ADR-0055
 ---
 
 # Use variadic Serial and Parallel composition nodes
@@ -19,7 +19,7 @@ from the node rather than allocating a Python object or independent vector for
 each composition. Source lowering flattens associative runs without inlining
 through template instantiation or definition boundaries.
 
-`Morphism >> dict[Channel, MorphismDef]` is frontend syntax. Typed HIR lowers
+`Morphism >> dict[Channel, Morphism]` is frontend syntax. Typed HIR lowers
 the dictionary to a Parallel group of channel-bound template instantiations and
 then includes that group as the next Serial child. The canonical arena has no
 ApplyMap or DeferredApply composition kind.

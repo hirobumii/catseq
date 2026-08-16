@@ -117,6 +117,7 @@ version = "0.4.2"
 dependencies = [
  "catseq-frontend",
  "catseq-runtime",
+ "nac3ast",
  "pyo3",
 ]
 

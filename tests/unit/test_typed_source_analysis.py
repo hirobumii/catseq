@@ -330,8 +330,6 @@ class _UnusedClassAliasExperiment(BaseExp):
 def test_registered_entry_analysis_publishes_only_reachable_loop_free_source() -> None:
     frontend = _native._FrontendSession({"unused": object()})
     experiment = _SourceHirExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
     params = ExpParams(
@@ -363,8 +361,6 @@ def test_registered_entry_analysis_seals_compute_interface_without_copying_body(
 ) -> None:
     frontend = _native._FrontendSession({})
     experiment = _ComputeSourceHirExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -398,8 +394,6 @@ def test_registered_entry_analysis_resolves_final_exact_alias_binding() -> None:
 
     frontend = _native._FrontendSession({})
     experiment = _AliasExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
     params = ExpParams({_AliasExperiment.width: 4})
@@ -421,8 +415,6 @@ def test_registered_entry_analysis_resolves_final_exact_alias_binding() -> None:
 def test_registered_entry_analysis_deduplicates_compute_roots_not_calls() -> None:
     frontend = _native._FrontendSession({})
     experiment = _DeduplicatedComputeExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -442,8 +434,6 @@ def test_registered_entry_analysis_deduplicates_compute_roots_not_calls() -> Non
 def test_registered_entry_analysis_accepts_exact_registered_owner_method() -> None:
     frontend = _native._FrontendSession({})
     experiment = _MethodExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -461,8 +451,6 @@ def test_registered_entry_analysis_accepts_exact_registered_owner_method() -> No
 def test_registered_entry_analysis_uses_final_exact_owner_method_alias() -> None:
     frontend = _native._FrontendSession({})
     experiment = _AliasedMethodExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -480,8 +468,6 @@ def test_registered_entry_analysis_uses_final_exact_owner_method_alias() -> None
 def test_registered_entry_analysis_retains_morphism_definition_and_atomic_leaf() -> None:
     frontend = _native._FrontendSession({})
     experiment = _MorphismDefinitionExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -504,8 +490,6 @@ def test_registered_entry_analysis_retains_morphism_definition_and_atomic_leaf()
 def test_registered_entry_analysis_rejects_reachable_unsupported_syntax() -> None:
     frontend = _native._FrontendSession({})
     experiment = _UnsupportedStatementExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -526,8 +510,6 @@ def test_registered_entry_analysis_classifies_host_rpc_without_execution() -> No
     _host_helper_executed = False
     frontend = _native._FrontendSession({})
     experiment = _HostRpcExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -546,8 +528,6 @@ def test_registered_entry_analysis_classifies_host_method_without_execution() ->
     _host_helper_executed = False
     frontend = _native._FrontendSession({})
     experiment = _HostMethodRpcExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -563,8 +543,6 @@ def test_registered_entry_analysis_classifies_host_method_without_execution() ->
 def test_registered_entry_analysis_failure_does_not_publish_compute_result() -> None:
     frontend = _native._FrontendSession({})
     invalid = _InvalidComputeExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -579,8 +557,6 @@ def test_registered_entry_analysis_failure_does_not_publish_compute_result() -> 
     assert "test_typed_source_analysis.py:" in message
 
     valid = _ComputeSourceHirExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
     analysis = frontend._analyze_registered_kernel(
@@ -606,8 +582,6 @@ def test_registered_entry_analysis_rejects_missing_or_unsupported_exp_param(
 ) -> None:
     frontend = _native._FrontendSession({})
     experiment = _MissingParamExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -621,8 +595,6 @@ def test_registered_entry_analysis_rejects_missing_or_unsupported_exp_param(
 def test_registered_entry_analysis_rejects_indirect_local_call() -> None:
     frontend = _native._FrontendSession({})
     experiment = _IndirectCallExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -641,8 +613,6 @@ def test_registered_entry_analysis_rejects_indirect_local_call() -> None:
 def test_registered_entry_analysis_rejects_keyword_call_shape() -> None:
     frontend = _native._FrontendSession({})
     experiment = _InvalidCallShapeExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -659,8 +629,6 @@ def test_registered_entry_analysis_rejects_keyword_call_shape() -> None:
 def test_registered_entry_analysis_rejects_unowned_subscript() -> None:
     frontend = _native._FrontendSession({})
     experiment = _UnsupportedSubscriptExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -679,8 +647,6 @@ def test_registered_entry_analysis_rejects_unowned_subscript() -> None:
 def test_registered_entry_analysis_rejects_unbound_entry_arguments() -> None:
     frontend = _native._FrontendSession({})
     experiment = _ExtraEntryArgumentExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -691,8 +657,6 @@ def test_registered_entry_analysis_rejects_unbound_entry_arguments() -> None:
 def test_registered_entry_analysis_deduplicates_exact_exp_param_aliases() -> None:
     frontend = _native._FrontendSession({})
     experiment = _AliasedExpParamExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -707,8 +671,6 @@ def test_registered_entry_analysis_deduplicates_exact_exp_param_aliases() -> Non
 def test_registered_entry_analysis_rejects_rebound_exp_params_authority() -> None:
     frontend = _native._FrontendSession({})
     experiment = _ReboundParamsExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -722,8 +684,6 @@ def test_registered_entry_analysis_rejects_rebound_exp_params_authority() -> Non
 def test_registered_entry_analysis_does_not_authorize_self_by_spelling() -> None:
     frontend = _native._FrontendSession({})
     experiment = _ForeignSelfExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -737,8 +697,6 @@ def test_registered_entry_analysis_does_not_authorize_self_by_spelling() -> None
 def test_registered_entry_analysis_keeps_unbound_owner_receiver_explicit() -> None:
     frontend = _native._FrontendSession({})
     experiment = _UnboundOwnerMethodExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -752,8 +710,6 @@ def test_registered_entry_analysis_keeps_unbound_owner_receiver_explicit() -> No
 def test_registered_entry_analysis_rejects_static_entry_receiver() -> None:
     frontend = _native._FrontendSession({})
     experiment = _StaticEntryExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -764,8 +720,6 @@ def test_registered_entry_analysis_rejects_static_entry_receiver() -> None:
 def test_unused_class_alias_does_not_change_global_kernel_signature() -> None:
     frontend = _native._FrontendSession({})
     experiment = _UnusedClassAliasExperiment(
-        compiler=cast(Any, object()),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 

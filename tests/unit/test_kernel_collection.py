@@ -28,7 +28,6 @@ from catseq.morphism.core import _registered_definition, kernel
 
 
 _BODY_CALLS = 0
-_UNAVAILABLE_COMPILER = object()
 
 
 class _MutableSourceLoader:
@@ -281,10 +280,7 @@ def test_compute_registration_is_public_inert_and_exact_object_authoritative() -
 def test_collector_keeps_entry_owner_and_registered_definition_catalog(
     tmp_path: Path,
 ) -> None:
-    compiler = _UNAVAILABLE_COMPILER
     experiment = _Experiment(
-        compiler=compiler,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -313,10 +309,7 @@ def test_collector_keeps_entry_owner_and_registered_definition_catalog(
 def test_registered_modules_associate_the_exact_entry_with_experiment_source(
     tmp_path: Path,
 ) -> None:
-    compiler = _UNAVAILABLE_COMPILER
     experiment = _Experiment(
-        compiler=compiler,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -363,10 +356,7 @@ def test_registered_modules_associate_the_exact_entry_with_experiment_source(
 def test_registered_modules_validate_exact_compute_roots_and_transitive_aliases(
     tmp_path: Path,
 ) -> None:
-    compiler = _UNAVAILABLE_COMPILER
     experiment = _Experiment(
-        compiler=compiler,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
     registered = _native._register_kernel_modules(experiment)
@@ -402,10 +392,7 @@ def test_compute_validation_rejects_fake_rebound_and_atomic_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    compiler = _UNAVAILABLE_COMPILER
     experiment = _Experiment(
-        compiler=compiler,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
     registered = _native._register_kernel_modules(experiment)
@@ -456,8 +443,6 @@ def test_compute_validation_rejects_actual_cross_domain_objects(
     message: str,
 ) -> None:
     experiment = _Experiment(
-        compiler=_UNAVAILABLE_COMPILER,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
     registered = _native._register_kernel_modules(experiment)
@@ -471,10 +456,7 @@ def test_compute_validation_respects_shadowing_of_the_range_intrinsic(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    compiler = _UNAVAILABLE_COMPILER
     experiment = _Experiment(
-        compiler=compiler,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
     registered = _native._register_kernel_modules(experiment)
@@ -506,10 +488,7 @@ def test_compute_validation_freezes_exact_builtin_type_bindings(
     name: str,
     root: object,
 ) -> None:
-    compiler = _UNAVAILABLE_COMPILER
     experiment = _Experiment(
-        compiler=compiler,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
     registered = _native._register_kernel_modules(experiment)
@@ -533,8 +512,6 @@ def test_compute_validation_uses_cpython_builtin_identity(
 
     monkeypatch.setattr(builtins, "range", replacement_range)
     experiment = _Experiment(
-        compiler=_UNAVAILABLE_COMPILER,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
     registered = _native._register_kernel_modules(experiment)
@@ -565,8 +542,6 @@ def custom_compute(value: int) -> int:
     exec(compile(source, f"<{module_name}>", "exec"), module.__dict__)
 
     experiment = _Experiment(
-        compiler=_UNAVAILABLE_COMPILER,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
     registered = _native._register_kernel_modules(experiment)
@@ -601,8 +576,6 @@ def custom_compute(value: int) -> int:
     module.__dict__["__builtins__"] = vars(builtins)
 
     experiment = _Experiment(
-        compiler=_UNAVAILABLE_COMPILER,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
     registered = _native._register_kernel_modules(experiment)
@@ -691,7 +664,7 @@ class Experiment(BaseExp):
         raise AssertionError
 
 
-experiment = Experiment(compiler=object(), runtime=object(), h5_writer=object())
+experiment = Experiment(h5_writer=object())
 try:
     _native._register_kernel_modules(experiment)
 except RuntimeError as error:
@@ -724,8 +697,6 @@ def test_registered_modules_associate_local_definition_inside_host_control_suite
         control_nested_helper()
 
     experiment = _Experiment(
-        compiler=_UNAVAILABLE_COMPILER,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -748,8 +719,6 @@ def test_registered_modules_retain_exact_definitions_from_multiple_modules(
     monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "fixtures"))
     fixture = importlib.import_module("kernel_registration_fixture.experiment")
     experiment = fixture.MultiModuleExperiment(
-        compiler=_UNAVAILABLE_COMPILER,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -830,8 +799,6 @@ def second_loader_helper() -> Morphism:
     monkeypatch.setitem(sys.modules, module.__name__, module)
     exec(compile(source, f"<{module.__name__}>", "exec"), module.__dict__)
     experiment = _Experiment(
-        compiler=_UNAVAILABLE_COMPILER,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -864,8 +831,6 @@ def test_distinct_module_objects_are_not_merged_by_name(
     second = load_module()
     assert first is not second
     experiment = _Experiment(
-        compiler=_UNAVAILABLE_COMPILER,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -887,8 +852,6 @@ def test_module_source_failure_names_the_exact_registered_module(
     )
     loader.failure = OSError("fixture source unavailable")
     experiment = _Experiment(
-        compiler=_UNAVAILABLE_COMPILER,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -918,8 +881,6 @@ def test_nac3_parse_failure_retains_loader_module_location(
     original_source = loader.source
     loader.source = "@kernel\ndef"
     experiment = _Experiment(
-        compiler=_UNAVAILABLE_COMPILER,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -953,8 +914,6 @@ def test_definition_association_failure_reports_original_source_line(
     assert original is not None
     source_line = original.__wrapped__.__code__.co_firstlineno
     experiment = _Experiment(
-        compiler=_UNAVAILABLE_COMPILER,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -975,8 +934,6 @@ def test_collector_requires_actual_base_exp_and_registered_entry(
     tmp_path: Path,
 ) -> None:
     undecorated = _UndecoratedExperiment(
-        compiler=_UNAVAILABLE_COMPILER,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
     setattr(

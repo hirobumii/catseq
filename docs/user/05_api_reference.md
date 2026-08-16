@@ -48,7 +48,7 @@ Typed Source HIR，也不承担编译器 fallback。
 
 | 模块 | 公开概念 |
 | --- | --- |
-| `catseq.experiment.base_exp` | `BaseExp`，实验生命周期骨架 |
+| `catseq.experiment.base_exp` | `BaseExp`，registered-source 实验定义 owner |
 | `catseq.experiment.base_module` | `BaseModule`、`BaseService` 及其组合字段 |
 | `catseq.experiment.params` | `ExpParam`、`ExpParams`、`ScanPoint` |
 | `catseq.experiment.descartes` | `DescartesGenerator` 的 repeat/scan 遍历 |
@@ -61,5 +61,6 @@ Typed Source HIR，也不承担编译器 fallback。
 | `catseq.experiment.h5` | 可选 `catseq[h5]` 依赖提供的 `H5Writer` |
 | `catseq.experiment.run_control` | pause、resume、stop checkpoint |
 
-`BaseExp` 仍是宿主编排骨架，但当前仓库没有把它连接到新的公开端到端编译和执行
-路径。消费项目不应注入已经删除的旧 `Compiler` facade。
+`BaseExp` 当前只保留为 registered-source 实验定义 owner；它不再接受已经删除的
+旧 `Compiler` 或 runtime facade。`BaseExp.run()` 会在启动 panel、H5、设备或源码
+执行前明确报错，直到新的公开端到端路径完成。

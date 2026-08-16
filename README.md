@@ -27,6 +27,8 @@ end-to-end `Compiler`, `CompiledSequence`, `EthernetRuntime`, `catseqc`, or
 standalone compiler artifact. Public analysis, lowering, linking, and execution
 will be exposed only after their downstream contracts are implemented. Code
 must not fall back to the removed compiler path while that work is incomplete.
+`BaseExp` remains the registered-source owner, but `BaseExp.run()` fails before
+performing any experiment lifecycle work.
 
 The low-level Rust-owned RTMQ/OASM runtime remains available independently. It
 accepts an already assembled OASM program and explicit physical routing; it

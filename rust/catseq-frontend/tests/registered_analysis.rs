@@ -832,6 +832,72 @@ fn normalizes_proven_zero_waits_to_the_same_id_program() {
 }
 
 #[test]
+fn preserves_zero_waits_backed_by_relocatable_externals() {
+    for (duration, expected_operation) in [
+        ("cycles(value)", FrontendValueKind::Cycles),
+        (
+            "value * us",
+            FrontendValueKind::ScaleDuration(DurationUnit::Microsecond),
+        ),
+    ] {
+        let source = format!(
+            "class Experiment:\n    @kernel\n    def build_sequence(self, params: ExpParams) -> Morphism:\n        value = params[self.value]\n        return Wait({duration})\n"
+        );
+        let registered = register_fixture(
+            &source,
+            &[DefinitionSpec {
+                id: 12,
+                qualified_name: "Experiment.build_sequence",
+                source_start_line: 2,
+                role: RegisteredDefinitionRole::Kernel,
+            }],
+            &[],
+            12,
+        );
+        let analysis = analyze_registered_entry(
+            &registered,
+            &mut InMemoryResolver::default().with_int32_read("value", 0, 0),
+        )
+        .expect("a relocatable zero Duration should type-check");
+
+        let program = elaborate_frontend_program(analysis.report())
+            .expect("a relocatable zero Duration should elaborate");
+
+        let FrontendMorphismNode::Wait(duration) = program
+            .morphisms()
+            .node(program.morphisms().root())
+            .expect("the Morphism root should exist")
+        else {
+            panic!("a relocatable zero Duration must retain its Wait")
+        };
+        assert_eq!(program.values().nodes().len(), 2);
+        assert!(program.values().nodes().iter().any(|node| {
+            matches!(
+                node.kind(),
+                FrontendValueKind::SealedExternal {
+                    name,
+                    value: catseq_frontend::FrontendLiteral::Int32(0),
+                } if name == "value"
+            )
+        }));
+        assert!(
+            program
+                .values()
+                .nodes()
+                .iter()
+                .any(|node| node.kind() == &expected_operation)
+        );
+        assert!(program.values().nodes().iter().all(|node| {
+            node.availability() == ValueAvailability::Compile
+                && node
+                    .dependency_roles()
+                    .contains(&DependencyRole::Relocatable)
+        }));
+        assert_eq!(program.values().exact_cycle_delta(*duration), Some(0));
+    }
+}
+
+#[test]
 fn rejects_a_discarded_morphism_expression_statement_at_its_source() {
     let source = concat!(
         "class Experiment:\n",

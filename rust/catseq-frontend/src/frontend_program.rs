@@ -234,27 +234,21 @@ impl ValueGraphBuilder {
         &self.nodes[id.index()]
     }
 
-    fn is_exact_zero(&self, id: FrontendValueId) -> bool {
+    fn is_proven_zero(&self, id: FrontendValueId) -> bool {
         let node = &self.nodes[id.index()];
         if node.availability != ValueAvailability::Compile {
             return false;
         }
         match &node.kind {
-            FrontendValueKind::Literal(FrontendLiteral::Int32(0))
-            | FrontendValueKind::SealedExternal {
-                value: FrontendLiteral::Int32(0),
-                ..
-            } => true,
-            FrontendValueKind::Literal(FrontendLiteral::Float64(value))
-            | FrontendValueKind::SealedExternal {
-                value: FrontendLiteral::Float64(value),
-                ..
-            } => f64::from_bits(*value) == 0.0,
+            FrontendValueKind::Literal(FrontendLiteral::Int32(0)) => true,
+            FrontendValueKind::Literal(FrontendLiteral::Float64(value)) => {
+                f64::from_bits(*value) == 0.0
+            }
             _ => false,
         }
     }
 
-    fn exact_cycle_delta(&self, id: FrontendValueId) -> Option<i64> {
+    fn proven_cycle_delta(&self, id: FrontendValueId) -> Option<i64> {
         let node = self.nodes.get(id.index())?;
         match &node.kind {
             FrontendValueKind::Cycles => {
@@ -266,11 +260,9 @@ impl ValueGraphBuilder {
                     return None;
                 }
                 match &count.kind {
-                    FrontendValueKind::Literal(FrontendLiteral::Int32(value))
-                    | FrontendValueKind::SealedExternal {
-                        value: FrontendLiteral::Int32(value),
-                        ..
-                    } => Some(i64::from(*value)),
+                    FrontendValueKind::Literal(FrontendLiteral::Int32(value)) => {
+                        Some(i64::from(*value))
+                    }
                     _ => None,
                 }
             }
@@ -278,7 +270,7 @@ impl ValueGraphBuilder {
                 let [scalar] = node.children.as_slice() else {
                     return None;
                 };
-                self.is_exact_zero(*scalar).then_some(0)
+                self.is_proven_zero(*scalar).then_some(0)
             }
             _ => None,
         }
@@ -2060,7 +2052,7 @@ impl Elaborator<'_> {
                     return Err(self.invalid_reference(node, "Wait typed source shape is invalid"));
                 }
                 let call_origin = self.origins.contribution(node.anchor(), OriginRole::Call);
-                let morphism = if self.values.exact_cycle_delta(duration) == Some(0) {
+                let morphism = if self.values.proven_cycle_delta(duration) == Some(0) {
                     let eliminated_origins = self.values.all_origins(duration);
                     let morphism = self.morphisms.id(call_origin);
                     for origin in eliminated_origins {

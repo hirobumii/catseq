@@ -56,7 +56,7 @@ class _ComputeSourceHirExperiment(BaseExp):
 
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
-        width = _normalize_width(params[self.width])
+        width = _normalize_width(width=params[self.width])
         return Wait(cycles(width))
 
 

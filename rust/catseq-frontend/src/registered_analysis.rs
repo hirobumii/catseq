@@ -1643,18 +1643,39 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                         self.anchor(expression.location),
                     )
                 })?;
-                let parameters = interface
-                    .parameters()
+                let statement = self
+                    .registered
+                    .definition_ast(definition_id)
+                    .expect("validated Compute definitions retain their registered AST");
+                let StmtKind::FunctionDef { args, .. } = &statement.node else {
+                    unreachable!("validated Compute definitions are synchronous functions")
+                };
+                let source_parameters = args
+                    .posonlyargs
                     .iter()
-                    .copied()
-                    .enumerate()
-                    .map(|(index, value_type)| CallParameter {
-                        name: format!("arg{index}"),
+                    .map(|argument| (argument.node.arg.to_string(), ParameterKind::PositionalOnly))
+                    .chain(args.args.iter().map(|argument| {
+                        (
+                            argument.node.arg.to_string(),
+                            ParameterKind::PositionalOrKeyword,
+                        )
+                    }))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    source_parameters.len(),
+                    interface.parameters().len(),
+                    "validated Compute interface must match its registered source arity"
+                );
+                let parameters = source_parameters
+                    .into_iter()
+                    .zip(interface.parameters().iter().copied())
+                    .map(|((name, kind), value_type)| CallParameter {
+                        name,
                         semantics: CallParameterSemantics::Value {
                             value_type: value_type_from_compute(value_type),
                             default: None,
                         },
-                        kind: ParameterKind::PositionalOnly,
+                        kind,
                     })
                     .collect::<Vec<_>>();
                 let result = value_type_from_compute(interface.result());

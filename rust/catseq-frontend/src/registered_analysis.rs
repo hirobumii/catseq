@@ -14,9 +14,10 @@ use crate::registered_modules::{
 };
 use crate::source_hir::{
     CallArgumentBinding, CallArgumentOrigin, ComputeCallReference, DefinitionCallEdge,
-    DependencyRole, ExternalRead, MorphismComposition, ResolvedCallTarget, SemanticFact,
-    SourceAnchor, SourceBinding, SourceHirKind, SourceHirNode, SourceIntrinsic, SourceLiteral,
-    TopologyEffect, TypedSourceHir, ValueAvailability, ValueType, ValueTypeConstructor,
+    DependencyRole, DurationUnit, ExternalRead, MorphismComposition, ResolvedCallTarget,
+    SemanticFact, SourceAnchor, SourceBinding, SourceHirKind, SourceHirNode, SourceIntrinsic,
+    SourceLiteral, SourceValueOperation, TopologyEffect, TypedSourceHir, ValueAvailability,
+    ValueType, ValueTypeConstructor,
 };
 use crate::typed::{
     ParameterAuthority, ParameterKind, ParameterSemantics, TypeSignature, TypedCheckReport,
@@ -74,6 +75,13 @@ pub trait RegisteredRequestResolver {
         bound_entry_owner: bool,
         anchor: &SourceAnchor,
     ) -> Result<SourceBinding, RequestResolutionError>;
+
+    fn resolve_duration_unit(
+        &mut self,
+        definition_id: usize,
+        path: &str,
+        anchor: &SourceAnchor,
+    ) -> Result<DurationUnit, RequestResolutionError>;
 
     fn resolve_exp_param(
         &mut self,
@@ -174,8 +182,14 @@ enum PlannedCall {
 #[derive(Clone, Debug)]
 struct DefinitionPlan {
     signature: TypeSignature,
+    resolved_expressions: ResolvedExpressions,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ResolvedExpressions {
     calls: BTreeMap<LocationKey, PlannedCall>,
     external_reads: BTreeMap<LocationKey, ResolvedExternalRead>,
+    duration_units: BTreeMap<LocationKey, DurationUnit>,
 }
 
 pub fn analyze_registered_entry<R: RegisteredRequestResolver>(
@@ -342,8 +356,7 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                     definition_id,
                     DefinitionPlan {
                         signature,
-                        calls: BTreeMap::new(),
-                        external_reads: BTreeMap::new(),
+                        resolved_expressions: ResolvedExpressions::default(),
                     },
                 );
                 return Ok(());
@@ -355,15 +368,13 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
         self.discovery_order.push(definition_id);
         let signature = self.signature(definition_id)?;
         let body = self.function_body(definition_id)?.to_vec();
-        let mut calls = BTreeMap::new();
-        let mut reads = BTreeMap::new();
-        self.validate_body(&definition, &signature, &body, &mut calls, &mut reads)?;
+        let mut resolved_expressions = ResolvedExpressions::default();
+        self.validate_body(&definition, &signature, &body, &mut resolved_expressions)?;
         self.plans.insert(
             definition_id,
             DefinitionPlan {
                 signature,
-                calls,
-                external_reads: reads,
+                resolved_expressions,
             },
         );
         let popped = self.active.pop();
@@ -667,8 +678,7 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
         definition: &RegisteredDefinition,
         signature: &TypeSignature,
         body: &[Stmt],
-        calls: &mut BTreeMap<LocationKey, PlannedCall>,
-        reads: &mut BTreeMap<LocationKey, ResolvedExternalRead>,
+        resolved_expressions: &mut ResolvedExpressions,
     ) -> Result<(), RegisteredAnalysisError> {
         if body.is_empty()
             || !matches!(
@@ -713,8 +723,7 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                         value,
                         &locals,
                         &parameter_bindings,
-                        calls,
-                        reads,
+                        resolved_expressions,
                     )?;
                     let name = id.to_string();
                     locals.insert(name.clone());
@@ -728,8 +737,7 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                         value,
                         &locals,
                         &parameter_bindings,
-                        calls,
-                        reads,
+                        resolved_expressions,
                     )?;
                 }
                 _ => return Err(self.unsupported_statement(definition, statement)),
@@ -744,8 +752,7 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
         expression: &Expr,
         locals: &BTreeSet<String>,
         parameter_bindings: &BTreeMap<String, SourceBinding>,
-        calls: &mut BTreeMap<LocationKey, PlannedCall>,
-        reads: &mut BTreeMap<LocationKey, ResolvedExternalRead>,
+        resolved_expressions: &mut ResolvedExpressions,
     ) -> Result<(), RegisteredAnalysisError> {
         match &expression.node {
             ExprKind::Name { .. } | ExprKind::Constant { .. } => Ok(()),
@@ -811,7 +818,53 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                     ));
                 }
                 self.external_reads.entry(resolved.id).or_insert(external);
-                reads.insert(LocationKey::from(expression.location), resolved);
+                resolved_expressions
+                    .external_reads
+                    .insert(LocationKey::from(expression.location), resolved);
+                Ok(())
+            }
+            ExprKind::BinOp {
+                left,
+                op: Operator::Mult,
+                right,
+            } => {
+                self.scan_expression(
+                    definition,
+                    left,
+                    locals,
+                    parameter_bindings,
+                    resolved_expressions,
+                )?;
+                let path = direct_path(right).ok_or_else(|| {
+                    RegisteredAnalysisError::at(
+                        "physical Duration units must resolve through one direct exact binding",
+                        self.anchor(definition.module_id(), right.location),
+                    )
+                })?;
+                let root = path.split('.').next().expect("direct paths are non-empty");
+                if locals.contains(root) {
+                    return Err(RegisteredAnalysisError::at(
+                        format!("physical Duration unit `{path}` is not an exact source binding"),
+                        self.anchor(definition.module_id(), right.location),
+                    ));
+                }
+                let anchor = self.anchor(definition.module_id(), right.location);
+                let unit = self
+                    .resolver
+                    .resolve_duration_unit(definition.id(), &path, &anchor)
+                    .map_err(|error| {
+                        RegisteredAnalysisError::at(error.to_string(), anchor.clone())
+                    })?;
+                if resolved_expressions
+                    .duration_units
+                    .insert(LocationKey::from(expression.location), unit)
+                    .is_some()
+                {
+                    return Err(RegisteredAnalysisError::at(
+                        "two physical Duration expressions share one source identity",
+                        self.anchor(definition.module_id(), expression.location),
+                    ));
+                }
                 Ok(())
             }
             ExprKind::BinOp {
@@ -819,8 +872,20 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                 op: Operator::RShift,
                 right,
             } => {
-                self.scan_expression(definition, left, locals, parameter_bindings, calls, reads)?;
-                self.scan_expression(definition, right, locals, parameter_bindings, calls, reads)
+                self.scan_expression(
+                    definition,
+                    left,
+                    locals,
+                    parameter_bindings,
+                    resolved_expressions,
+                )?;
+                self.scan_expression(
+                    definition,
+                    right,
+                    locals,
+                    parameter_bindings,
+                    resolved_expressions,
+                )
             }
             ExprKind::Call {
                 func,
@@ -903,6 +968,7 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                         }
                         SourceBinding::ValueType(_)
                         | SourceBinding::TypeConstructor(_)
+                        | SourceBinding::DurationUnit(_)
                         | SourceBinding::EntryOwner
                         | SourceBinding::ExpParams
                         | SourceBinding::ExpParam { .. } => {
@@ -913,7 +979,8 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                         }
                     }
                 };
-                if calls
+                if resolved_expressions
+                    .calls
                     .insert(LocationKey::from(expression.location), planned)
                     .is_some()
                 {
@@ -928,8 +995,7 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                         argument,
                         locals,
                         parameter_bindings,
-                        calls,
-                        reads,
+                        resolved_expressions,
                     )?;
                 }
                 for keyword in keywords {
@@ -938,8 +1004,7 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                         &keyword.node.value,
                         locals,
                         parameter_bindings,
-                        calls,
-                        reads,
+                        resolved_expressions,
                     )?;
                 }
                 Ok(())
@@ -1375,6 +1440,61 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
             }
             ExprKind::BinOp {
                 left,
+                op: Operator::Mult,
+                right,
+            } => {
+                let scalar = self.lower_expression(left)?;
+                if !matches!(scalar.value_type, ValueType::Int32 | ValueType::Float64) {
+                    return Err(RegisteredAnalysisError::at(
+                        format!(
+                            "physical Duration scale must be i32 or f64, found {}",
+                            scalar.value_type
+                        ),
+                        self.nodes[scalar.node_id as usize].anchor().clone(),
+                    ));
+                }
+                let unit = *self
+                    .plan
+                    .resolved_expressions
+                    .duration_units
+                    .get(&LocationKey::from(expression.location))
+                    .expect("every admitted physical Duration retains its exact unit");
+                let path = direct_path(right)
+                    .expect("the discovery pass admitted only direct exact Duration units");
+                let unit_node = self.push_node(
+                    if path.contains('.') {
+                        SourceHirKind::Attribute
+                    } else {
+                        SourceHirKind::Name
+                    },
+                    Some(path),
+                    None,
+                    None,
+                    &[],
+                    self.anchor(right.location),
+                    SemanticFact::binding(SourceBinding::DurationUnit(unit)),
+                );
+                let fact = SemanticFact::value(
+                    ValueType::Duration,
+                    scalar.availability,
+                    TopologyEffect::Empty,
+                );
+                let node_id = self.push_value_operation_node(
+                    SourceHirKind::Binary,
+                    SourceValueOperation::ScaleDuration,
+                    &[scalar.node_id, unit_node],
+                    self.anchor(expression.location),
+                    fact,
+                );
+                Ok(LoweredExpression {
+                    node_id,
+                    value_type: ValueType::Duration,
+                    availability: scalar.availability,
+                    topology_effect: TopologyEffect::Empty,
+                })
+            }
+            ExprKind::BinOp {
+                left,
                 op: Operator::RShift,
                 right,
             } => {
@@ -1425,6 +1545,7 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
             .expect("the discovery pass admitted only exact ExpParam reads");
         let resolved = self
             .plan
+            .resolved_expressions
             .external_reads
             .get(&LocationKey::from(expression.location))
             .expect("every admitted ExpParam read retains its exact resolution");
@@ -1502,6 +1623,7 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
         let path = direct_path(function).expect("the discovery pass admitted only direct calls");
         let planned = self
             .plan
+            .resolved_expressions
             .calls
             .get(&LocationKey::from(expression.location))
             .expect("every admitted call retains exact resolution")
@@ -1842,6 +1964,50 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
         composition: Option<MorphismComposition>,
         children: &[u32],
         anchor: SourceAnchor,
+        fact: SemanticFact,
+    ) -> u32 {
+        self.push_node_with_operation(
+            kind,
+            symbol,
+            literal,
+            composition,
+            None,
+            children,
+            anchor,
+            fact,
+        )
+    }
+
+    fn push_value_operation_node(
+        &mut self,
+        kind: SourceHirKind,
+        operation: SourceValueOperation,
+        children: &[u32],
+        anchor: SourceAnchor,
+        fact: SemanticFact,
+    ) -> u32 {
+        self.push_node_with_operation(
+            kind,
+            None,
+            None,
+            None,
+            Some(operation),
+            children,
+            anchor,
+            fact,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_node_with_operation(
+        &mut self,
+        kind: SourceHirKind,
+        symbol: Option<String>,
+        literal: Option<SourceLiteral>,
+        composition: Option<MorphismComposition>,
+        value_operation: Option<SourceValueOperation>,
+        children: &[u32],
+        anchor: SourceAnchor,
         mut fact: SemanticFact,
     ) -> u32 {
         let edge_start =
@@ -1855,6 +2021,7 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
             symbol,
             literal,
             composition,
+            value_operation,
             edge_start,
             edge_count,
             anchor,

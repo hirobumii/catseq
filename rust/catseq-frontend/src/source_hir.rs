@@ -93,10 +93,30 @@ pub enum ValueTypeConstructor {
     Sequence,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum DurationUnit {
+    Second,
+    Millisecond,
+    Microsecond,
+    Nanosecond,
+}
+
+impl DurationUnit {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Second => "s",
+            Self::Millisecond => "ms",
+            Self::Microsecond => "us",
+            Self::Nanosecond => "ns",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SourceBinding {
     ValueType(ValueType),
     TypeConstructor(ValueTypeConstructor),
+    DurationUnit(DurationUnit),
     EntryOwner,
     ExpParams,
     ExpParam {
@@ -209,6 +229,19 @@ impl MorphismComposition {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AutoSerial => "auto_serial",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SourceValueOperation {
+    ScaleDuration,
+}
+
+impl SourceValueOperation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ScaleDuration => "scale_duration",
         }
     }
 }
@@ -374,6 +407,7 @@ pub struct SourceHirNode {
     symbol: Option<String>,
     literal: Option<SourceLiteral>,
     morphism_composition: Option<MorphismComposition>,
+    value_operation: Option<SourceValueOperation>,
     edge_start: u32,
     edge_count: u32,
     anchor: SourceAnchor,
@@ -386,6 +420,7 @@ impl SourceHirNode {
         symbol: Option<String>,
         literal: Option<SourceLiteral>,
         morphism_composition: Option<MorphismComposition>,
+        value_operation: Option<SourceValueOperation>,
         edge_start: u32,
         edge_count: u32,
         anchor: SourceAnchor,
@@ -395,6 +430,7 @@ impl SourceHirNode {
             symbol,
             literal,
             morphism_composition,
+            value_operation,
             edge_start,
             edge_count,
             anchor,
@@ -415,6 +451,10 @@ impl SourceHirNode {
 
     pub const fn morphism_composition(&self) -> Option<MorphismComposition> {
         self.morphism_composition
+    }
+
+    pub const fn value_operation(&self) -> Option<SourceValueOperation> {
+        self.value_operation
     }
 
     pub const fn edge_start(&self) -> u32 {

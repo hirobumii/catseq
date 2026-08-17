@@ -14,7 +14,7 @@ from catseq.hardware.ttl import initialize as ttl_initialize
 from catseq.hardware.ttl import pulse as ttl_pulse
 from catseq.morphism import Id, Morphism, Wait, atomic_morphism, morphism
 from catseq.morphism.core import compute, kernel
-from catseq.time_utils import cycles
+from catseq.time_utils import cycles, ms, us
 
 
 @kernel
@@ -188,6 +188,54 @@ class _TtlDurationExperiment(BaseExp):
     @kernel
     def build_sequence(self, params: ExpParams) -> Morphism:
         return ttl_pulse(cycles(1))
+
+
+@dataclass
+class _PhysicalDurationExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return Wait(2 * us)
+
+
+@dataclass
+class _PhysicalDurationParamExperiment(BaseExp):
+    width: ClassVar[ExpParam[int]] = ExpParam("physical_width")
+
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return Wait(params[self.width] * us)
+
+
+@dataclass
+class _TtlPhysicalDurationExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return ttl_pulse(5 * ms)
+
+
+_microsecond_alias = us
+_fake_microsecond = 1e-6
+
+
+@dataclass
+class _AliasedPhysicalDurationExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return Wait(3 * _microsecond_alias)
+
+
+@dataclass
+class _SpoofedPhysicalDurationExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return Wait(3 * _fake_microsecond)
+
+
+@dataclass
+class _ReversedPhysicalDurationExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return Wait(us * 3)
 
 
 @dataclass
@@ -638,6 +686,85 @@ def test_registered_entry_analysis_admits_shipped_morphism_annotations() -> None
         ("catseq.hardware.ttl.hold", "intrinsic"),
         ("catseq.hardware.ttl.set_low", "atomic"),
     ]
+
+
+def test_registered_entry_analysis_types_exact_si_duration_unit() -> None:
+    analysis = _native._FrontendSession({})._analyze_registered_kernel(
+        _PhysicalDurationExperiment(h5_writer=cast(Any, object())),
+        ExpParams.empty(),
+    )
+
+    [scale] = analysis._duration_scales
+    assert scale[:4] == (
+        f"{__name__}._PhysicalDurationExperiment.build_sequence",
+        "us",
+        "i32",
+        "compile",
+    )
+    assert scale[4].endswith("test_typed_source_analysis.py")
+    assert scale[5] > 0
+
+
+def test_registered_entry_analysis_types_si_duration_from_exp_param() -> None:
+    analysis = _native._FrontendSession({})._analyze_registered_kernel(
+        _PhysicalDurationParamExperiment(h5_writer=cast(Any, object())),
+        ExpParams({_PhysicalDurationParamExperiment.width: 7}),
+    )
+
+    assert analysis._external_reads == [("physical_width", "i32", "compile", 7)]
+    [scale] = analysis._duration_scales
+    assert scale[:4] == (
+        f"{__name__}._PhysicalDurationParamExperiment.build_sequence",
+        "us",
+        "i32",
+        "compile",
+    )
+
+
+def test_registered_entry_analysis_types_si_duration_for_shipped_hardware() -> None:
+    analysis = _native._FrontendSession({})._analyze_registered_kernel(
+        _TtlPhysicalDurationExperiment(h5_writer=cast(Any, object())),
+        ExpParams.empty(),
+    )
+
+    assert analysis._body_definitions == [
+        (f"{__name__}._TtlPhysicalDurationExperiment.build_sequence", "kernel"),
+        ("catseq.hardware.ttl.pulse", "morphism_definition"),
+        ("catseq.hardware.ttl.set_high", "atomic"),
+        ("catseq.hardware.ttl.hold", "intrinsic"),
+        ("catseq.hardware.ttl.set_low", "atomic"),
+    ]
+    [scale] = analysis._duration_scales
+    assert scale[1:4] == ("ms", "i32", "compile")
+
+
+def test_registered_entry_analysis_accepts_exact_si_duration_alias() -> None:
+    analysis = _native._FrontendSession({})._analyze_registered_kernel(
+        _AliasedPhysicalDurationExperiment(h5_writer=cast(Any, object())),
+        ExpParams.empty(),
+    )
+
+    [scale] = analysis._duration_scales
+    assert scale[1] == "us"
+
+
+@pytest.mark.parametrize(
+    ("experiment_type", "expected"),
+    [
+        (_SpoofedPhysicalDurationExperiment, "is not an exact CatSeq SI unit"),
+        (_ReversedPhysicalDurationExperiment, "must resolve through one direct exact binding"),
+    ],
+)
+def test_registered_entry_analysis_rejects_spoofed_or_reversed_si_duration(
+    experiment_type: type[BaseExp], expected: str
+) -> None:
+    with pytest.raises(RuntimeError, match=expected) as raised:
+        _native._FrontendSession({})._analyze_registered_kernel(
+            experiment_type(h5_writer=cast(Any, object())),
+            ExpParams.empty(),
+        )
+
+    assert "test_typed_source_analysis.py:" in str(raised.value)
 
 
 def test_registered_entry_analysis_applies_shipped_default_parameter() -> None:

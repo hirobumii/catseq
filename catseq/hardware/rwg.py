@@ -1,19 +1,20 @@
 """RWG compiler intrinsics.
 
-This module is the typed Python surface of the RWG source language.  ``catseqc``
-recognizes these calls and lowers them through the target profile; importing the
-module on the host does not construct morphisms or calculate waveforms.
+This module is the typed Python surface of the RWG source language. The native
+frontend recognizes these calls for later target lowering; importing the module
+on the host does not construct morphisms or calculate waveforms.
 """
 
 from collections.abc import Sequence
 
 from ..morphism import (
-    MorphismDef,
+    Id,
+    Morphism,
+    Wait,
     atomic_morphism,
-    identity,
-    morphism_template,
+    morphism,
 )
-from ..morphism.core import compiler_only
+from ..morphism.core import compiler_intrinsic, compiler_only
 from ..time_utils import Duration
 from ..types.rwg import (
     RWGActive,
@@ -25,11 +26,12 @@ from ..types.rwg import (
 
 
 @atomic_morphism("catseq.hardware.rwg.initialize")
-def initialize(carrier_freq: float, hard_init: bool = False) -> MorphismDef:
+def initialize(carrier_freq: float, hard_init: bool = False) -> Morphism:
     """Initialize an RWG channel and configure its carrier."""
     compiler_only("catseq.hardware.rwg.initialize")
 
 
+@compiler_intrinsic("catseq.hardware.rwg.waveforms")
 def _waveforms(
     targets: Sequence[StaticWaveform | None],
     duration: Duration | None = None,
@@ -39,35 +41,35 @@ def _waveforms(
     """Resolve target descriptions to the waveform parameters consumed by load.
 
     ``ramp_waveforms`` makes an endpoint's dependency on the preceding ramp
-    explicit in source HIR. The native compiler derives the concrete values.
+    explicit in source HIR. Later target lowering derives the concrete values.
     """
     compiler_only("catseq.rwg.waveforms")
 
 
 @atomic_morphism("catseq.hardware.rwg.load")
-def load(waveforms: list[WaveformParams]) -> MorphismDef:
+def load(waveforms: list[WaveformParams]) -> Morphism:
     """Preload waveform parameters for the next RWG play operation."""
     compiler_only("catseq.hardware.rwg.load")
 
 
 @atomic_morphism("catseq.hardware.rwg.play")
-def play() -> MorphismDef:
+def play() -> Morphism:
     """Apply the coefficients most recently loaded for this RWG channel."""
     compiler_only("catseq.hardware.rwg.play")
 
 
-@morphism_template
+@morphism
 def set_state(
     targets: list[StaticWaveform], phase_reset: bool = True
-) -> MorphismDef:
+) -> Morphism:
     """Load and apply static waveforms on an RWG channel."""
     return load(_waveforms(targets, phase_reset=phase_reset)) >> play()
 
 
-@morphism_template
+@morphism
 def linear_ramp(
     targets: list[StaticWaveform | None], duration: Duration
-) -> MorphismDef:
+) -> Morphism:
     """Ramp active waveforms linearly over ``duration`` seconds.
 
     The native template keeps the setup, timed region, and endpoint update as
@@ -86,25 +88,25 @@ def linear_ramp(
 
 
 @atomic_morphism("catseq.hardware.rwg.rf_on")
-def rf_on() -> MorphismDef:
+def rf_on() -> Morphism:
     """Turn the RWG RF switch on."""
     compiler_only("catseq.hardware.rwg.rf_on")
 
 
 @atomic_morphism("catseq.hardware.rwg.rf_off")
-def rf_off() -> MorphismDef:
+def rf_off() -> Morphism:
     """Turn the RWG RF switch off."""
     compiler_only("catseq.hardware.rwg.rf_off")
 
 
-@morphism_template
-def rf_pulse(duration: Duration) -> MorphismDef:
+@morphism
+def rf_pulse(duration: Duration) -> Morphism:
     """Emit an RF pulse lasting ``duration`` seconds."""
     return rf_on() >> hold(duration) >> rf_off()
 
 
-@morphism_template
-def hold(duration: Duration) -> MorphismDef:
+@compiler_intrinsic("catseq.hardware.rwg.hold")
+def hold(duration: Duration) -> Morphism:
     """Move channel-local logical time without changing RWG state."""
     compiler_only("catseq.hardware.rwg.hold")
 
@@ -115,8 +117,9 @@ __all__ = [
     "RWGUninitialized",
     "StaticWaveform",
     "WaveformParams",
+    "Id",
+    "Wait",
     "hold",
-    "identity",
     "initialize",
     "linear_ramp",
     "load",

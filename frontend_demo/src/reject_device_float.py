@@ -8,7 +8,7 @@
 
 from catseq import compute, control, kernel
 from catseq.control import Control
-from catseq.morphism import identity
+from catseq.morphism import Id
 from catseq.time_utils import us
 
 from support.detectors import detector0
@@ -25,8 +25,8 @@ def sequence() -> Control:
     ratio = normalize(count)
     choice = control.branch(
         ratio > 0.5,
-        when_true=identity(0),
-        when_false=identity(0),
+        when_true=Id(),
+        when_false=Id(),
         join=control.fixed_end(1 * us),
     )
     return capture >> choice

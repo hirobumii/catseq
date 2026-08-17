@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from functools import wraps
 import sys
 from types import FunctionType, ModuleType
-from typing import TYPE_CHECKING, Literal, Never, ParamSpec, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Literal, Never, TypeVar, cast, overload
 
 from ..types.common import Channel
 
@@ -29,9 +29,9 @@ class CompilerOnlyError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class CompilerDefinition:
-    """Import-time metadata describing how ``catseqc`` treats a definition."""
+    """Import-time metadata consumed by the registered-source frontend."""
 
-    kind: Literal["atomic_morphism", "morphism_template"]
+    kind: Literal["atomic_morphism", "morphism"]
     symbol: str | None = None
 
 
@@ -39,7 +39,13 @@ class CompilerDefinition:
 class _RegisteredDefinition:
     """ARTIQ-style import-time registration for one exact definition."""
 
-    role: Literal["kernel", "compute", "atomic_morphism", "morphism_template"]
+    role: Literal[
+        "kernel",
+        "compute",
+        "atomic_morphism",
+        "morphism",
+        "compiler_intrinsic",
+    ]
     symbol: str | None
     original: FunctionType
     wrapper: FunctionType
@@ -56,16 +62,16 @@ _REGISTERED_DEFINITIONS: list[_RegisteredDefinition] = []
 
 
 def compiler_only(symbol: str) -> Never:
-    """Reject execution of a source intrinsic outside ``compile_entry``."""
+    """Reject execution of a source intrinsic by CPython."""
 
     raise CompilerOnlyError(
-        f"{symbol} is a CatSeq compiler intrinsic; pass the containing "
-        "sequence method to compile_entry() instead of executing it with CPython"
+        f"{symbol} is a CatSeq compiler intrinsic; analyze the containing "
+        "registered source instead of executing it with CPython"
     )
 
 
-class MorphismTemplate:
-    """Nominal source type for a reusable Morphism with free channel slots."""
+class Morphism:
+    """The single nominal sequencing value type in CatSeq source."""
 
     def __new__(cls, *args: object, **kwargs: object) -> Never:
         del args, kwargs
@@ -79,36 +85,7 @@ class MorphismTemplate:
 
     def __call__(self, target: object, *args: object, **kwargs: object) -> Morphism:
         del target, args, kwargs
-        compiler_only("MorphismTemplate binding")
-
-    def __rshift__(self, other: MorphismTemplate) -> MorphismTemplate:
-        del other
-        compiler_only("MorphismTemplate serial composition")
-
-    def __matmul__(self, other: MorphismTemplate) -> MorphismTemplate:
-        del other
-        compiler_only("MorphismTemplate strict serial composition")
-
-    def __or__(self, other: MorphismTemplate) -> MorphismTemplate:
-        del other
-        compiler_only("MorphismTemplate parallel composition")
-
-    def with_label(self, label: str) -> MorphismTemplate:
-        del label
-        compiler_only("MorphismTemplate.with_label")
-
-
-# Preserve the established source spelling while giving the compiler model an
-# honest name.  This is a nominal alias, not a deferred Python generator.
-MorphismDef = MorphismTemplate
-
-
-class Morphism:
-    """Nominal source type for a channel-bound sequencing state transformer."""
-
-    def __new__(cls, *args: object, **kwargs: object) -> Never:
-        del args, kwargs
-        compiler_only(cls.__name__)
+        compiler_only("Morphism resource binding")
 
     @overload
     def __rshift__(self, other: Morphism) -> Morphism: ...
@@ -116,7 +93,7 @@ class Morphism:
     @overload
     def __rshift__(
         self,
-        other: Mapping[Channel, MorphismTemplate],
+        other: Mapping[Channel, Morphism],
     ) -> Morphism: ...
 
     def __rshift__(self, other: object) -> Morphism:
@@ -131,9 +108,11 @@ class Morphism:
         del other
         compiler_only("Morphism parallel composition")
 
+    def with_label(self, label: str) -> Morphism:
+        del label
+        compiler_only("Morphism.with_label")
 
-_P = ParamSpec("_P")
-_R = TypeVar("_R")
+
 _F = TypeVar("_F", bound=Callable[..., object])
 
 
@@ -163,7 +142,13 @@ def _registered_definition_catalog() -> tuple[tuple[object, ...], ...]:
 def _register_definition(
     definition: _F,
     *,
-    role: Literal["kernel", "compute", "atomic_morphism", "morphism_template"],
+    role: Literal[
+        "kernel",
+        "compute",
+        "atomic_morphism",
+        "morphism",
+        "compiler_intrinsic",
+    ],
     symbol: str | None = None,
 ) -> _F:
     if type(definition) is not FunctionType:
@@ -177,26 +162,29 @@ def _register_definition(
         raise TypeError("CatSeq definitions must belong to an imported Python module")
     if original.__globals__ is not module.__dict__:
         raise TypeError("CatSeq definitions must use their owning module globals")
-    wrapper: FunctionType
-    if role in ("kernel", "compute"):
-        definition_kind = "Kernel" if role == "kernel" else "Compute Function"
-        execution_remedy = (
-            "pass its BaseExp owner to Compiler"
-            if role == "kernel"
-            else "reference it from registered @kernel or @compute source"
+    definition_kind = {
+        "kernel": "Kernel",
+        "compute": "Compute Function",
+        "morphism": "Morphism Definition",
+        "atomic_morphism": "Atomic Morphism",
+        "compiler_intrinsic": "Compiler Intrinsic",
+    }[role]
+    if role == "kernel":
+        execution_remedy = "analyze its BaseExp owner through the registered frontend"
+    elif role == "compute":
+        execution_remedy = "reference it from registered @kernel or @compute source"
+    else:
+        execution_remedy = "reference it from registered source"
+
+    @wraps(original)
+    def reject_execution(*args: object, **kwargs: object) -> Never:
+        del args, kwargs
+        raise CompilerOnlyError(
+            f"{original.__qualname__} is a compiler-only CatSeq {definition_kind}; "
+            f"{execution_remedy} instead of calling it in CPython"
         )
 
-        @wraps(original)
-        def reject_execution(*args: object, **kwargs: object) -> Never:
-            del args, kwargs
-            raise CompilerOnlyError(
-                f"{original.__qualname__} is a compiler-only CatSeq {definition_kind}; "
-                f"{execution_remedy} instead of calling it in CPython"
-            )
-
-        wrapper = cast(FunctionType, reject_execution)
-    else:
-        wrapper = original
+    wrapper = cast(FunctionType, reject_execution)
 
     if role == "atomic_morphism":
         setattr(
@@ -204,11 +192,11 @@ def _register_definition(
             "__catseq_definition__",
             CompilerDefinition(kind="atomic_morphism", symbol=symbol),
         )
-    elif role == "morphism_template":
+    elif role == "morphism":
         setattr(
             wrapper,
             "__catseq_definition__",
-            CompilerDefinition(kind="morphism_template"),
+            CompilerDefinition(kind="morphism"),
         )
     registration = _RegisteredDefinition(
         role=role,
@@ -224,7 +212,7 @@ def _register_definition(
 
 
 def kernel(definition: _F) -> _F:
-    """Register one internal compiler-only Kernel definition."""
+    """Register one compiler-only Kernel definition."""
 
     return _register_definition(definition, role="kernel")
 
@@ -235,19 +223,24 @@ def compute(definition: _F) -> _F:
     return _register_definition(definition, role="compute")
 
 
-def morphism_template(definition: _F) -> _F:
-    """Mark a restricted Python function as a composable Morphism Template.
+def morphism(definition: _F) -> _F:
+    """Register a restricted source definition that produces a Morphism.
 
     Like ARTIQ's ``@kernel``, this decorator preserves the original Python
     function so the native compiler can parse its body.  It never builds a
     runtime Morphism arena.
     """
 
-    return _register_definition(definition, role="morphism_template")
+    return _register_definition(definition, role="morphism")
 
 
 def atomic_morphism(symbol: str) -> Callable[[_F], _F]:
     """Declare a leaf operation implemented by the native Atomic Registry."""
+
+    if type(symbol) is not str:
+        raise TypeError("atomic_morphism symbol must be an exact string")
+    if not symbol:
+        raise ValueError("atomic_morphism symbol must not be empty")
 
     def decorate(definition: _F) -> _F:
         return _register_definition(
@@ -259,17 +252,35 @@ def atomic_morphism(symbol: str) -> Callable[[_F], _F]:
     return decorate
 
 
-def arena_build(builder: Callable[_P, _R]) -> Callable[_P, _R]:
-    """Retain the legacy decorator spelling as an import-time no-op."""
+def compiler_intrinsic(symbol: str) -> Callable[[_F], _F]:
+    """Register one exact bodyless compiler intrinsic declaration."""
 
-    return builder
+    if type(symbol) is not str:
+        raise TypeError("compiler_intrinsic symbol must be an exact string")
+    if not symbol:
+        raise ValueError("compiler_intrinsic symbol must not be empty")
+
+    def decorate(definition: _F) -> _F:
+        return _register_definition(
+            definition,
+            role="compiler_intrinsic",
+            symbol=symbol,
+        )
+
+    return decorate
 
 
-def identity(duration: Duration) -> Morphism:
-    """Declare a logical wait; Rust validates and lowers its duration."""
+def Id() -> Morphism:
+    """Declare the zero-duration Morphism sequencing unit."""
+
+    compiler_only("catseq.morphism.Id")
+
+
+def Wait(duration: Duration) -> Morphism:
+    """Declare a logical cursor displacement with an explicit Duration."""
 
     del duration
-    compiler_only("catseq.morphism.identity")
+    compiler_only("catseq.morphism.Wait")
 
 
 def repeat_morphism(morphism: Morphism, count: int) -> Morphism:

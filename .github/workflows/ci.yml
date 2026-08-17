@@ -34,7 +34,6 @@ jobs:
         include:
           - name: Linux x86_64
             os: ubuntu-24.04
-            artifact: catseqc-linux-x86_64
             target: x86_64-unknown-linux-gnu
 
     steps:
@@ -95,7 +94,7 @@ jobs:
 
       - name: Check Python code
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        run: uv run ruff check catseq tests tools benchmarks
+        run: uv run ruff check catseq tests tools frontend_demo
 
       - name: Run Python tests
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -104,10 +103,6 @@ jobs:
       - name: Run Python type checks
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: uv run mypy catseq
-
-      - name: Execute the README quickstart
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        run: uv run python tools/run_readme_quickstart.py
 
       - name: Check Rust formatting
         working-directory: rust
@@ -120,25 +115,6 @@ jobs:
       - name: Test the Rust workspace
         working-directory: rust
         run: cargo test --locked --workspace --all-targets
-
-      - name: Build catseqc in release mode
-        working-directory: rust
-        run: cargo build --locked --release --bin catseqc
-
-      - name: Package the Linux compiler
-        shell: bash
-        run: |
-          mkdir -p "dist/catseqc-${{ matrix.target }}"
-          cp rust/target/release/catseqc "dist/catseqc-${{ matrix.target }}/"
-          tar -C dist -czf "dist/catseqc-${{ matrix.target }}.tar.gz" \
-            "catseqc-${{ matrix.target }}"
-
-      - name: Upload the platform artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: dist/*.tar.gz
-          if-no-files-found: error
 
   python-package:
     name: Build and install the Python package
@@ -204,7 +180,6 @@ jobs:
             --python "$RUNNER_TEMP/catseq-wheel-test/bin/python" \
             dist/*.whl
           "$RUNNER_TEMP/catseq-wheel-test/bin/python" tests/wheel_smoke.py
-          "$RUNNER_TEMP/catseq-wheel-test/bin/catseqc" --version
 
       - name: Upload the Python distributions
         uses: actions/upload-artifact@v4

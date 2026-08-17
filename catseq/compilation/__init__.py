@@ -1,10 +1,5 @@
-"""Compiler and runtime errors plus the supported execution facade."""
+"""Supported low-level physical runtime facade."""
 
-from .native import CatSeqCompileError
-from .runtime import CatSeqRuntimeError, EthernetRuntime
+from .runtime import CatSeqRuntimeError
 
-__all__ = [
-    "CatSeqCompileError",
-    "CatSeqRuntimeError",
-    "EthernetRuntime",
-]
+__all__ = ["CatSeqRuntimeError"]

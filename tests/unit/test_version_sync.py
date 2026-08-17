@@ -85,8 +85,8 @@ def test_set_version_updates_current_metadata_without_rewriting_history(
     readme = (tmp_path / "README.md").read_text()
     assert "CatSeq 9.8.7 is" in readme
     assert "## 9.8.7 API boundary" in readme
-    assert "The 0.3.1 `compile_entry()`" in readme
-    assert "The 0.2 `compile_to_oasm_calls" in readme
+    assert "There is currently no public" in readme
+    assert "The removed 0.4 `Compiler`" in readme
     assert f"Historical note about CatSeq {previous_version}." in readme
 
     quickstart = (tmp_path / "docs/user/01_quickstart.md").read_text()

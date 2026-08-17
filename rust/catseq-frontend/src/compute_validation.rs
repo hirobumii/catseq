@@ -17,13 +17,14 @@ use nac3core::toplevel::{DefinitionId, TopLevelContext, TopLevelDef};
 use nac3core::typecheck::type_inferencer::PrimitiveStore;
 use nac3core::typecheck::typedef::{AttrKind, Type, TypeEnum, Unifier, VarMap};
 use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 
 use crate::registered_modules::{
     RegisteredBuiltin, RegisteredDefinition, RegisteredDefinitionRole, RegisteredKernelModules,
 };
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum ComputeType {
     Bool,
     Int32,
@@ -399,6 +400,7 @@ fn role_name(role: RegisteredDefinitionRole) -> &'static str {
         RegisteredDefinitionRole::Compute => "Compute",
         RegisteredDefinitionRole::MorphismDefinition => "Morphism",
         RegisteredDefinitionRole::Atomic => "Atomic",
+        RegisteredDefinitionRole::Intrinsic => "Intrinsic",
     }
 }
 

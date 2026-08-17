@@ -11,14 +11,14 @@ from catseq import kernel
 from catseq.experiment.base_exp import BaseExp
 from catseq.experiment.params import ExpParams
 from catseq.hardware.ttl import pulse
-from catseq.morphism import Morphism, identity
+from catseq.morphism import Morphism, Id
 from catseq.time_utils import us
 
 from support.hardware_map import correction_a
 
 
 def host_delay() -> Morphism:
-    return identity(0) >> {correction_a: pulse(1 * us)}
+    return Id() >> {correction_a: pulse(1 * us)}
 
 
 class HostRpcExperiment(BaseExp):

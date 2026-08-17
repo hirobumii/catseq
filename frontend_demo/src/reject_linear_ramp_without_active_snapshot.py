@@ -9,7 +9,7 @@
 
 from catseq import kernel
 from catseq.hardware.rwg import initialize, linear_ramp
-from catseq.morphism import Morphism, identity
+from catseq.morphism import Morphism, Id
 from catseq.time_utils import us
 
 from support.hardware_map import correction_waveform, rwg_a
@@ -21,4 +21,4 @@ def sequence() -> Morphism:
         initialize(80.0)
         >> linear_ramp([correction_waveform], 10 * us)
     )
-    return identity(0) >> {rwg_a: invalid_ramp}
+    return Id() >> {rwg_a: invalid_ramp}

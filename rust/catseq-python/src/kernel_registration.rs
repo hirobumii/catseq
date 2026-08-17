@@ -13,7 +13,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFunction, PyInt, PyModule, PyTuple, PyType};
 
 use crate::kernel_collector::{
-    CollectedDefinition, CollectedDefinitionRole, PyKernelDefinitionCollection,
+    CollectedDefinition, CollectedDefinitionRole, PyKernelDefinitionCollection, exact_definition_id,
 };
 
 #[pyclass(name = "_RegisteredKernelModules", module = "catseq._native", frozen)]
@@ -158,7 +158,13 @@ impl PyRegisteredKernelModules {
     fn _atomic_symbols(&self) -> Vec<String> {
         self.definitions
             .iter()
-            .filter_map(|definition| definition.symbol.clone())
+            .filter(|definition| definition.role == CollectedDefinitionRole::Atomic)
+            .map(|definition| {
+                definition
+                    .symbol
+                    .clone()
+                    .expect("registered Atomic definitions always retain a symbol")
+            })
             .collect()
     }
 
@@ -353,15 +359,6 @@ fn definition_name_bindings(
     Ok(bindings)
 }
 
-fn exact_definition_id(
-    value: &Bound<'_, PyAny>,
-    definitions: &[CollectedDefinition],
-) -> Option<usize> {
-    definitions
-        .iter()
-        .position(|definition| value.is(&definition.original) || value.is(&definition.wrapper))
-}
-
 fn builtin_name_bindings(
     py: Python<'_>,
     definitions: &[CollectedDefinition],
@@ -416,7 +413,7 @@ fn builtin_name_bindings(
     Ok(bindings)
 }
 
-const fn compute_type_name(compute_type: ComputeType) -> &'static str {
+pub(crate) const fn compute_type_name(compute_type: ComputeType) -> &'static str {
     match compute_type {
         ComputeType::Bool => "bool",
         ComputeType::Int32 => "i32",
@@ -486,5 +483,6 @@ const fn frontend_role(role: CollectedDefinitionRole) -> RegisteredDefinitionRol
         CollectedDefinitionRole::Compute => RegisteredDefinitionRole::Compute,
         CollectedDefinitionRole::MorphismDefinition => RegisteredDefinitionRole::MorphismDefinition,
         CollectedDefinitionRole::Atomic => RegisteredDefinitionRole::Atomic,
+        CollectedDefinitionRole::Intrinsic => RegisteredDefinitionRole::Intrinsic,
     }
 }

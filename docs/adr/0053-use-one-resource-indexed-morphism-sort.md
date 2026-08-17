@@ -30,7 +30,8 @@ empty `Delta` and an empty external `Requires` set before target lowering.
 
 ## Consequences
 
-The existing `MorphismDef`, `MorphismTemplate`, `Instantiate`, and decorator
-spellings may remain temporarily as compatibility or representation details,
-but they cannot define a second semantic sort. Their source/API migration is
-follow-up implementation work. ADR 0007 is superseded.
+The public source API exposes only the `Morphism` value type and the `@morphism`
+definition decorator; it does not expose `MorphismDef` or `MorphismTemplate`
+compatibility types. Internal arena structures such as `MorphismTemplate` and
+`Instantiate` may remain representation details, but they cannot define a
+second semantic sort. ADR 0007 is superseded.

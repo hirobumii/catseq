@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by Issue-52
 ---
 
 # Separate definition identity, revision, and specialization

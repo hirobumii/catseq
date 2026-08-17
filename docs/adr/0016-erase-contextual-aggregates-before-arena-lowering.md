@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: amended by ADR-0053
 ---
 
 # Erase contextual aggregates before Morphism arena lowering
@@ -11,7 +11,7 @@ table, not source-language containers.
 
 Typed Source HIR may temporarily represent contextual aggregates needed to
 understand existing source spelling. Examples include a Compile-time
-`Optional[T]`, channel bindings spelled as `dict[Channel, MorphismDef]`, and
+`Optional[T]`, channel bindings spelled as `dict[Channel, Morphism]`, and
 fixed aggregate arguments accepted by an Atomic Operation schema. These values
 are frontend semantics rather than Morphism structure.
 

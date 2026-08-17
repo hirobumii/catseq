@@ -152,7 +152,6 @@ def set_version(root: Path, version: str, released_on: str) -> None:
     readme = readme_path.read_text(encoding="utf-8")
     for pattern in (
         rf"^CatSeq (?P<version>{VERSION_PATTERN.pattern}) is ",
-        rf"^CatSeq (?P<version>{VERSION_PATTERN.pattern}) preserves ",
         rf"^## (?P<version>{VERSION_PATTERN.pattern}) API boundary$",
     ):
         readme = set_current_doc_version(
@@ -167,10 +166,7 @@ def set_version(root: Path, version: str, released_on: str) -> None:
 
     quickstart_path = root / "docs" / "user" / "01_quickstart.md"
     quickstart = quickstart_path.read_text(encoding="utf-8")
-    for pattern in (
-        rf"^# CatSeq (?P<version>{VERSION_PATTERN.pattern}) quickstart$",
-        rf"^CatSeq (?P<version>{VERSION_PATTERN.pattern}) keeps ",
-    ):
+    for pattern in (rf"^# CatSeq (?P<version>{VERSION_PATTERN.pattern}) quickstart$",):
         quickstart = set_current_doc_version(
             quickstart,
             re.compile(pattern, re.MULTILINE),

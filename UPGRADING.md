@@ -1,5 +1,32 @@
 # Upgrading CatSeq
 
+> **Current main-branch migration:** the 0.4 `Compiler`, `CompiledSequence`,
+> `EthernetRuntime`, and `catseqc` interfaces described in the historical
+> release notes below have been removed. The exact registered-source frontend
+> is currently internal, and no public end-to-end replacement is available
+> until downstream frontend, lowering, linking, and execution work is complete.
+> The independent low-level assembled-OASM runtime remains available.
+
+## Current source API: separate Id from Wait
+
+The overloaded `identity(duration)` intrinsic has been removed without a
+compatibility alias. Use `Id()` for the zero-duration Morphism sequencing unit
+and `Wait(duration)` for logical cursor displacement:
+
+```python
+from catseq import Id, Wait
+from catseq.time_utils import cycles, us
+
+unit = Id()
+forward = Wait(2 * us)
+target_relative = Wait(cycles(25))
+```
+
+`Wait` always requires an actual `Duration`. `Wait(0)` is therefore invalid;
+write `Id()` when no displacement is intended. A typed zero such as
+`Wait(cycles(0))` remains a valid source expression and may normalize to `Id`
+during frontend elaboration.
+
 ## 0.4.0 to 0.4.1: make every hardware duration explicit
 
 CatSeq 0.4.1 no longer interprets a bare `int` or `float` passed to a hardware

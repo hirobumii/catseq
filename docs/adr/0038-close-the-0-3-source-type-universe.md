@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: amended by ADR-0053
 ---
 
 # Close the 0.3 source type universe
@@ -7,8 +7,8 @@ status: accepted
 CatSeq 0.3 source values belong to a closed compiler-owned universe. Scalars
 are Unit, Bool, Int64, Float64, Duration, and Compile-only String. Native handles
 are Board, nominal `Channel<ChannelKindId>`, immutable
-`Instance<CompileClassSchema>`, and typed `ScanParam<T>`. Sequencing values are
-Morphism, MorphismTemplate, and the sealed AtomicOp family.
+`Instance<CompileClassSchema>`, and typed `ScanParam<T>`. ADR 0053 narrows the
+sequencing value universe to one Morphism sort plus the sealed AtomicOp family.
 
 Typed Source HIR additionally permits contextual Optional values, fixed tuples,
 registered native records, channel bindings, and scan bindings. They are not

@@ -12,18 +12,18 @@ from typing import ClassVar
 from catseq import kernel
 from catseq.experiment.base_exp import BaseExp
 from catseq.experiment.params import ExpParam, ExpParams
-from catseq.morphism import Morphism, identity
+from catseq.morphism import Id, Morphism, Wait
 from catseq.time_utils import cycles
 
 
 @kernel
 def make_delay(width: int) -> Morphism:
-    return identity(cycles(width)) >> identity(cycles(2))
+    return Id() >> Wait(cycles(width)) >> Wait(cycles(2))
 
 
 @kernel
 def unused_delay() -> Morphism:
-    return identity(cycles(99))
+    return Wait(cycles(99))
 
 
 class SourceHirExperiment(BaseExp):

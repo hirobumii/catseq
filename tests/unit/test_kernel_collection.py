@@ -13,8 +13,7 @@ from typing import Any, ClassVar, cast
 import catseq
 import pytest
 
-from catseq import int32
-from catseq.compiler import Compiler
+from catseq import _native, int32
 from catseq.experiment.base_exp import BaseExp
 from catseq.experiment.params import ExpParam, ExpParams
 from catseq.morphism import (
@@ -23,9 +22,11 @@ from catseq.morphism import (
     Morphism,
     atomic_morphism,
     compute,
-    morphism_template,
+    Wait,
+    morphism,
 )
 from catseq.morphism.core import _registered_definition, kernel
+from catseq.time_utils import cycles
 
 
 _BODY_CALLS = 0
@@ -142,7 +143,7 @@ def _unused_kernel() -> Morphism:
     raise AssertionError("Kernel collection must not execute Python bodies")
 
 
-@morphism_template
+@morphism
 def _morphism_definition(width: int) -> Morphism:
     del width
     raise AssertionError("Kernel collection must not execute Python bodies")
@@ -225,23 +226,22 @@ class _Experiment(BaseExp):
 
 
 @dataclass
+class _SimpleAnalysisExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return Wait(cycles(1))
+
+
+@dataclass
 class _UndecoratedExperiment(BaseExp):
     def build_sequence(self, params: ExpParams) -> Morphism:
         del params
         raise AssertionError
 
 
-def _compiler(tmp_path: Path) -> Compiler:
-    return Compiler(
-        source_root=Path(__file__).parents[2],
-        channels={},
-        cache_dir=tmp_path / "cache",
-    )
-
-
-def test_kernel_registration_is_private_inert_and_exact_object_authoritative() -> None:
-    assert not hasattr(catseq, "kernel")
-    assert "kernel" not in catseq.__all__
+def test_kernel_registration_is_public_inert_and_exact_object_authoritative() -> None:
+    assert catseq.kernel is kernel
+    assert "kernel" in catseq.__all__
     assert tuple(signature(_kernel_helper).parameters) == ("width",)
 
     registered = _registered_definition(_kernel_helper)
@@ -258,7 +258,7 @@ def test_kernel_registration_is_private_inert_and_exact_object_authoritative() -
     setattr(
         fake,
         "__catseq_definition__",
-        CompilerDefinition(kind="morphism_template"),
+        CompilerDefinition(kind="morphism"),
     )
     assert _registered_definition(fake) is None
 
@@ -289,14 +289,11 @@ def test_compute_registration_is_public_inert_and_exact_object_authoritative() -
 def test_collector_keeps_entry_owner_and_registered_definition_catalog(
     tmp_path: Path,
 ) -> None:
-    compiler = _compiler(tmp_path)
     experiment = _Experiment(
-        compiler=compiler,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
-    collection = compiler._native._collect_kernel_definitions(experiment)
+    collection = _native._collect_kernel_definitions(experiment)
 
     assert collection._entry_name == f"{__name__}._Experiment.build_sequence"
     assert collection._entry_owner is experiment
@@ -321,14 +318,11 @@ def test_collector_keeps_entry_owner_and_registered_definition_catalog(
 def test_registered_modules_associate_the_exact_entry_with_experiment_source(
     tmp_path: Path,
 ) -> None:
-    compiler = _compiler(tmp_path)
     experiment = _Experiment(
-        compiler=compiler,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
-    registered = compiler._native._register_kernel_modules(experiment)
+    registered = _native._register_kernel_modules(experiment)
 
     original = getattr(_Experiment.build_sequence, "__wrapped__")
     locations = {
@@ -371,13 +365,10 @@ def test_registered_modules_associate_the_exact_entry_with_experiment_source(
 def test_registered_modules_validate_exact_compute_roots_and_transitive_aliases(
     tmp_path: Path,
 ) -> None:
-    compiler = _compiler(tmp_path)
     experiment = _Experiment(
-        compiler=compiler,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
-    registered = compiler._native._register_kernel_modules(experiment)
+    registered = _native._register_kernel_modules(experiment)
 
     validation = registered._validate_compute_roots((_compute_normalize_alias,))
     names = registered._definition_names
@@ -410,13 +401,10 @@ def test_compute_validation_rejects_fake_rebound_and_atomic_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    compiler = _compiler(tmp_path)
     experiment = _Experiment(
-        compiler=compiler,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
-    registered = compiler._native._register_kernel_modules(experiment)
+    registered = _native._register_kernel_modules(experiment)
 
     def fake_compute(value: int) -> int:
         return value
@@ -440,7 +428,7 @@ def test_compute_validation_rejects_fake_rebound_and_atomic_failure(
     monkeypatch.setattr(sys.modules[__name__], "_compute_twice", fake_compute)
     assert registered._validate_compute_roots((_compute_normalize,))._unit_count == 2
 
-    rebound_session = compiler._native._register_kernel_modules(experiment)
+    rebound_session = _native._register_kernel_modules(experiment)
     with pytest.raises(RuntimeError, match="Host RPC or dynamic callee"):
         rebound_session._validate_compute_roots((_compute_normalize,))
 
@@ -464,11 +452,9 @@ def test_compute_validation_rejects_actual_cross_domain_objects(
     message: str,
 ) -> None:
     experiment = _Experiment(
-        compiler=_compiler(tmp_path),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
-    registered = experiment.compiler._native._register_kernel_modules(experiment)
+    registered = _native._register_kernel_modules(experiment)
 
     with pytest.raises(RuntimeError, match=message):
         registered._validate_compute_roots((root,))
@@ -479,13 +465,10 @@ def test_compute_validation_respects_shadowing_of_the_range_intrinsic(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    compiler = _compiler(tmp_path)
     experiment = _Experiment(
-        compiler=compiler,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
-    registered = compiler._native._register_kernel_modules(experiment)
+    registered = _native._register_kernel_modules(experiment)
 
     assert registered._validate_compute_roots((_compute_bounded_fold,))._unit_count == 1
 
@@ -495,7 +478,7 @@ def test_compute_validation_respects_shadowing_of_the_range_intrinsic(
     monkeypatch.setattr(sys.modules[__name__], "range", host_range, raising=False)
     assert registered._validate_compute_roots((_compute_bounded_fold,))._unit_count == 1
 
-    shadowed_session = compiler._native._register_kernel_modules(experiment)
+    shadowed_session = _native._register_kernel_modules(experiment)
     with pytest.raises(RuntimeError, match="range.*shadowed"):
         shadowed_session._validate_compute_roots((_compute_bounded_fold,))
 
@@ -514,23 +497,20 @@ def test_compute_validation_freezes_exact_builtin_type_bindings(
     name: str,
     root: object,
 ) -> None:
-    compiler = _compiler(tmp_path)
     experiment = _Experiment(
-        compiler=compiler,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
-    registered = compiler._native._register_kernel_modules(experiment)
+    registered = _native._register_kernel_modules(experiment)
 
     monkeypatch.setattr(sys.modules[__name__], name, object(), raising=False)
     assert registered._validate_compute_roots((root,))._unit_count >= 1
 
-    rebound_session = compiler._native._register_kernel_modules(experiment)
+    rebound_session = _native._register_kernel_modules(experiment)
     with pytest.raises(RuntimeError, match=rf"builtin `{name}` is shadowed"):
         rebound_session._validate_compute_roots((root,))
 
 
-def test_compute_validation_uses_cpython_builtin_identity(
+def test_compute_validation_uses_cpython_builtin_Wait(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -541,11 +521,9 @@ def test_compute_validation_uses_cpython_builtin_identity(
 
     monkeypatch.setattr(builtins, "range", replacement_range)
     experiment = _Experiment(
-        compiler=_compiler(tmp_path),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
-    registered = experiment.compiler._native._register_kernel_modules(experiment)
+    registered = _native._register_kernel_modules(experiment)
 
     with pytest.raises(RuntimeError, match="builtin `range` is shadowed"):
         registered._validate_compute_roots((_compute_bounded_fold,))
@@ -573,11 +551,9 @@ def custom_compute(value: int) -> int:
     exec(compile(source, f"<{module_name}>", "exec"), module.__dict__)
 
     experiment = _Experiment(
-        compiler=_compiler(tmp_path),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
-    registered = experiment.compiler._native._register_kernel_modules(experiment)
+    registered = _native._register_kernel_modules(experiment)
 
     with pytest.raises(RuntimeError, match="builtin `int` is shadowed"):
         registered._validate_compute_roots((module.custom_compute,))
@@ -609,11 +585,9 @@ def custom_compute(value: int) -> int:
     module.__dict__["__builtins__"] = vars(builtins)
 
     experiment = _Experiment(
-        compiler=_compiler(tmp_path),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
-    registered = experiment.compiler._native._register_kernel_modules(experiment)
+    registered = _native._register_kernel_modules(experiment)
 
     with pytest.raises(RuntimeError, match="builtin `range` is shadowed"):
         registered._validate_compute_roots((module.custom_compute,))
@@ -641,7 +615,7 @@ def misplaced(value: int) -> int:
         exec(compile(source, f"<{module_name}>", "exec"), foreign_globals)
 
 
-def test_in_place_reload_cannot_rebind_an_old_compute_identity(
+def test_in_place_reload_cannot_rebind_an_old_compute_Wait(
     tmp_path: Path,
 ) -> None:
     script = """\
@@ -650,7 +624,7 @@ from pathlib import Path
 import sys
 from types import ModuleType
 
-from catseq.compiler import Compiler
+from catseq import _native
 from catseq.experiment.base_exp import BaseExp
 from catseq.experiment.params import ExpParams
 from catseq.morphism import Morphism
@@ -699,11 +673,9 @@ class Experiment(BaseExp):
         raise AssertionError
 
 
-root = Path(__file__).parent
-compiler = Compiler(source_root=root, channels={}, cache_dir=root / "cache")
-experiment = Experiment(compiler=compiler, runtime=object(), h5_writer=object())
+experiment = Experiment(h5_writer=object())
 try:
-    compiler._native._register_kernel_modules(experiment)
+    _native._register_kernel_modules(experiment)
 except RuntimeError as error:
     assert "refer to the same source definition" in str(error), error
 else:
@@ -734,12 +706,10 @@ def test_registered_modules_associate_local_definition_inside_host_control_suite
         control_nested_helper()
 
     experiment = _Experiment(
-        compiler=_compiler(tmp_path),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
-    registered = experiment.compiler._native._register_kernel_modules(experiment)
+    registered = _native._register_kernel_modules(experiment)
 
     assert any(
         name.endswith(
@@ -758,12 +728,10 @@ def test_registered_modules_retain_exact_definitions_from_multiple_modules(
     monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "fixtures"))
     fixture = importlib.import_module("kernel_registration_fixture.experiment")
     experiment = fixture.MultiModuleExperiment(
-        compiler=_compiler(tmp_path),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
-    registered = experiment.compiler._native._register_kernel_modules(experiment)
+    registered = _native._register_kernel_modules(experiment)
 
     definitions = dict(
         zip(
@@ -840,12 +808,10 @@ def second_loader_helper() -> Morphism:
     monkeypatch.setitem(sys.modules, module.__name__, module)
     exec(compile(source, f"<{module.__name__}>", "exec"), module.__dict__)
     experiment = _Experiment(
-        compiler=_compiler(tmp_path),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
-    registered = experiment.compiler._native._register_kernel_modules(experiment)
+    registered = _native._register_kernel_modules(experiment)
 
     assert loader.calls == 1
     assert registered._module_names.count(module.__name__) == 1
@@ -874,12 +840,10 @@ def test_distinct_module_objects_are_not_merged_by_name(
     second = load_module()
     assert first is not second
     experiment = _Experiment(
-        compiler=_compiler(tmp_path),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
-    registered = experiment.compiler._native._register_kernel_modules(experiment)
+    registered = _native._register_kernel_modules(experiment)
 
     assert registered._module_names.count(module_name) == 2
     assert registered._definition_names.count(f"{module_name}.same_name_helper") == 2
@@ -897,8 +861,6 @@ def test_module_source_failure_names_the_exact_registered_module(
     )
     loader.failure = OSError("fixture source unavailable")
     experiment = _Experiment(
-        compiler=_compiler(tmp_path),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -910,9 +872,131 @@ def test_module_source_failure_names_the_exact_registered_module(
                 "fixture source unavailable"
             ),
         ):
-            experiment.compiler._native._register_kernel_modules(experiment)
+            _native._register_kernel_modules(experiment)
     finally:
         loader.failure = None
+
+
+def test_entry_analysis_ignores_unreferenced_registered_module_source_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "catseq_test_unreferenced_source_failure"
+    _, loader = _load_registered_source_module(
+        monkeypatch,
+        module_name,
+        "unreferenced_source_failure_helper",
+    )
+    loader.failure = OSError("unreferenced fixture source unavailable")
+    experiment = _SimpleAnalysisExperiment(
+        h5_writer=cast(Any, object()),
+    )
+
+    try:
+        analysis = _native._FrontendSession({})._analyze_registered_kernel(
+            experiment,
+            ExpParams({}),
+        )
+        assert (
+            analysis._entry_name
+            == f"{__name__}._SimpleAnalysisExperiment.build_sequence"
+        )
+        assert f"{module_name}.unreferenced_source_failure_helper" not in dict(
+            analysis._body_definitions
+        )
+    finally:
+        loader.failure = None
+
+
+def test_entry_analysis_does_not_query_the_process_registration_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core_module = sys.modules["catseq.morphism.core"]
+
+    def reject_catalog_query() -> object:
+        raise AssertionError("entry analysis must not query the process catalog")
+
+    monkeypatch.setattr(
+        core_module,
+        "_registered_definition_catalog",
+        reject_catalog_query,
+    )
+    experiment = _SimpleAnalysisExperiment(h5_writer=cast(Any, object()))
+
+    analysis = _native._FrontendSession({})._analyze_registered_kernel(
+        experiment,
+        ExpParams({}),
+    )
+
+    assert analysis._entry_name == (
+        f"{__name__}._SimpleAnalysisExperiment.build_sequence"
+    )
+
+
+def test_entry_analysis_follows_exact_module_attribute_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reachable_name = "catseq_test_exact_module_path_reachable"
+    reachable_source = """\
+from catseq.morphism import Morphism, Wait, morphism
+from catseq.time_utils import cycles
+
+@morphism
+def alias() -> Morphism:
+    return Wait(cycles(1))
+"""
+    reachable_loader = _MutableSourceLoader(reachable_name, reachable_source)
+    reachable_module = ModuleType(reachable_name)
+    reachable_module.__loader__ = reachable_loader
+    monkeypatch.setitem(sys.modules, reachable_name, reachable_module)
+    exec(
+        compile(reachable_source, f"<{reachable_name}>", "exec"),
+        reachable_module.__dict__,
+    )
+
+    unrelated_name = "catseq_test_exact_module_path_unrelated"
+    unrelated_module, unrelated_loader = _load_registered_source_module(
+        monkeypatch,
+        unrelated_name,
+        "cycles",
+    )
+    operations = ModuleType("catseq_test_exact_module_path_operations")
+    operations.alias = reachable_module.alias
+    operations.cycles = unrelated_module.cycles
+
+    entry_name = "catseq_test_exact_module_path_entry"
+    entry_source = """\
+from catseq.experiment.base_exp import BaseExp
+from catseq.experiment.params import ExpParams
+from catseq.morphism import Morphism, Wait
+from catseq.morphism.core import kernel
+from catseq.time_utils import cycles
+
+class ExactPathExperiment(BaseExp):
+    @kernel
+    def build_sequence(self, params: ExpParams) -> Morphism:
+        return operations.alias() >> Wait(cycles(1))
+"""
+    entry_loader = _MutableSourceLoader(entry_name, entry_source)
+    entry_module = ModuleType(entry_name)
+    entry_module.__loader__ = entry_loader
+    entry_module.operations = operations
+    monkeypatch.setitem(sys.modules, entry_name, entry_module)
+    exec(compile(entry_source, f"<{entry_name}>", "exec"), entry_module.__dict__)
+    experiment = entry_module.ExactPathExperiment(h5_writer=cast(Any, object()))
+    unrelated_loader.failure = OSError("unrelated same-name source unavailable")
+
+    try:
+        analysis = _native._FrontendSession({})._analyze_registered_kernel(
+            experiment,
+            ExpParams({}),
+        )
+        assert analysis._body_definitions == [
+            (f"{entry_name}.ExactPathExperiment.build_sequence", "kernel"),
+            (f"{reachable_name}.alias", "morphism_definition"),
+        ]
+    finally:
+        unrelated_loader.failure = None
 
 
 def test_nac3_parse_failure_retains_loader_module_location(
@@ -928,8 +1012,6 @@ def test_nac3_parse_failure_retains_loader_module_location(
     original_source = loader.source
     loader.source = "@kernel\ndef"
     experiment = _Experiment(
-        compiler=_compiler(tmp_path),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -938,7 +1020,7 @@ def test_nac3_parse_failure_retains_loader_module_location(
             RuntimeError,
             match=rf"cannot parse registered module {module_name} at <{module_name}>",
         ) as raised:
-            experiment.compiler._native._register_kernel_modules(experiment)
+            _native._register_kernel_modules(experiment)
         assert f"<{module_name}>:" in str(raised.value)
     finally:
         loader.source = original_source
@@ -963,8 +1045,6 @@ def test_definition_association_failure_reports_original_source_line(
     assert original is not None
     source_line = original.__wrapped__.__code__.co_firstlineno
     experiment = _Experiment(
-        compiler=_compiler(tmp_path),
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
 
@@ -976,7 +1056,7 @@ def test_definition_association_failure_reports_original_source_line(
                 rf"{module_name}.*at <{module_name}>:{source_line}:1"
             ),
         ):
-            experiment.compiler._native._register_kernel_modules(experiment)
+            _native._register_kernel_modules(experiment)
     finally:
         loader.source = original_source
 
@@ -984,35 +1064,32 @@ def test_definition_association_failure_reports_original_source_line(
 def test_collector_requires_actual_base_exp_and_registered_entry(
     tmp_path: Path,
 ) -> None:
-    compiler = _compiler(tmp_path)
     undecorated = _UndecoratedExperiment(
-        compiler=compiler,
-        runtime=object(),
         h5_writer=cast(Any, object()),
     )
     setattr(
         _UndecoratedExperiment.build_sequence,
         "__catseq_definition__",
-        CompilerDefinition(kind="morphism_template"),
+        CompilerDefinition(kind="morphism"),
     )
 
     with pytest.raises(TypeError, match="registered.*@kernel"):
-        compiler._native._collect_kernel_definitions(undecorated)
+        _native._collect_kernel_definitions(undecorated)
     with pytest.raises(TypeError, match="BaseExp"):
-        compiler._native._collect_kernel_definitions(object())
+        _native._collect_kernel_definitions(object())
 
 
 def test_definition_roles_cannot_be_stacked() -> None:
     with pytest.raises(TypeError, match="already registered"):
 
         @kernel
-        @morphism_template
+        @morphism
         def invalid_inner() -> Morphism:
             raise AssertionError
 
     with pytest.raises(TypeError, match="already registered"):
 
-        @morphism_template
+        @morphism
         @kernel
         def invalid_outer() -> Morphism:
             raise AssertionError

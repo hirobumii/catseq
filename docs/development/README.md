@@ -18,14 +18,17 @@ documents are not rewritten.
 
 ## Current documents
 
-- [Compilation and execution interface redesign](execution_api_redesign.md)
-  records the current Compiler/Runtime interface and its BaseExp integration.
-- [Experiment-control clean-port plan](catseq_experiment_migration_plan.md) is
-  the implementation record and tracks the remaining downstream acceptance
-  gates.
+- [Frontend demos](../../frontend_demo/README.md) record the current
+  registered-source language boundary. Issue #52 implements only exact
+  entry-rooted analysis and target-independent Typed Source HIR; the public
+  end-to-end compile path remains unavailable until downstream work lands.
 
 ## Historical records
 
+- [Compilation and execution interface redesign](execution_api_redesign.md)
+  records the removed 0.4 Compiler/CompiledSequence/EthernetRuntime facade.
+- [Experiment-control clean-port plan](catseq_experiment_migration_plan.md)
+  records how that former facade was integrated with BaseExp.
 - [CatSeq 0.3 native compiler](0.3_native_compiler.md) records the completed
   0.3.2 compiler/runtime baseline.
 - [CatSeq 0.3 Typed Source HIR implementation plan](0.3_typed_source_hir_plan.md)

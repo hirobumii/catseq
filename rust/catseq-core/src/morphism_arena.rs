@@ -1,8 +1,7 @@
 //! Canonical, backend-independent Morphism DAG storage.
 //!
-//! Unlike the compatibility arena in [`crate::arena`], this is the durable
-//! compiler representation. Nodes contain only native integer references;
-//! source spelling and Python objects never become node payloads.
+//! Nodes contain only native integer references; source spelling and Python
+//! objects never become node payloads.
 
 use std::collections::HashMap;
 use std::error::Error;

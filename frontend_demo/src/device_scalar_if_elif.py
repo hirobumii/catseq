@@ -11,7 +11,7 @@
 from catseq import compute, control, kernel
 from catseq.control import Control
 from catseq.hardware.ttl import pulse
-from catseq.morphism import Morphism, identity
+from catseq.morphism import Morphism, Id
 from catseq.time_utils import us
 
 from support.detectors import detector0
@@ -25,17 +25,17 @@ def normalize_count(count: int) -> int:
 
 @kernel
 def short_readout() -> Morphism:
-    return identity(0) >> {readout_a: pulse(2 * us)}
+    return Id() >> {readout_a: pulse(2 * us)}
 
 
 @kernel
 def correction() -> Morphism:
-    return identity(0) >> {correction_a: pulse(1 * us)}
+    return Id() >> {correction_a: pulse(1 * us)}
 
 
 @kernel
 def flag_remote_board() -> Morphism:
-    return identity(0) >> {trigger_b: pulse(1 * us)}
+    return Id() >> {trigger_b: pulse(1 * us)}
 
 
 @kernel
@@ -59,7 +59,7 @@ def sequence(low: int = 10, high: int = 30) -> Control:
             1: correction(),
             2: flag_remote_board(),
         },
-        default=identity(0),
+        default=Id(),
         join=control.fixed_end(3 * us),
     )
     return capture >> select_readout

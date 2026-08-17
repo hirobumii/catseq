@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by Issue-52
 ---
 
 # Use a versioned one-shot compile request

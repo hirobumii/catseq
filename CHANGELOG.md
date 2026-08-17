@@ -7,6 +7,13 @@ and CatSeq uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the overloaded compiler-only `identity(duration)` source intrinsic
+  with distinct `Id()` and `Wait(duration: Duration)` Morphism constructors.
+  There is no compatibility alias or unitless-zero exception: use `Id()` for
+  the sequencing unit and pass an explicit Duration to `Wait`.
+
 ## [0.4.2] - 2026-08-06
 
 ### Added

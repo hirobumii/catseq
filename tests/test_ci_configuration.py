@@ -42,9 +42,7 @@ def test_ci_and_release_target_only_linux_x86_64() -> None:
     assert re.findall(r"^\s+target: (\S+)$", platform_job, re.MULTILINE) == [
         "x86_64-unknown-linux-gnu"
     ]
-    assert re.findall(r"^\s+artifact: (\S+)$", platform_job, re.MULTILINE) == [
-        "catseqc-linux-x86_64"
-    ]
+    assert "artifact:" not in platform_job
     assert "    runs-on: ${{ matrix.os }}" in platform_job
     assert "    runs-on: ubuntu-24.04" in python_job
     assert "    runs-on: ubuntu-24.04" in release_job
@@ -73,11 +71,11 @@ def test_installation_docs_state_the_linux_x86_64_support_boundary() -> None:
     assert support_boundary in (ROOT / "docs/user/01_quickstart.md").read_text()
 
 
-def test_ci_enforces_typing_and_executes_the_marked_readme_quickstart() -> None:
+def test_ci_enforces_typing_and_builds_the_native_wheel() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
 
     assert "uv run mypy catseq" in workflow
-    assert "uv run python tools/run_readme_quickstart.py" in workflow
+    assert "run_readme_quickstart.py" not in workflow
     python_job = workflow.split("\n  python-package:", 1)[1].split(
         "\n  release:", 1
     )[0]
@@ -119,7 +117,6 @@ def test_fork_pull_requests_keep_public_rust_checks_without_private_secrets() ->
         "Check Python code",
         "Run Python tests",
         "Run Python type checks",
-        "Execute the README quickstart",
     )
     for step_name in private_steps:
         step = platform_job.split(f"      - name: {step_name}", 1)[1].split(
@@ -132,9 +129,6 @@ def test_fork_pull_requests_keep_public_rust_checks_without_private_secrets() ->
         "Check Rust formatting",
         "Lint the Rust workspace",
         "Test the Rust workspace",
-        "Build catseqc in release mode",
-        "Package the Linux compiler",
-        "Upload the platform artifacts",
     )
     for step_name in public_steps:
         step = platform_job.split(f"      - name: {step_name}", 1)[1].split(
@@ -146,3 +140,13 @@ def test_fork_pull_requests_keep_public_rust_checks_without_private_secrets() ->
         "\n  release:", 1
     )[0]
     assert fork_guard in python_job.split("\n    steps:", 1)[0]
+
+
+def test_ci_does_not_publish_the_removed_standalone_compiler() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+
+    assert "catseqc" not in workflow
+    release_job = workflow.split("\n  release:", 1)[1]
+    needs = release_job.split("\n    runs-on:", 1)[0]
+    assert "- python-package" in needs
+    assert "- platform" in needs

@@ -9,7 +9,7 @@
 from catseq import compute, control, kernel
 from catseq.control import Control
 from catseq.hardware.ttl import pulse
-from catseq.morphism import identity
+from catseq.morphism import Id
 from catseq.time_utils import us
 
 from support.detectors import detector0
@@ -32,11 +32,11 @@ def sequence(low: int = 10, high: int = 30) -> Control:
     choice = control.switch(
         classification,
         cases={
-            -1: identity(0),
-            0: identity(0) >> {readout_a: pulse(2 * us)},
-            1: identity(0) >> {correction_a: pulse(1 * us)},
+            -1: Id(),
+            0: Id() >> {readout_a: pulse(2 * us)},
+            1: Id() >> {correction_a: pulse(1 * us)},
         },
-        default=identity(0),
+        default=Id(),
         join=control.fixed_end(3 * us),
     )
     return capture >> choice

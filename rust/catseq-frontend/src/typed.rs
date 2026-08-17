@@ -1,314 +1,260 @@
-//! Typed declaration surface produced from NAC3's Python AST.
-//!
-//! This module is the first production seam of the 0.3 source frontend.  It
-//! deliberately owns CatSeq types instead of leaking NAC3 AST nodes past the
-//! parsing/indexing boundary.
+//! Immutable typed report for one exact registered entry request.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use serde::{Deserialize, Serialize};
 
-use crate::intrinsics;
-
-mod ast_util;
-mod compile_attributes;
-mod compile_values;
-mod definition_analysis;
-mod model;
-pub(crate) mod resolution;
-mod signatures;
-mod validation;
-
-use ast_util::parse_module;
-use compile_attributes::{load_referenced_compile_modules, resolve_bundle_compile_attributes};
-use definition_analysis::{definition_exists, find_definition};
-use resolution::{
-    load_source_module, locate_source_definition, module_imports, resolve_call_path,
-    resolve_compile_instance_call, resolve_self_call,
+use crate::registered_modules::{RegisteredDefinition, RegisteredDefinitionRole, RegisteredModule};
+use crate::source_hir::{
+    ComputeCallReference, DefinitionCallEdge, ExternalRead, SourceAnchor, SourceBinding,
+    SourceLiteral, TypedSourceHir, ValueType,
 };
 
-pub(crate) use model::IncrementalStatsSnapshot;
-pub use model::{
-    IncrementalStats, SourceType, TypeSignature, TypedCheckError, TypedCheckReport,
-    TypedCheckSummary, TypedDefinition, TypedParameter,
-};
-
-pub fn check_typed_entry(
-    file_name: &str,
-    source: &str,
-    requested_entry: &str,
-) -> Result<TypedCheckReport, TypedCheckError> {
-    let modules = BTreeMap::from([(file_name.to_owned(), source.to_owned())]);
-    check_typed_bundle_entry(file_name, &modules, requested_entry)
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ParameterKind {
+    PositionalOnly,
+    PositionalOrKeyword,
+    KeywordOnly,
 }
 
-pub fn check_typed_bundle_entry(
-    entry_module: &str,
-    modules: &BTreeMap<String, String>,
-    requested_entry: &str,
-) -> Result<TypedCheckReport, TypedCheckError> {
-    let mut loader = |module: &str| Ok(modules.get(module).cloned());
-    check_typed_bundle_entry_with_loader(entry_module, requested_entry, &mut loader)
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ParameterAuthority {
+    EntryOwner,
+    ExpParams,
 }
 
-pub fn check_typed_bundle_entry_with_loader<F>(
-    entry_module: &str,
-    requested_entry: &str,
-    loader: &mut F,
-) -> Result<TypedCheckReport, TypedCheckError>
-where
-    F: FnMut(&str) -> Result<Option<String>, String>,
-{
-    check_typed_bundle_entry_with_loader_and_opaque_definitions(
-        entry_module,
-        requested_entry,
-        &BTreeSet::new(),
-        loader,
-    )
+impl ParameterAuthority {
+    pub const fn source_binding(&self) -> SourceBinding {
+        match self {
+            Self::EntryOwner => SourceBinding::EntryOwner,
+            Self::ExpParams => SourceBinding::ExpParams,
+        }
+    }
 }
 
-pub fn check_typed_bundle_entry_with_loader_and_opaque_definitions<F>(
-    entry_module: &str,
-    requested_entry: &str,
-    opaque_definitions: &BTreeSet<String>,
-    loader: &mut F,
-) -> Result<TypedCheckReport, TypedCheckError>
-where
-    F: FnMut(&str) -> Result<Option<String>, String>,
-{
-    let mut pending = VecDeque::from([(entry_module.to_owned(), requested_entry.to_owned())]);
-    let mut visited = HashSet::new();
-    let mut parsed = HashMap::new();
-    let mut sources = HashMap::<String, String>::new();
-    let mut definitions = Vec::new();
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub enum ParameterSemantics {
+    Value {
+        value_type: ValueType,
+        default: Option<SourceLiteral>,
+    },
+    SourceAuthority(ParameterAuthority),
+}
 
-    while let Some((module_name, lexical_name)) = pending.pop_front() {
-        if !visited.insert((module_name.clone(), lexical_name.clone())) {
-            continue;
-        }
-        if !load_source_module(&module_name, &mut sources, loader)? {
-            return Err(TypedCheckError::EntryNotFound {
-                file_name: module_name.clone(),
-                entry: lexical_name.clone(),
-            });
-        }
-        if !parsed.contains_key(&module_name) {
-            let source = &sources[&module_name];
-            parsed.insert(module_name.clone(), parse_module(&module_name, source)?);
-        }
-        let suite = &parsed[&module_name];
-        let imports = module_imports(&module_name, suite);
-        let module_defines_round = definition_exists(suite, "round");
-        let mut analysis =
-            find_definition(&module_name, suite, &mut Vec::new(), &lexical_name, None)?
-                .ok_or_else(|| TypedCheckError::EntryNotFound {
-                    file_name: module_name.clone(),
-                    entry: lexical_name.clone(),
-                })?;
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TypedParameter {
+    name: String,
+    semantics: ParameterSemantics,
+    kind: ParameterKind,
+}
 
-        if module_name != entry_module || lexical_name != requested_entry {
-            analysis.definition.qualified_name = format!("{module_name}.{lexical_name}");
+impl TypedParameter {
+    pub(crate) fn value(
+        name: String,
+        value_type: ValueType,
+        kind: ParameterKind,
+        default: Option<SourceLiteral>,
+    ) -> Self {
+        Self {
+            name,
+            semantics: ParameterSemantics::Value {
+                value_type,
+                default,
+            },
+            kind,
         }
-        for source_property in analysis.property_reads {
-            let property = resolve_self_call(&lexical_name, &source_property);
-            let resolved = resolve_call_path(&module_name, &imports, &property);
-            analysis
-                .definition
-                .hir
-                .resolve_attribute(&source_property, &resolved);
-            if let Some((target_module, target_definition)) =
-                locate_source_definition(&resolved, &mut sources, loader)?
-            {
-                if !parsed.contains_key(&target_module) {
-                    let source = &sources[&target_module];
-                    parsed.insert(target_module.clone(), parse_module(&target_module, source)?);
-                }
-                if definition_exists(&parsed[&target_module], &target_definition) {
-                    pending.push_back((target_module, target_definition));
-                }
-            }
-        }
-        for source_call in analysis.calls {
-            let call = resolve_self_call(&lexical_name, &source_call.target_path);
-            let resolved =
-                if call == "round" && !imports.contains_key("round") && !module_defines_round {
-                    "builtins.round".to_owned()
-                } else {
-                    resolve_call_path(&module_name, &imports, &call)
-                };
-            let (resolved, instance_identity) =
-                resolve_compile_instance_call(&mut sources, &mut parsed, loader, &resolved)?;
-            let locally_shadowed_registered_call = source_call.source_path
-                == source_call.target_path
-                && !source_call.source_path.starts_with("self.")
-                && analysis.definition.hir.call_callee_shadows_module_binding(
-                    &source_call.source_path,
-                    source_call.line,
-                    source_call.column,
-                )
-                && (intrinsics::is_compiler_special_form(&resolved)
-                    || intrinsics::is_registered(&resolved));
-            if locally_shadowed_registered_call {
-                let anchor = analysis
-                    .definition
-                    .hir
-                    .call_anchor(
-                        &source_call.source_path,
-                        source_call.line,
-                        source_call.column,
-                    )
-                    .expect("a collected call must have a Source HIR node");
-                return Err(TypedCheckError::ReachableHostCall {
-                    file_name: module_name,
-                    definition: lexical_name,
-                    target: source_call.source_path,
-                    line: anchor.line(),
-                    column: anchor.column(),
-                });
-            }
-            analysis.definition.hir.resolve_call(
-                &source_call.source_path,
-                source_call.line,
-                source_call.column,
-                &resolved,
-                instance_identity.as_deref(),
-            );
-            if resolved == "rb1system.utils.get_end_state" {
-                return Err(TypedCheckError::MigrationRequired {
-                    file_name: module_name,
-                    definition: lexical_name,
-                    construct: "get_end_state".to_owned(),
-                });
-            }
-            if intrinsics::is_compiler_special_form(&resolved) {
-                continue;
-            }
-            if opaque_definitions.contains(&resolved) {
-                analysis.definition.hir.mark_opaque_atomic_call(
-                    &source_call.source_path,
-                    source_call.line,
-                    source_call.column,
-                );
-                continue;
-            }
-            if let Some((target_module, target_definition)) =
-                locate_source_definition(&resolved, &mut sources, loader)?
-            {
-                if !parsed.contains_key(&target_module) {
-                    let source = &sources[&target_module];
-                    parsed.insert(target_module.clone(), parse_module(&target_module, source)?);
-                }
-                if definition_exists(&parsed[&target_module], &target_definition) {
-                    pending.push_back((target_module, target_definition));
-                    continue;
-                }
-            }
-            if intrinsics::is_registered(&resolved) {
-                continue;
-            }
-            let anchor = analysis
-                .definition
-                .hir
-                .call_anchor(
-                    &source_call.source_path,
-                    source_call.line,
-                    source_call.column,
-                )
-                .expect("a collected call must have a Source HIR node");
-            return Err(TypedCheckError::ReachableHostCall {
-                file_name: module_name,
-                definition: lexical_name,
-                target: resolved,
-                line: anchor.line(),
-                column: anchor.column(),
-            });
-        }
-        definitions.push(analysis.definition);
     }
 
-    load_referenced_compile_modules(&definitions, &mut sources, &mut parsed, loader)?;
-    resolve_bundle_compile_attributes(&parsed, &mut definitions);
+    pub(crate) fn source(name: String, authority: ParameterAuthority, kind: ParameterKind) -> Self {
+        Self {
+            name,
+            semantics: ParameterSemantics::SourceAuthority(authority),
+            kind,
+        }
+    }
 
-    for _ in 0..=definitions.len() {
-        let return_types: HashMap<_, _> = definitions
-            .iter()
-            .map(|definition| {
-                (
-                    format!("{}.{}", definition.module, definition.hir.definition()),
-                    definition.signature.return_type.clone(),
-                )
-            })
-            .collect();
-        let mut changed = false;
-        for definition in &mut definitions {
-            definition.hir.apply_definition_signatures(&return_types);
-            if !definition.return_type_is_explicit
-                && let Some(inferred) = definition.hir.inferred_return_type()
-                && definition.signature.return_type != inferred
-            {
-                definition.signature.return_type = inferred;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub const fn value_type(&self) -> Option<&ValueType> {
+        match &self.semantics {
+            ParameterSemantics::Value { value_type, .. } => Some(value_type),
+            ParameterSemantics::SourceAuthority(_) => None,
         }
     }
-    let signatures: HashMap<_, _> = definitions
-        .iter()
-        .map(|definition| {
-            (
-                format!("{}.{}", definition.module, definition.hir.definition()),
-                definition.signature.clone(),
-            )
-        })
-        .collect();
-    for definition in &definitions {
-        if let Some((anchor, message)) = definition.hir.first_native_record_replace_error() {
-            return Err(TypedCheckError::InvalidNativeRecordOperation {
-                file_name: definition.module.clone(),
-                definition: definition.qualified_name.clone(),
-                message,
-                line: anchor.line(),
-                column: anchor.column(),
-            });
-        }
-        if let Some((anchor, expected, found)) = definition
-            .hir
-            .first_call_argument_type_mismatch(&signatures)
-        {
-            return Err(TypedCheckError::TypeMismatch {
-                file_name: definition.module.clone(),
-                definition: definition.qualified_name.clone(),
-                expected: Box::new(expected),
-                found: Box::new(found),
-                line: anchor.line(),
-                column: anchor.column(),
-            });
-        }
-        if !definition.return_type_is_explicit {
-            continue;
-        }
-        if let Some((anchor, found)) = definition
-            .hir
-            .first_return_type_mismatch(definition.signature.return_type())
-        {
-            return Err(TypedCheckError::TypeMismatch {
-                file_name: definition.module.clone(),
-                definition: definition.qualified_name.clone(),
-                expected: Box::new(definition.signature.return_type().clone()),
-                found: Box::new(found.clone()),
-                line: anchor.line(),
-                column: anchor.column(),
-            });
+
+    pub const fn authority(&self) -> Option<&ParameterAuthority> {
+        match &self.semantics {
+            ParameterSemantics::Value { .. } => None,
+            ParameterSemantics::SourceAuthority(authority) => Some(authority),
         }
     }
-    let executed = parsed.len() as u64 + definitions.len() as u64;
-    let mut queried_modules: Vec<_> = parsed.into_keys().collect();
-    queried_modules.sort();
-    Ok(TypedCheckReport {
-        entry: requested_entry.to_owned(),
-        incremental: IncrementalStats::new(executed, 0),
-        definitions,
-        diagnostics: Vec::new(),
-        queried_modules,
-    })
+
+    pub const fn semantics(&self) -> &ParameterSemantics {
+        &self.semantics
+    }
+
+    pub const fn kind(&self) -> ParameterKind {
+        self.kind
+    }
+
+    pub const fn default(&self) -> Option<&SourceLiteral> {
+        match &self.semantics {
+            ParameterSemantics::Value { default, .. } => default.as_ref(),
+            ParameterSemantics::SourceAuthority(_) => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TypeSignature {
+    parameters: Vec<TypedParameter>,
+    return_type: ValueType,
+}
+
+impl TypeSignature {
+    pub(crate) fn new(parameters: Vec<TypedParameter>, return_type: ValueType) -> Self {
+        Self {
+            parameters,
+            return_type,
+        }
+    }
+
+    pub fn parameters(&self) -> &[TypedParameter] {
+        &self.parameters
+    }
+
+    pub const fn return_type(&self) -> &ValueType {
+        &self.return_type
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TypedDefinition {
+    definition_id: usize,
+    role: RegisteredDefinitionRole,
+    module: String,
+    qualified_name: String,
+    atomic_symbol: Option<String>,
+    anchor: SourceAnchor,
+    signature: TypeSignature,
+    hir: TypedSourceHir,
+}
+
+impl TypedDefinition {
+    pub(crate) fn from_registered(
+        definition: &RegisteredDefinition,
+        module: &RegisteredModule,
+        signature: TypeSignature,
+        hir: TypedSourceHir,
+    ) -> Self {
+        let location = definition.location();
+        Self {
+            definition_id: definition.id(),
+            role: definition.role(),
+            module: module.import_name().to_owned(),
+            qualified_name: definition.qualified_name().to_owned(),
+            atomic_symbol: definition.atomic_symbol().map(str::to_owned),
+            anchor: SourceAnchor::new(
+                module.import_name(),
+                module.file_name(),
+                location.row,
+                location.column,
+            ),
+            signature,
+            hir,
+        }
+    }
+
+    pub const fn definition_id(&self) -> usize {
+        self.definition_id
+    }
+
+    pub const fn role(&self) -> RegisteredDefinitionRole {
+        self.role
+    }
+
+    pub fn module(&self) -> &str {
+        &self.module
+    }
+
+    pub fn qualified_name(&self) -> &str {
+        &self.qualified_name
+    }
+
+    pub fn atomic_symbol(&self) -> Option<&str> {
+        self.atomic_symbol.as_deref()
+    }
+
+    pub const fn anchor(&self) -> &SourceAnchor {
+        &self.anchor
+    }
+
+    pub const fn signature(&self) -> &TypeSignature {
+        &self.signature
+    }
+
+    pub const fn hir(&self) -> &TypedSourceHir {
+        &self.hir
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypedCheckReport {
+    entry_definition_id: usize,
+    entry: String,
+    definitions: Vec<TypedDefinition>,
+    call_edges: Vec<DefinitionCallEdge>,
+    external_reads: Vec<ExternalRead>,
+    compute_calls: Vec<ComputeCallReference>,
+    queried_modules: Vec<String>,
+}
+
+impl TypedCheckReport {
+    pub(crate) fn new(
+        entry_definition_id: usize,
+        entry: String,
+        definitions: Vec<TypedDefinition>,
+        call_edges: Vec<DefinitionCallEdge>,
+        external_reads: Vec<ExternalRead>,
+        compute_calls: Vec<ComputeCallReference>,
+        queried_modules: Vec<String>,
+    ) -> Self {
+        Self {
+            entry_definition_id,
+            entry,
+            definitions,
+            call_edges,
+            external_reads,
+            compute_calls,
+            queried_modules,
+        }
+    }
+
+    pub const fn entry_definition_id(&self) -> usize {
+        self.entry_definition_id
+    }
+
+    pub fn entry(&self) -> &str {
+        &self.entry
+    }
+
+    pub fn definitions(&self) -> &[TypedDefinition] {
+        &self.definitions
+    }
+
+    pub fn call_edges(&self) -> &[DefinitionCallEdge] {
+        &self.call_edges
+    }
+
+    pub fn external_reads(&self) -> &[ExternalRead] {
+        &self.external_reads
+    }
+
+    pub fn compute_calls(&self) -> &[ComputeCallReference] {
+        &self.compute_calls
+    }
+
+    pub fn queried_modules(&self) -> &[String] {
+        &self.queried_modules
+    }
 }

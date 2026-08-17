@@ -9,14 +9,14 @@ from catseq import _native
 ROOT = Path(__file__).parents[1]
 
 
-def test_platform_wheel_exposes_the_native_api_and_cli_without_duplicate_binary() -> None:
+def test_platform_wheel_exposes_one_native_extension_without_a_cli() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     maturin = project["tool"]["maturin"]
 
     assert maturin["manifest-path"] == "rust/catseq-python/Cargo.toml"
     assert maturin["bindings"] == "pyo3"
     assert maturin["module-name"] == "catseq._native"
-    assert project["project"]["scripts"]["catseqc"] == "catseq._native:run_cli"
+    assert "catseqc" not in project["project"].get("scripts", {})
 
 
 def test_compute_frontend_pins_one_nac3_fork_revision() -> None:
@@ -50,7 +50,7 @@ def test_native_stub_matches_the_complete_public_pyo3_surface() -> None:
             and not member.name.startswith("__")
         }
         for node in stub.body
-        if isinstance(node, ast.ClassDef)
+        if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
     }
     stub_public = set(stub_functions) | set(stub_classes)
     native_public = {

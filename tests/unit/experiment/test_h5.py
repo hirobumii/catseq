@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import ClassVar
 
 import h5py
 
 from catseq.experiment.analyzer import BaseAnalyzer
-from catseq.experiment.base_exp import BaseExp
 from catseq.experiment.descartes import DescartesGenerator
 from catseq.experiment.device import BaseDeviceIn, DeviceList
 from catseq.experiment.h5 import H5Writer
@@ -57,29 +55,6 @@ class ExperimentRecord:
         default_factory=object, metadata={"persist": False}, repr=False
     )
     device_list: Apparatus = field(default_factory=Apparatus)
-
-
-class PointCompiler:
-    def compile(self, entry, params: ExpParams):
-        return {"entry": entry, "duration": params[PersistedExperiment.duration]}
-
-
-class PointRuntime:
-    def run(self, compiled):
-        return compiled["duration"]
-
-
-@dataclass
-class PersistedExperiment(BaseExp):
-    duration: ClassVar[ExpParam[Decimal]] = ExpParam("duration_us", "us")
-    amplitude: float = 0.5
-    device_list: Apparatus = field(default_factory=Apparatus)
-
-    def config_generator(self) -> None:
-        self.gen.add_descartes("scan", self.duration, [Decimal("1.25")])
-
-    def build_sequence(self, params: ExpParams):
-        raise AssertionError("the test compiler does not execute source")
 
 
 def test_h5_writer_owns_the_complete_experiment_schema(tmp_path) -> None:
@@ -133,23 +108,3 @@ def test_h5_writer_owns_the_complete_experiment_schema(tmp_path) -> None:
         assert h5_file["debug/cleanup_errors"].asstr()[:].tolist() == [
             "ValueError('close failed')"
         ]
-
-
-def test_base_exp_persists_its_completed_lifecycle(tmp_path) -> None:
-    path = tmp_path / "base-exp.h5"
-    experiment = PersistedExperiment(
-        compiler=PointCompiler(),
-        runtime=PointRuntime(),
-        h5_writer=H5Writer(path),
-    )
-
-    experiment.run()
-
-    with h5py.File(path, "r") as h5_file:
-        assert h5_file["static_para/amplitude"][()] == 0.5
-        assert h5_file["dynamic_para/duration_us"].asstr()[:].tolist() == [
-            "1.25"
-        ]
-        assert h5_file["dynamic_para/__idx__"][:].tolist() == [0]
-        assert h5_file["dynamic_para/__coord__scan_0"][:].tolist() == [0]
-        assert "run_error" not in h5_file["debug"]

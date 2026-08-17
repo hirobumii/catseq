@@ -89,10 +89,10 @@ DeviceValue SSA, target planning, and backend artifacts remain downstream.
 ### Morphism
 
 Morphism remains the composable timed event/resource algebra.  It can span
-several channels and boards.  `identity(0)` is the zero-duration composition
-identity in the current spelling; nonzero `identity(duration)` moves the
-logical cursor used to place rigid events, including negative rewind.  It is
-not controller blocking work.
+several channels and boards. `Id()` is the zero-duration sequencing unit;
+`Wait(duration)` moves the logical cursor used to place rigid events, including
+negative rewind. `Wait` requires an actual Duration and is not controller
+blocking work.
 
 Compile-known invariant repetition remains MorphismPower.  Whether it becomes
 a hardware loop or an unrolled fragment is a target-lowering decision.  A
@@ -188,7 +188,7 @@ join belong to different Epochs.
 | Area | Programs | Boundary shown |
 | --- | --- | --- |
 | Typed Source HIR | `source_hir_loop_free.py`, `source_hir_compute_reference.py` | exact BaseExp root, reachable definitions and reads, opaque Compute reference |
-| public Kernel entry | `kernel_identity.py` | compiler-only body and channel-bound result |
+| public Kernel entry | `kernel_id.py` | compiler-only body and channel-bound result |
 | Kernel calls | `kernel_calls_kernel.py` | Compile-known scalar and Morphism-producing direct callees |
 | Compute | `device_scalar_if_elif.py`, `device_scalar_early_return.py`, `device_scalar_bounded_while.py`, `device_pure_compute_loop.py`, `device_mandelbrot.py` | explicit ComputeFunctions, automatic ComputeRegions, and temporal Control separation |
 | Compile topology | `compile_known_if.py`, `compile_known_if_false.py`, `compile_known_for_range.py` | selected finite topology, no runtime Choice |
@@ -236,15 +236,17 @@ Every file starts with a compact expectation block:
 it does **not** claim compiler support.  Normal checking validates headers and
 Python syntax without importing a module.  Strict checking remains red.
 
-`required` is used only after the owning issue is selected.  Rejected programs
-then run through public `catseqc check` and must contain every declared
-`DIAGNOSTIC`.  Accepted semantic programs must not be promoted until #33 exposes
-a public target-independent CanonicalProgram serialization/hash that the runner
-can compare.  A successful source check alone is intentionally not accepted as
-proof of topology, normalization, resource, or Epoch semantics.
+`required` is used only after the owning issue is selected and a public
+registered-source analysis adapter can check the declared result.  That adapter
+does not exist during the #52 migration, so required contracts fail rather than
+falling back to the removed compiler.  Accepted semantic programs must not be
+promoted until #33 exposes a public target-independent CanonicalProgram
+serialization/hash that the runner can compare.  A successful source check
+alone is intentionally not accepted as proof of topology, normalization,
+resource, or Epoch semantics.
 
-The runner does not import demos or call a `@kernel` body.  The future
-actual-object `catseqc` route may import a module using normal Python semantics
+The runner does not import demos or call a `@kernel` body.  The future public
+actual-object analysis route may import a module using normal Python semantics
 as specified by #53; demo module top level is therefore limited to declarations
 and inert resource construction.
 
@@ -260,25 +262,21 @@ uv run python frontend_demo/check_demos.py
 uv run python frontend_demo/check_demos.py --strict
 ```
 
-The last command is intentionally red while contracts remain proposed.  Once a
-rejected case becomes required, an explicit compiler can be supplied with:
-
-```console
-uv run python frontend_demo/check_demos.py \
-  --catseqc target/debug/catseqc
-```
+The last command is intentionally red while contracts remain proposed. A
+required contract also remains red until the public registered-source analysis
+adapter is implemented; the runner has no legacy compiler fallback.
 
 Do not use `--offline` or `uv run --with`.  Whole-directory mypy is also
-expected to fail until the proposed `catseq.kernel`, `catseq.compute`, Control,
-measurement, scheduling, and rendezvous surfaces exist; type-check the two
-runner files independently during this design stage.
+expected to fail until the proposed Control, measurement, scheduling, and
+rendezvous surfaces exist; type-check the two runner files independently
+during this design stage.
 
 ## Source spellings still intentionally open for review
 
-The semantic boundary is stronger than these provisional names.  In
-particular, review may change:
+The sequencing value spelling is settled: user source has one `Morphism` type,
+and reusable definitions use `@morphism`. The remaining provisional names may
+still change:
 
-- the public name replacing or retaining `morphism_template`;
 - the exact typed syntax for `loop_value`, carry edges, and exhaustion;
 - the concrete spelling and exact constant constructors for `fixed32[F]`;
 - the concrete Link-value declaration spelling;

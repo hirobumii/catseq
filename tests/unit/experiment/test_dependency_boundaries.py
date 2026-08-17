@@ -1,41 +1,14 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 import sys
-from typing import ClassVar
 
 import catseq.experiment
-from catseq.compiler import Compiler
-from catseq.experiment.base_exp import BaseExp
-from catseq.experiment.params import ExpParam, ExpParams
-from catseq.hardware.ttl import pulse
-from catseq.morphism import Morphism, identity
-from catseq.time_utils import ms
-from catseq.types import Board, Channel, ChannelType
 
 
 EXPERIMENT_DIR = Path(catseq.experiment.__file__).parent
-SOURCE_ROOT = Path(__file__).parent
-
-boundary_board = Board("rwg0")
-boundary_ttl = Channel(
-    boundary_board,
-    local_id=0,
-    channel_type=ChannelType.TTL,
-)
-
-
-@dataclass
-class CompilerBoundaryExperiment(BaseExp):
-    duration: ClassVar[ExpParam[float]] = ExpParam("duration_ms", "ms")
-
-    def build_sequence(self, params: ExpParams) -> Morphism:
-        return identity(0) >> {boundary_ttl: pulse(params[self.duration] * ms)}
-
-
 def test_non_h5_modules_import_without_h5py() -> None:
     script = f"""
 import builtins
@@ -94,26 +67,3 @@ def test_experiment_modules_do_not_depend_on_rb1() -> None:
 
 def test_no_extra_experiment_layer_was_added() -> None:
     assert not (EXPERIMENT_DIR / "_authoring.py").exists()
-
-
-def test_compiler_reaches_build_sequence_without_compiling_orchestration(
-    tmp_path: Path,
-) -> None:
-    compiler = Compiler(
-        source_root=SOURCE_ROOT,
-        channels={"test_dependency_boundaries.boundary_ttl": boundary_ttl},
-        cache_dir=tmp_path / "cache",
-    )
-    experiment = CompilerBoundaryExperiment(
-        compiler=compiler,
-        runtime=object(),
-        h5_writer=object(),
-    )
-
-    compiled = compiler.compile(
-        experiment.build_sequence,
-        ExpParams({experiment.duration: 2.0}),
-    )
-
-    assert compiled.logical_duration_cycles == 500_000
-    assert not compiled.diagnostics

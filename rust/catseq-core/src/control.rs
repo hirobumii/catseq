@@ -8,11 +8,19 @@ impl OriginId {
     pub const fn new(index: u32) -> Self {
         Self(index)
     }
+
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
 }
 
 /// The diagnostic role played by a source origin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OriginRole {
+    Entry,
+    Assignment,
+    Value,
+    Call,
     Morphism,
     MorphismOperator,
     Return,
@@ -170,6 +178,14 @@ impl OriginMap {
     ) -> &[OriginContribution] {
         &self.nodes[then.0 as usize].then_boundaries[boundary_index]
     }
+
+    pub fn contributions(&self) -> impl Iterator<Item = &OriginContribution> {
+        self.nodes.iter().flat_map(|node| {
+            node.node
+                .iter()
+                .chain(node.then_boundaries.iter().flatten())
+        })
+    }
 }
 
 /// A normalized Control arena together with non-semantic diagnostic origins.
@@ -191,6 +207,10 @@ impl<M, V, T> NormalizedControl<M, V, T> {
 
     pub const fn summary(&self) -> &ControlSummary<T> {
         &self.summary
+    }
+
+    pub fn into_parts(self) -> (ControlArena<M, V, T>, OriginMap, ControlSummary<T>) {
+        (self.arena, self.origins, self.summary)
     }
 }
 

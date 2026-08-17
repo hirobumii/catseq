@@ -79,6 +79,14 @@ impl ValueType {
             Self::Named(name) => name.clone(),
         }
     }
+
+    pub(crate) fn accepts(&self, found: &Self) -> bool {
+        self == found
+            || matches!(
+                self,
+                Self::Optional(inner) if found == inner.as_ref() || found == &Self::None
+            )
+    }
 }
 
 impl Display for ValueType {
@@ -255,6 +263,7 @@ pub enum SourceHirKind {
     Call,
     Binary,
     Assignment,
+    ExpressionStatement,
     Return,
 }
 
@@ -268,6 +277,7 @@ impl SourceHirKind {
             Self::Call => "call",
             Self::Binary => "binary",
             Self::Assignment => "assignment",
+            Self::ExpressionStatement => "expression_statement",
             Self::Return => "return",
         }
     }

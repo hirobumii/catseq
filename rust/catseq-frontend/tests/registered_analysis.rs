@@ -1,14 +1,16 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use catseq_core::control::{ControlNode, OriginRole};
 use catseq_frontend::{
     CallArgumentOrigin, DefinitionNameBindingInput, DefinitionRegistrationInput, DependencyRole,
-    DurationUnit, ModuleRegistrationInput, MorphismComposition, ParameterAuthority,
+    DurationUnit, FrontendElaborationErrorCode, FrontendMorphismNode, FrontendProgram,
+    FrontendValueKind, ModuleRegistrationInput, MorphismComposition, ParameterAuthority,
     RegisteredDefinitionRole, RegisteredKernelModules, RegisteredRequestResolver,
     RegistrationInput, RequestResolutionError, ResolvedCallTarget, ResolvedExternalRead,
     SourceBinding, SourceHirKind, SourceIntrinsic, SourceLiteral, SourceValueOperation,
     TopologyEffect, ValueAvailability, ValueType, analyze_registered_entry,
-    register_kernel_modules,
+    elaborate_frontend_program, register_kernel_modules,
 };
 
 const MODULE_ID: usize = 7;
@@ -44,7 +46,11 @@ fn register_fixture(
                 qualified_name: definition.qualified_name.to_owned(),
                 source_start_line: definition.source_start_line,
                 role: definition.role,
-                atomic_symbol: None,
+                atomic_symbol: matches!(
+                    definition.role,
+                    RegisteredDefinitionRole::Atomic | RegisteredDefinitionRole::Intrinsic
+                )
+                .then(|| format!("test::{}", definition.qualified_name)),
             })
             .collect(),
         definition_name_bindings: bindings
@@ -61,14 +67,30 @@ fn register_fixture(
     .expect("analysis fixture must register")
 }
 
-#[derive(Default)]
 struct InMemoryResolver {
     reads: BTreeMap<String, Result<ResolvedExternalRead, RequestResolutionError>>,
     callables: BTreeMap<String, SourceBinding>,
     queried_reads: Vec<String>,
+    entry_definition_id: usize,
+}
+
+impl Default for InMemoryResolver {
+    fn default() -> Self {
+        Self {
+            reads: BTreeMap::new(),
+            callables: BTreeMap::new(),
+            queried_reads: Vec::new(),
+            entry_definition_id: 12,
+        }
+    }
 }
 
 impl InMemoryResolver {
+    fn with_entry_definition_id(mut self, definition_id: usize) -> Self {
+        self.entry_definition_id = definition_id;
+        self
+    }
+
     fn with_int32_read(mut self, attribute: &str, id: u32, value: i32) -> Self {
         self.reads.insert(
             attribute.to_owned(),
@@ -100,7 +122,7 @@ impl RegisteredRequestResolver for InMemoryResolver {
         definition_id: usize,
         _anchor: &catseq_frontend::SourceAnchor,
     ) -> Result<bool, RequestResolutionError> {
-        Ok(definition_id == 12)
+        Ok(definition_id == self.entry_definition_id)
     }
 
     fn resolve_annotation_binding(
@@ -171,6 +193,35 @@ impl RegisteredRequestResolver for InMemoryResolver {
             )))
         })
     }
+}
+
+fn elaborate_closed_entry(source: &str, source_start_line: usize) -> FrontendProgram {
+    elaborate_closed_definition(source, source_start_line, 12, "Experiment.build_sequence")
+}
+
+fn elaborate_closed_definition(
+    source: &str,
+    source_start_line: usize,
+    definition_id: usize,
+    qualified_name: &'static str,
+) -> FrontendProgram {
+    let registered = register_fixture(
+        source,
+        &[DefinitionSpec {
+            id: definition_id,
+            qualified_name,
+            source_start_line,
+            role: RegisteredDefinitionRole::Kernel,
+        }],
+        &[],
+        definition_id,
+    );
+    let analysis = analyze_registered_entry(
+        &registered,
+        &mut InMemoryResolver::default().with_entry_definition_id(definition_id),
+    )
+    .expect("the closed source should type-check");
+    elaborate_frontend_program(analysis.report()).expect("the closed source should elaborate")
 }
 
 #[test]
@@ -372,6 +423,94 @@ fn analyzes_exact_loop_free_entry_reachability_hir_and_read_edges() {
                         .contains(&DependencyRole::Structural)
             })
     );
+
+    let program = elaborate_frontend_program(report)
+        .expect("the pure Morphism Definition should inline during elaboration");
+    assert_eq!(program.summaries().temporal().exact_cycle_delta(), Some(19));
+    assert_eq!(program.summaries().topology().morphism_island_count(), 1);
+}
+
+#[test]
+fn inlined_value_operations_use_argument_availability() {
+    let source = concat!(
+        "@morphism\n",
+        "def pulse(width: int, count: int) -> Morphism:\n",
+        "    return Wait(width * us) >> Wait(cycles(count))\n",
+        "\n",
+        "class Experiment:\n",
+        "    @kernel\n",
+        "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+        "        width = params[self.width]\n",
+        "        count = params[self.count]\n",
+        "        return pulse(width, count)\n",
+    );
+    let registered = register_fixture(
+        source,
+        &[
+            DefinitionSpec {
+                id: 11,
+                qualified_name: "pulse",
+                source_start_line: 1,
+                role: RegisteredDefinitionRole::MorphismDefinition,
+            },
+            DefinitionSpec {
+                id: 12,
+                qualified_name: "Experiment.build_sequence",
+                source_start_line: 6,
+                role: RegisteredDefinitionRole::Kernel,
+            },
+        ],
+        &[("pulse", 11)],
+        12,
+    );
+    let mut resolver = InMemoryResolver::default();
+    resolver.reads.insert(
+        "width".to_owned(),
+        Ok(ResolvedExternalRead {
+            id: 0,
+            name: "width".to_owned(),
+            value_type: ValueType::Int32,
+            availability: ValueAvailability::Link,
+            value: SourceLiteral::Int32(2),
+        }),
+    );
+    resolver.reads.insert(
+        "count".to_owned(),
+        Ok(ResolvedExternalRead {
+            id: 1,
+            name: "count".to_owned(),
+            value_type: ValueType::Int32,
+            availability: ValueAvailability::Link,
+            value: SourceLiteral::Int32(3),
+        }),
+    );
+    let analysis = analyze_registered_entry(&registered, &mut resolver).unwrap();
+
+    let program = elaborate_frontend_program(analysis.report()).unwrap();
+
+    assert_eq!(program.values().nodes().len(), 4);
+    assert!(program.values().nodes().iter().any(|node| {
+        matches!(
+            node.kind(),
+            FrontendValueKind::ScaleDuration(DurationUnit::Microsecond)
+        )
+    }));
+    assert!(
+        program
+            .values()
+            .nodes()
+            .iter()
+            .any(|node| { matches!(node.kind(), FrontendValueKind::Cycles) })
+    );
+    assert!(
+        program
+            .values()
+            .nodes()
+            .iter()
+            .all(|node| node.availability() == ValueAvailability::Link)
+    );
+    assert_eq!(program.summaries().values().compile_count(), 0);
+    assert_eq!(program.summaries().values().link_count(), 4);
 }
 
 #[test]
@@ -439,6 +578,335 @@ fn retains_exact_si_duration_scale_in_typed_hir() {
         TopologyEffect::Empty
     );
     assert_eq!(hir.facts()[scale_id].roles(), [DependencyRole::Relocatable]);
+
+    let program = elaborate_frontend_program(analysis.report())
+        .expect("physical Duration should remain target-independent during elaboration");
+    let FrontendMorphismNode::Wait(duration) = program
+        .morphisms()
+        .node(program.morphisms().root())
+        .unwrap()
+    else {
+        panic!("nonzero physical Duration should remain a Wait")
+    };
+    assert_eq!(
+        program.values().node(*duration).unwrap().kind(),
+        &FrontendValueKind::ScaleDuration(DurationUnit::Microsecond)
+    );
+    assert_eq!(program.summaries().temporal().exact_cycle_delta(), None);
+}
+
+#[test]
+fn elaborates_the_loop_free_entry_into_one_frontend_program() {
+    let source = concat!(
+        "class Experiment:\n",
+        "    @kernel\n",
+        "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+        "        width = params[self.width]\n",
+        "        first = Wait(cycles(width))\n",
+        "        return Id() >> first >> Wait(cycles(2))\n",
+    );
+    let registered = register_fixture(
+        source,
+        &[DefinitionSpec {
+            id: 12,
+            qualified_name: "Experiment.build_sequence",
+            source_start_line: 2,
+            role: RegisteredDefinitionRole::Kernel,
+        }],
+        &[],
+        12,
+    );
+    let mut resolver = InMemoryResolver::default().with_int32_read("width", 3, 4);
+    let analysis = analyze_registered_entry(&registered, &mut resolver).unwrap();
+
+    let program = elaborate_frontend_program(analysis.report()).unwrap();
+
+    assert_eq!(program.values().nodes().len(), 4);
+    assert_eq!(program.morphisms().nodes().len(), 3);
+    let root = program.morphisms().root();
+    let FrontendMorphismNode::Serial {
+        edge_start,
+        edge_count,
+    } = program.morphisms().node(root).unwrap()
+    else {
+        panic!("the Id unit should disappear from one flat Serial Morphism")
+    };
+    let children = program.morphisms().children(root).unwrap();
+    assert_eq!((*edge_start, *edge_count), (0, 2));
+    assert_eq!(program.morphisms().edges(), children);
+    assert_eq!(children.len(), 2);
+    let cycle_deltas = children
+        .iter()
+        .map(|child| match program.morphisms().node(*child).unwrap() {
+            FrontendMorphismNode::Wait(duration) => program.values().exact_cycle_delta(*duration),
+            node => panic!("expected Wait child, found {node:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(cycle_deltas, [Some(4), Some(2)]);
+
+    let control = program.control();
+    assert_eq!(control.nodes().len(), 1);
+    assert_eq!(
+        control.node(control.root()),
+        &ControlNode::Lift(program.morphisms().root())
+    );
+
+    assert_eq!(program.summaries().temporal().exact_cycle_delta(), Some(6));
+    assert_eq!(program.summaries().values().node_count(), 4);
+    assert_eq!(program.summaries().values().compile_count(), 4);
+    assert_eq!(program.summaries().values().structural_count(), 0);
+    assert_eq!(program.summaries().values().relocatable_count(), 4);
+    assert_eq!(program.summaries().logical_resources().resource_count(), 0);
+    assert_eq!(program.summaries().topology().morphism_node_count(), 3);
+    assert_eq!(program.summaries().topology().morphism_island_count(), 1);
+    assert!(program.summaries().completion().has_normal_exit());
+    assert!(!program.summaries().failure().has_failure_exit());
+
+    let roles = program
+        .origins()
+        .contributions()
+        .map(|contribution| contribution.role)
+        .collect::<Vec<_>>();
+    for required in [
+        OriginRole::Entry,
+        OriginRole::Assignment,
+        OriginRole::Call,
+        OriginRole::Return,
+        OriginRole::SerialOperator,
+    ] {
+        assert!(roles.contains(&required), "missing {required:?} origin");
+    }
+    assert!(!program.origins().morphism_boundary(root, 0).is_empty());
+}
+
+#[test]
+fn request_local_external_ids_do_not_affect_program_equality() {
+    let direct_source = concat!(
+        "class Experiment:\n",
+        "    @kernel\n",
+        "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+        "        width = params[self.width]\n",
+        "        return Wait(cycles(width))\n",
+    );
+    let direct_registered = register_fixture(
+        direct_source,
+        &[DefinitionSpec {
+            id: 12,
+            qualified_name: "Experiment.build_sequence",
+            source_start_line: 2,
+            role: RegisteredDefinitionRole::Kernel,
+        }],
+        &[],
+        12,
+    );
+    let direct_analysis = analyze_registered_entry(
+        &direct_registered,
+        &mut InMemoryResolver::default().with_int32_read("width", 0, 4),
+    )
+    .unwrap();
+    let direct = elaborate_frontend_program(direct_analysis.report()).unwrap();
+
+    let prefixed_source = concat!(
+        "class Experiment:\n",
+        "    @kernel\n",
+        "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+        "        ignored = params[self.ignored]\n",
+        "        width = params[self.width]\n",
+        "        return Wait(cycles(width))\n",
+    );
+    let prefixed_registered = register_fixture(
+        prefixed_source,
+        &[DefinitionSpec {
+            id: 12,
+            qualified_name: "Experiment.build_sequence",
+            source_start_line: 2,
+            role: RegisteredDefinitionRole::Kernel,
+        }],
+        &[],
+        12,
+    );
+    let prefixed_analysis = analyze_registered_entry(
+        &prefixed_registered,
+        &mut InMemoryResolver::default()
+            .with_int32_read("ignored", 0, 99)
+            .with_int32_read("width", 1, 4),
+    )
+    .unwrap();
+    let prefixed = elaborate_frontend_program(prefixed_analysis.report()).unwrap();
+
+    assert_eq!(direct, prefixed);
+}
+
+#[test]
+fn normalizes_serial_association_and_id_without_losing_origins() {
+    let left_associated = elaborate_closed_entry(
+        concat!(
+            "class Experiment:\n",
+            "    @kernel\n",
+            "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+            "        return (Wait(cycles(1)) >> Id()) >> Wait(cycles(2))\n",
+        ),
+        2,
+    );
+    let right_associated = elaborate_closed_definition(
+        concat!(
+            "# the same program starts one line later\n",
+            "class OtherExperiment:\n",
+            "    @kernel\n",
+            "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+            "        return Wait(cycles(1)) >> (Id() >> Wait(cycles(2)))\n",
+        ),
+        3,
+        99,
+        "OtherExperiment.build_sequence",
+    );
+
+    assert_eq!(left_associated, right_associated);
+    assert_ne!(
+        left_associated.entry_definition_id(),
+        right_associated.entry_definition_id()
+    );
+    assert_ne!(left_associated.entry(), right_associated.entry());
+    assert_eq!(left_associated.morphisms().nodes().len(), 3);
+    assert_ne!(
+        left_associated
+            .origins()
+            .anchor(left_associated.origins().entry()[0].origin)
+            .unwrap()
+            .line(),
+        right_associated
+            .origins()
+            .anchor(right_associated.origins().entry()[0].origin)
+            .unwrap()
+            .line()
+    );
+    for program in [&left_associated, &right_associated] {
+        assert!(
+            program
+                .origins()
+                .contributions()
+                .any(|origin| origin.role == OriginRole::SerialOperator)
+        );
+    }
+}
+
+#[test]
+fn normalizes_proven_zero_waits_to_the_same_id_program() {
+    let id = elaborate_closed_entry(
+        concat!(
+            "class Experiment:\n",
+            "    @kernel\n",
+            "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+            "        return Id()\n",
+        ),
+        2,
+    );
+    let zero_cycles = elaborate_closed_entry(
+        concat!(
+            "# shifted origin\n",
+            "class Experiment:\n",
+            "    @kernel\n",
+            "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+            "        return Wait(cycles(0))\n",
+        ),
+        3,
+    );
+    let zero_si_duration = elaborate_closed_entry(
+        concat!(
+            "class Experiment:\n",
+            "    @kernel\n",
+            "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+            "        return Wait(0 * us)\n",
+        ),
+        2,
+    );
+
+    assert_eq!(id, zero_cycles);
+    assert_eq!(id, zero_si_duration);
+    assert!(id.values().nodes().is_empty());
+    assert_eq!(id.morphisms().nodes(), [FrontendMorphismNode::Id]);
+    assert!(matches!(
+        id.control().node(id.control().root()),
+        ControlNode::Return(_)
+    ));
+}
+
+#[test]
+fn rejects_a_discarded_morphism_expression_statement_at_its_source() {
+    let source = concat!(
+        "class Experiment:\n",
+        "    @kernel\n",
+        "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+        "        Wait(cycles(1))\n",
+        "        return Id()\n",
+    );
+    let registered = register_fixture(
+        source,
+        &[DefinitionSpec {
+            id: 12,
+            qualified_name: "Experiment.build_sequence",
+            source_start_line: 2,
+            role: RegisteredDefinitionRole::Kernel,
+        }],
+        &[],
+        12,
+    );
+    let analysis = analyze_registered_entry(&registered, &mut InMemoryResolver::default())
+        .expect("typed source should retain the discarded Morphism for elaboration");
+
+    let error = elaborate_frontend_program(analysis.report())
+        .expect_err("discarding a Morphism must not become an empty program");
+
+    assert_eq!(
+        error.code(),
+        FrontendElaborationErrorCode::DiscardedMorphism
+    );
+    assert_eq!(error.primary_anchor().unwrap().line(), 4);
+}
+
+#[test]
+fn rejects_a_morphism_argument_discarded_by_its_definition() {
+    let source = concat!(
+        "@morphism\n",
+        "def drop_morphism(value: Morphism) -> Morphism:\n",
+        "    return Id()\n",
+        "\n",
+        "class Experiment:\n",
+        "    @kernel\n",
+        "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+        "        return drop_morphism(Wait(cycles(1)))\n",
+    );
+    let registered = register_fixture(
+        source,
+        &[
+            DefinitionSpec {
+                id: 11,
+                qualified_name: "drop_morphism",
+                source_start_line: 1,
+                role: RegisteredDefinitionRole::MorphismDefinition,
+            },
+            DefinitionSpec {
+                id: 12,
+                qualified_name: "Experiment.build_sequence",
+                source_start_line: 6,
+                role: RegisteredDefinitionRole::Kernel,
+            },
+        ],
+        &[("drop_morphism", 11)],
+        12,
+    );
+    let analysis = analyze_registered_entry(&registered, &mut InMemoryResolver::default())
+        .expect("the Morphism Definition call should type-check");
+
+    let error = elaborate_frontend_program(analysis.report())
+        .expect_err("a Morphism argument must contribute to the returned Morphism");
+
+    assert_eq!(
+        error.code(),
+        FrontendElaborationErrorCode::DiscardedMorphism
+    );
+    assert!(error.message().contains("argument `value`"), "{error}");
+    assert_eq!(error.primary_anchor().unwrap().line(), 8);
 }
 
 #[test]
@@ -573,6 +1041,54 @@ fn rejects_reachable_if_at_its_source_location() {
         error.to_string().contains("/project/experiment.py:4:9"),
         "{error}"
     );
+}
+
+#[test]
+fn rejects_bodyless_atomic_at_its_call_site() {
+    let source = concat!(
+        "@atomic_morphism\n",
+        "def pulse() -> Morphism:\n",
+        "    return Id()\n",
+        "\n",
+        "class Experiment:\n",
+        "    @kernel\n",
+        "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+        "        return pulse()\n",
+    );
+    let registered = register_fixture(
+        source,
+        &[
+            DefinitionSpec {
+                id: 11,
+                qualified_name: "pulse",
+                source_start_line: 1,
+                role: RegisteredDefinitionRole::Atomic,
+            },
+            DefinitionSpec {
+                id: 12,
+                qualified_name: "Experiment.build_sequence",
+                source_start_line: 6,
+                role: RegisteredDefinitionRole::Kernel,
+            },
+        ],
+        &[("pulse", 11)],
+        12,
+    );
+    let analysis = analyze_registered_entry(&registered, &mut InMemoryResolver::default())
+        .expect("registered Atomic helpers retain a body-less typed definition");
+
+    let error = elaborate_frontend_program(analysis.report())
+        .expect_err("Atomic lowering is outside the initial frontend tracer");
+
+    assert_eq!(
+        error.code(),
+        FrontendElaborationErrorCode::UnsupportedSource
+    );
+    assert_eq!(
+        error.message(),
+        "atomic calls are outside the initial frontend tracer"
+    );
+    assert_eq!(error.primary_anchor().unwrap().line(), 8);
 }
 
 #[test]
@@ -843,6 +1359,57 @@ fn does_not_query_bad_exp_param_read_in_an_unreachable_definition() {
     );
     assert_eq!(analysis.report().external_reads().len(), 1);
     assert_eq!(analysis.report().external_reads()[0].name(), "width");
+}
+
+#[test]
+fn elaborates_optional_compatible_helper_arguments() {
+    let source = concat!(
+        "@morphism\n",
+        "def consume(value: int | None) -> Morphism:\n",
+        "    return Id()\n",
+        "\n",
+        "@morphism\n",
+        "def forward(value: int | None = None) -> Morphism:\n",
+        "    return consume(value)\n",
+        "\n",
+        "class Experiment:\n",
+        "    @kernel\n",
+        "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+        "        return forward(1) >> forward()\n",
+    );
+    let registered = register_fixture(
+        source,
+        &[
+            DefinitionSpec {
+                id: 10,
+                qualified_name: "consume",
+                source_start_line: 1,
+                role: RegisteredDefinitionRole::MorphismDefinition,
+            },
+            DefinitionSpec {
+                id: 11,
+                qualified_name: "forward",
+                source_start_line: 5,
+                role: RegisteredDefinitionRole::MorphismDefinition,
+            },
+            DefinitionSpec {
+                id: 12,
+                qualified_name: "Experiment.build_sequence",
+                source_start_line: 10,
+                role: RegisteredDefinitionRole::Kernel,
+            },
+        ],
+        &[("consume", 10), ("forward", 11)],
+        12,
+    );
+    let analysis = analyze_registered_entry(&registered, &mut InMemoryResolver::default())
+        .expect("Optional-compatible helper calls should type-check");
+
+    let program = elaborate_frontend_program(analysis.report())
+        .expect("elaboration should preserve the typed Optional compatibility rule");
+
+    assert!(program.values().nodes().is_empty());
+    assert_eq!(program.morphisms().nodes(), [FrontendMorphismNode::Id]);
 }
 
 #[test]

@@ -1,7 +1,8 @@
 use catseq_frontend::{
-    RegisteredDefinitionRole, RegisteredEntryAnalysis, RegisteredRequestResolver,
+    DurationUnit, RegisteredDefinitionRole, RegisteredEntryAnalysis, RegisteredRequestResolver,
     RequestResolutionError, ResolvedExternalRead, SourceBinding, SourceIntrinsic, SourceLiteral,
-    ValueAvailability, ValueType, ValueTypeConstructor, analyze_registered_entry,
+    SourceValueOperation, ValueAvailability, ValueType, ValueTypeConstructor,
+    analyze_registered_entry,
 };
 use pyo3::PyTypeInfo;
 use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyTypeError};
@@ -61,6 +62,15 @@ type PyComputeInterfaceRow = (
     &'static str,
     String,
     String,
+    String,
+    usize,
+    usize,
+);
+type PyDurationScaleRow = (
+    String,
+    &'static str,
+    String,
+    &'static str,
     String,
     usize,
     usize,
@@ -181,6 +191,52 @@ impl PyTypedSourceAnalysis {
                     node.morphism_composition()
                         .map(|composition| (name.clone(), composition.as_str()))
                 })
+            })
+            .collect()
+    }
+
+    #[getter]
+    fn _duration_scales(&self) -> Vec<PyDurationScaleRow> {
+        self.inner
+            .report()
+            .definitions()
+            .iter()
+            .flat_map(|definition| {
+                let name = definition_name(definition.module(), definition.qualified_name());
+                let hir = definition.hir();
+                hir.nodes()
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(node_id, node)| {
+                        if node.value_operation() != Some(SourceValueOperation::ScaleDuration) {
+                            return None;
+                        }
+                        let children = &hir.edges()[node.edge_start() as usize
+                            ..(node.edge_start() + node.edge_count()) as usize];
+                        let [scalar_node, unit_node] = children else {
+                            unreachable!("typed physical Duration scaling has exactly two inputs")
+                        };
+                        let scalar = &hir.facts()[*scalar_node as usize];
+                        let unit = match hir.facts()[*unit_node as usize].source_binding() {
+                            Some(SourceBinding::DurationUnit(unit)) => *unit,
+                            _ => unreachable!(
+                                "typed physical Duration scaling retains one exact unit binding"
+                            ),
+                        };
+                        let anchor = node.anchor();
+                        Some((
+                            name.clone(),
+                            unit.as_str(),
+                            scalar
+                                .value_type()
+                                .expect("physical Duration scale input is a typed scalar")
+                                .as_str(),
+                            hir.facts()[node_id].availability().as_str(),
+                            anchor.file_name().to_owned(),
+                            anchor.line(),
+                            anchor.column(),
+                        ))
+                    })
             })
             .collect()
     }
@@ -604,6 +660,35 @@ impl RegisteredRequestResolver for PythonRegisteredRequestResolver<'_, '_> {
         Ok(SourceBinding::Unsupported {
             display_name: path.to_owned(),
         })
+    }
+
+    fn resolve_duration_unit(
+        &mut self,
+        definition_id: usize,
+        path: &str,
+        _anchor: &catseq_frontend::SourceAnchor,
+    ) -> Result<DurationUnit, RequestResolutionError> {
+        let value = self
+            .exact_path(definition_id, path, false)
+            .map_err(request_error)?
+            .ok_or_else(|| {
+                RequestResolutionError::new(format!("physical Duration unit `{path}` is unbound"))
+            })?;
+        let time_utils = self.py.import("catseq.time_utils").map_err(request_error)?;
+        for (name, unit) in [
+            ("s", DurationUnit::Second),
+            ("ms", DurationUnit::Millisecond),
+            ("us", DurationUnit::Microsecond),
+            ("ns", DurationUnit::Nanosecond),
+        ] {
+            let exact = time_utils.getattr(name).map_err(request_error)?;
+            if value.is(&exact) {
+                return Ok(unit);
+            }
+        }
+        Err(RequestResolutionError::new(format!(
+            "physical Duration unit `{path}` is not an exact CatSeq SI unit"
+        )))
     }
 
     fn resolve_exp_param(

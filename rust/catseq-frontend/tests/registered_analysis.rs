@@ -3,10 +3,11 @@ use std::sync::Arc;
 
 use catseq_frontend::{
     CallArgumentOrigin, DefinitionNameBindingInput, DefinitionRegistrationInput, DependencyRole,
-    ModuleRegistrationInput, MorphismComposition, ParameterAuthority, RegisteredDefinitionRole,
-    RegisteredKernelModules, RegisteredRequestResolver, RegistrationInput, RequestResolutionError,
-    ResolvedCallTarget, ResolvedExternalRead, SourceBinding, SourceHirKind, SourceIntrinsic,
-    SourceLiteral, TopologyEffect, ValueAvailability, ValueType, analyze_registered_entry,
+    DurationUnit, ModuleRegistrationInput, MorphismComposition, ParameterAuthority,
+    RegisteredDefinitionRole, RegisteredKernelModules, RegisteredRequestResolver,
+    RegistrationInput, RequestResolutionError, ResolvedCallTarget, ResolvedExternalRead,
+    SourceBinding, SourceHirKind, SourceIntrinsic, SourceLiteral, SourceValueOperation,
+    TopologyEffect, ValueAvailability, ValueType, analyze_registered_entry,
     register_kernel_modules,
 };
 
@@ -138,6 +139,23 @@ impl RegisteredRequestResolver for InMemoryResolver {
                 display_name: path.to_owned(),
             },
         })
+    }
+
+    fn resolve_duration_unit(
+        &mut self,
+        _definition_id: usize,
+        path: &str,
+        _anchor: &catseq_frontend::SourceAnchor,
+    ) -> Result<DurationUnit, RequestResolutionError> {
+        match path {
+            "s" => Ok(DurationUnit::Second),
+            "ms" => Ok(DurationUnit::Millisecond),
+            "us" => Ok(DurationUnit::Microsecond),
+            "ns" => Ok(DurationUnit::Nanosecond),
+            _ => Err(RequestResolutionError::new(format!(
+                "physical Duration unit `{path}` is not exact"
+            ))),
+        }
     }
 
     fn resolve_exp_param(
@@ -354,6 +372,73 @@ fn analyzes_exact_loop_free_entry_reachability_hir_and_read_edges() {
                         .contains(&DependencyRole::Structural)
             })
     );
+}
+
+#[test]
+fn retains_exact_si_duration_scale_in_typed_hir() {
+    let source = concat!(
+        "class Experiment:\n",
+        "    @kernel\n",
+        "    def build_sequence(self, params: ExpParams) -> Morphism:\n",
+        "        return Wait(2 * us)\n",
+    );
+    let registered = register_fixture(
+        source,
+        &[DefinitionSpec {
+            id: 12,
+            qualified_name: "Experiment.build_sequence",
+            source_start_line: 2,
+            role: RegisteredDefinitionRole::Kernel,
+        }],
+        &[],
+        12,
+    );
+
+    let analysis = analyze_registered_entry(&registered, &mut InMemoryResolver::default())
+        .expect("an exact SI-unit Duration should analyze");
+    let hir = analysis.report().definitions()[0].hir();
+    let (scale_id, scale) = hir
+        .nodes()
+        .iter()
+        .enumerate()
+        .find(|(_, node)| node.value_operation() == Some(SourceValueOperation::ScaleDuration))
+        .expect("the HIR should retain physical Duration scaling");
+    let [scalar_id, unit_id] = hir.edges()
+        [scale.edge_start() as usize..(scale.edge_start() + scale.edge_count()) as usize]
+    else {
+        panic!("physical Duration scaling should have scalar and unit inputs")
+    };
+
+    assert_eq!(scale.kind(), SourceHirKind::Binary);
+    assert_eq!(scale.anchor().file_name(), "/project/experiment.py");
+    assert_eq!(scale.anchor().line(), 4);
+    assert_eq!(
+        hir.nodes()[scalar_id as usize].literal(),
+        Some(&SourceLiteral::Int32(2))
+    );
+    assert_eq!(
+        hir.facts()[scalar_id as usize].value_type(),
+        Some(&ValueType::Int32)
+    );
+    assert_eq!(hir.nodes()[unit_id as usize].symbol(), Some("us"));
+    assert_eq!(
+        hir.facts()[unit_id as usize].source_binding(),
+        Some(&SourceBinding::DurationUnit(DurationUnit::Microsecond))
+    );
+    assert_eq!(hir.nodes()[unit_id as usize].anchor().line(), 4);
+    assert_eq!(
+        hir.facts()[scale_id].value_type(),
+        Some(&ValueType::Duration)
+    );
+    assert_eq!(
+        hir.facts()[scale_id].availability(),
+        ValueAvailability::Compile
+    );
+    assert_eq!(
+        hir.facts()[scale_id].topology_effect(),
+        TopologyEffect::Empty
+    );
+    assert_eq!(hir.facts()[scale_id].roles(), [DependencyRole::Relocatable]);
 }
 
 #[test]

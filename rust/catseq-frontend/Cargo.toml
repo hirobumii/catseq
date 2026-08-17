@@ -9,6 +9,7 @@ name = "catseq_frontend"
 
 [dependencies]
 anyhow.workspace = true
+catseq-core = { path = "../catseq-core" }
 nac3ast.workspace = true
 nac3core.workspace = true
 nac3parser.workspace = true

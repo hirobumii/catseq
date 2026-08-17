@@ -740,6 +740,15 @@ impl<'a, R: RegisteredRequestResolver> Analyzer<'a, R> {
                         resolved_expressions,
                     )?;
                 }
+                StmtKind::Expr { value, .. } => {
+                    self.scan_expression(
+                        definition,
+                        value,
+                        &locals,
+                        &parameter_bindings,
+                        resolved_expressions,
+                    )?;
+                }
                 _ => return Err(self.unsupported_statement(definition, statement)),
             }
         }
@@ -1322,6 +1331,23 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
                 );
                 Ok(self.push_node(
                     SourceHirKind::Return,
+                    None,
+                    None,
+                    None,
+                    &[value.node_id],
+                    self.anchor(statement.location),
+                    fact,
+                ))
+            }
+            StmtKind::Expr { value, .. } => {
+                let value = self.lower_expression(value)?;
+                let fact = SemanticFact::value(
+                    value.value_type,
+                    value.availability,
+                    value.topology_effect,
+                );
+                Ok(self.push_node(
+                    SourceHirKind::ExpressionStatement,
                     None,
                     None,
                     None,
@@ -1940,9 +1966,7 @@ impl<'a, 'b> DefinitionLowerer<'a, 'b> {
         found: &ValueType,
         node_id: u32,
     ) -> Result<(), RegisteredAnalysisError> {
-        if expected == found
-            || matches!(expected, ValueType::Optional(inner) if found == inner.as_ref() || found == &ValueType::None)
-        {
+        if expected.accepts(found) {
             return Ok(());
         }
         Err(RegisteredAnalysisError::at(

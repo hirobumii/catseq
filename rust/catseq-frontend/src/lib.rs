@@ -1,6 +1,7 @@
 //! Exact registered-source frontend for CatSeq kernel definitions.
 
 mod compute_validation;
+mod frontend_program;
 mod registered_analysis;
 mod registered_modules;
 mod source_hir;
@@ -10,6 +11,13 @@ pub use compute_validation::{
     ComputeSourceProvenance, ComputeType, ComputeTypedUnit, ComputeUnitStore, ComputeValidation,
     ComputeValidationError, FrozenComputeSourceUnit, ValidatedComputeInterface,
     validate_compute_roots,
+};
+pub use frontend_program::{
+    CompletionSummary, FailureSummary, FrontendElaborationError, FrontendElaborationErrorCode,
+    FrontendLiteral, FrontendMorphismGraph, FrontendMorphismId, FrontendMorphismNode,
+    FrontendOriginMap, FrontendProgram, FrontendProgramSummaries, FrontendValueGraph,
+    FrontendValueId, FrontendValueKind, FrontendValueNode, LogicalResourceSummary, TemporalSummary,
+    TopologySummary, ValueSummary, elaborate_frontend_program,
 };
 pub use registered_analysis::{
     RegisteredAnalysisError, RegisteredEntryAnalysis, RegisteredRequestResolver,
